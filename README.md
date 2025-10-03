@@ -2,7 +2,6 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-1.4.3-blue.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Status](https://img.shields.io/badge/status-stable-success.svg)
@@ -18,14 +17,12 @@
 ## 📋 Table of Contents
 
 - [Features](#-features)
-- [What's New in v1.4.1](#-whats-new-in-v141)
 - [Quick Start](#-quick-start)
 - [System Requirements](#-system-requirements)
 - [Installation](#-installation)
 - [Configuration](#-configuration)
 - [Usage](#-usage)
 - [Commands](#-commands)
-- [Documentation](#-documentation)
 - [Troubleshooting](#-troubleshooting)
 - [Support](#-support)
 - [License](#-license)
@@ -522,4 +519,5 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 
 
 </div>
+
 
