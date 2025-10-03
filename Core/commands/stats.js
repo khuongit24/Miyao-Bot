@@ -1,5 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import logger from '../utils/logger.js';
+import { VERSION, ENVIRONMENT } from '../utils/version.js';
 import os from 'os';
 
 export default {
@@ -33,8 +34,13 @@ export default {
             const embed = new EmbedBuilder()
                 .setColor(client.config.bot.color)
                 .setTitle('📊 Thống Kê Bot')
-                .setDescription(`Bot đang hoạt động tốt với ${metrics.activeQueues} active queues`)
+                .setDescription(`**${VERSION.fullDisplay}** • Bot đang hoạt động tốt với ${metrics.activeQueues} active queues`)
                 .addFields([
+                    {
+                        name: '📦 Version Info',
+                        value: `\`\`\`Version: ${VERSION.full}\nBuild: ${VERSION.build}\nCodename: ${VERSION.codename}\nEnvironment: ${ENVIRONMENT.env}\`\`\``,
+                        inline: false
+                    },
                     {
                         name: '⏱️ Uptime',
                         value: `\`\`\`${uptimeStr}\`\`\``,

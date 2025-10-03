@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import logger from './logger.js';
+import { VERSION } from './version.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -13,14 +14,20 @@ export function loadConfig() {
     try {
         const configPath = path.join(process.cwd(), 'config', 'config.json');
         
+        let config;
         if (!fs.existsSync(configPath)) {
             logger.warn('config.json not found, using example config');
             const examplePath = path.join(process.cwd(), 'config', 'config.example.json');
-            const exampleConfig = JSON.parse(fs.readFileSync(examplePath, 'utf-8'));
-            return exampleConfig;
+            config = JSON.parse(fs.readFileSync(examplePath, 'utf-8'));
+        } else {
+            config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
         }
         
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        // Inject version info from centralized version system
+        config.bot.version = VERSION.full;
+        config.bot.footer = VERSION.footer;
+        config.bot.versionDetailed = VERSION.detailed;
+        
         logger.info('Configuration loaded successfully');
         return config;
     } catch (error) {

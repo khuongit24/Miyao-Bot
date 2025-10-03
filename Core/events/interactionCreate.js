@@ -118,10 +118,24 @@ export default {
         }
         
         try {
+            const startTime = Date.now();
             await command.execute(interaction, client);
-            logger.info(`Command executed successfully: /${interaction.commandName}`);
+            const responseTime = Date.now() - startTime;
+            
+            // Track metrics
+            if (client.metrics) {
+                client.metrics.trackCommand(interaction.commandName, true, responseTime);
+            }
+            
+            logger.info(`Command executed successfully: /${interaction.commandName} (${responseTime}ms)`);
         } catch (error) {
             logger.error(`Error executing command ${interaction.commandName}`, error);
+            
+            // Track error
+            if (client.metrics) {
+                client.metrics.trackCommand(interaction.commandName, false);
+                client.metrics.trackError(error, 'command');
+            }
             
             const errorMessage = {
                 content: '❌ Đã xảy ra lỗi khi thực thi lệnh này!',

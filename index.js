@@ -5,7 +5,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import logger from './Core/utils/logger.js';
 import { loadConfig } from './Core/utils/helpers.js';
+import { VERSION } from './Core/utils/version.js';
+import metricsTracker from './Core/utils/metrics.js';
 import MusicManager from './Core/music/MusicManagerEnhanced.js';
+import { startMetricsServer } from './Core/api/metrics-server.js';
 
 // Load environment variables
 dotenvConfig();
@@ -35,14 +38,23 @@ client.config = loadConfig();
 
 // Initialize commands collection
 client.commands = new Collection();
+
+// Attach metrics tracker to client
+client.metrics = metricsTracker;
+
 // In-memory cache for ephemeral search results selection
 client._lastSearchResults = new Map();
 setInterval(() => {
     const now = Date.now();
+    let cleanedCount = 0;
     for (const [key, value] of client._lastSearchResults.entries()) {
         if (!value?.createdAt || now - value.createdAt > 5 * 60 * 1000) {
             client._lastSearchResults.delete(key);
+            cleanedCount++;
         }
+    }
+    if (cleanedCount > 0) {
+        logger.debug(`Cleaned ${cleanedCount} expired search cache entries`);
     }
 }, 60 * 1000);
 
@@ -172,6 +184,7 @@ process.on('SIGINT', async () => {
 async function start() {
     try {
         logger.info('Starting Miyao Music Bot...');
+        logger.info(`Version: ${VERSION.fullDisplay}`);
         logger.info(`Node.js version: ${process.version}`);
         logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
         
@@ -186,8 +199,17 @@ async function start() {
         logger.info('Logging in to Discord...');
         await client.login(process.env.DISCORD_TOKEN);
         
+        // Start metrics API server
+        startMetricsServer(client);
+        
+        // Log metrics summary every hour
+        setInterval(() => {
+            metricsTracker.logSummary();
+        }, 3600000); // 1 hour
+        
     } catch (error) {
         logger.error('Failed to start bot', error);
+        metricsTracker.trackError(error, 'startup');
         process.exit(1);
     }
 }

@@ -172,6 +172,17 @@ export class Queue {
         
         this.leaveTimeout = null;
         
+        // History tracking
+        this.history = [];
+        this.maxHistory = 50;
+        
+        // Stats tracking
+        this.stats = {
+            totalPlayed: 0,
+            totalPlaytime: 0,
+            skips: 0
+        };
+        
         // UI state
         this.nowPlayingMessage = null; // Store message for updates
         this.updateInterval = null; // Interval for progress updates
@@ -232,6 +243,11 @@ export class Queue {
                 track: data.track?.info?.title 
             });
             this.clearLeaveTimeout();
+            
+            // Add to history
+            if (this.current) {
+                this.addToHistory(this.current);
+            }
             
             // Start progress updates when track starts
             if (this.nowPlayingMessage) {
@@ -394,6 +410,9 @@ export class Queue {
      */
     async skip() {
         if (!this.player) return false;
+        
+        // Track skip statistics
+        this.stats.skips++;
         
         await this.player.stopTrack();
         return true;
@@ -597,6 +616,44 @@ export class Queue {
                 logger.error('Failed to update now playing embed', error);
             }
         }
+    }
+    
+    /**
+     * Add track to history
+     */
+    addToHistory(track) {
+        if (!track || !track.info) return;
+        
+        // Add to beginning of history array with timestamp
+        this.history.unshift({
+            track: track,
+            playedAt: Date.now(),
+            requester: track.requester
+        });
+        
+        // Update stats
+        this.stats.totalPlayed++;
+        if (track.info.length && !track.info.isStream) {
+            this.stats.totalPlaytime += track.info.length;
+        }
+        
+        // Limit history size
+        if (this.history.length > this.maxHistory) {
+            this.history = this.history.slice(0, this.maxHistory);
+        }
+    }
+    
+    /**
+     * Get queue statistics
+     */
+    getStats() {
+        return {
+            totalPlayed: this.stats.totalPlayed,
+            totalPlaytime: this.stats.totalPlaytime,
+            skips: this.stats.skips,
+            currentQueueLength: this.tracks.length,
+            historyLength: this.history.length
+        };
     }
     
     /**

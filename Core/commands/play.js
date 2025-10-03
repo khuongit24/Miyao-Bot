@@ -90,6 +90,11 @@ export default {
                 // Add all tracks from playlist
                 queue.add(result.tracks);
                 
+                // Track metrics
+                if (client.metrics) {
+                    client.metrics.trackMusic('playlist_added', { trackCount: result.tracks.length });
+                }
+                
                 await interaction.editReply({
                     embeds: [createPlaylistAddedEmbed(
                         result.playlistInfo?.name || 'Playlist',
@@ -106,6 +111,11 @@ export default {
                 // Add single track (first search result)
                 const track = result.tracks[0];
                 queue.add(track);
+                
+                // Track metrics
+                if (client.metrics) {
+                    client.metrics.trackMusic('track_added');
+                }
                 
                 const position = queue.tracks.length;
                 
