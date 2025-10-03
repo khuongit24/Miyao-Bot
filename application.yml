@@ -1,0 +1,73 @@
+server:
+  port: 2333
+  address: 0.0.0.0
+
+plugins:
+  youtube:
+    enabled: true # Enable YouTube source plugin
+    allowSearch: true # Allow ytsearch: and ytmsearch:
+    allowDirectVideoIds: true # Allow direct video IDs
+    allowDirectPlaylistIds: true # Allow direct playlist IDs
+    # Clients are queried in the order they are given
+    # Using multiple clients for redundancy
+    clients:
+      - MUSIC          # YouTube Music - best for music search
+      - ANDROID_VR     # Android VR - good fallback
+      - WEB            # Web client - general purpose
+      - WEBEMBEDDED    # Web embedded - for playback
+      - TVHTML5EMBEDDED # TV HTML5 - additional fallback
+
+lavalink:
+  server:
+    password: "youshallnotpass"
+    sources:
+      youtube: false # IMPORTANT: Disable built-in deprecated YouTube source
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      http: true
+      local: false
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: true
+      timescale: true
+      tremolo: true
+      vibrato: true
+      distortion: true
+      rotation: true
+      channelMix: true
+      lowPass: true
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 10
+    resamplingQuality: LOW
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    youtubePlaylistLoadLimit: 100
+    playerUpdateInterval: 5
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    gc-warnings: true
+
+metrics:
+  prometheus:
+    enabled: false
+    endpoint: /metrics
+
+sentry:
+  dsn: ""
+  environment: ""
+
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: INFO
+
+  logback:
+    rollingpolicy:
+      max-file-size: 100MB
+      max-history: 30

@@ -1,0 +1,28 @@
+{
+  "name": "miyao-bot",
+  "version": "1.4.0",
+  "description": "Miyao Discord Music Bot - High performance music bot with desktop launcher, advanced features, and modern UI/UX",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "deploy": "node deploy-commands.js",
+    "setup": "node auto-setup.js",
+    "clear-commands": "node clear-commands.js",
+    "launcher": "node miyao-launcher.js",
+    "build-launcher": "pkg miyao-launcher.js --targets node18-win-x64 --output MiyaoLauncher.exe --compress Brotli"
+  },
+  "keywords": ["discord", "music", "bot", "lavalink"],
+  "author": "Miyao Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3",
+    "shoukaku": "^4.1.1",
+    "winston": "^3.17.0",
+    "dotenv": "^16.4.7"
+  }
+}
