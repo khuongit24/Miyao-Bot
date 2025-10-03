@@ -2,7 +2,7 @@
 
 <div align="center">
 
-![Version](https://img.shields.io/badge/version-1.4.1-blue.svg)
+![Version](https://img.shields.io/badge/version-1.4.3-blue.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Status](https://img.shields.io/badge/status-stable-success.svg)
@@ -522,3 +522,4 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 
 
 </div>
+
