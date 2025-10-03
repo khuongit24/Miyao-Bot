@@ -411,18 +411,6 @@ Dự án này theo giấy phép MIT - xem [LICENSE](LICENSE).
 - Cộng đồng Discord.js  
 - Nhóm phát triển Shoukaku  
 - Đội ngũ Lavalink  
-- Tất cả contributors và tester  
-
----
-
-## 📊 Thống Kê
-
-- Phiên bản: 1.3.0  
-- Ngày phát hành: 03/10/2025  
-- Số lệnh: 42  
-- Dòng code: ~15,000  
-- Tài liệu: 25+ file  
-- Hỗ trợ: đang phát triển  
 
 ---
 
