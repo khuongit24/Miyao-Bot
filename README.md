@@ -29,14 +29,6 @@
 
 ## ✨ Chức Năng
 
-### 🖥️ Trình Khởi Chạy Desktop (Cũ - Vẫn Có Sẵn)
-- **Quản lý một click** - Bắt đầu/dừng bot chỉ với một click
-- **Terminal thời gian thực** - Xem log của Lavalink và Bot trực tiếp
-- **Trình chỉnh sửa cấu hình trực quan** - Chỉnh sửa config.json ngay trong giao diện
-- **Quản lý cài đặt** - Quản lý file .env dễ dàng
-- **Giao diện hiện đại** - Thiết kế glassmorphism với màu tím/hồng gradient
-- **Đăng nhập tự động** - Tự động phát hiện thông tin đăng nhập từ .env
-
 ### 🎵 Hệ Thống Nhạc
 - **42 Lệnh** - 21 lệnh slash + 21 lệnh prefix
 - **Âm thanh chất lượng cao** - Streaming bằng Lavalink v4
