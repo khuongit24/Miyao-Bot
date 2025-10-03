@@ -16,7 +16,6 @@
 ## 📋 Table of Contents
 
 - [Features](#-features)
-- [What's New in v1.4.0](#-whats-new-in-v140)
 - [Quick Start](#-quick-start)
 - [System Requirements](#-system-requirements)
 - [Installation](#-installation)
@@ -460,4 +459,5 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 
 
 </div>
+
 
