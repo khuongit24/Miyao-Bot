@@ -82,21 +82,7 @@
 
 ## 🚀 Bắt Đầu Nhanh
 
-### ⭐ Tùy Chọn 1: Unified Launcher (MỚI & KHUYẾN NGHỊ!)
-
-**Cách đơn giản nhất để khởi động Miyao Bot - chỉ cần một file!**
-
-```batch
-# Bước 1: Build launcher (chỉ một lần)
-.uild-launcher.bat
-
-# Bước 2: Khởi động bot
-.\MiyaoLauncher.exe
-
-# Hoặc dùng quick-start helper
-.\START.bat
-```
-
+### ⭐ Tùy Chọn 1: Sử dụng Launcher (Khuyến Nghị)
 **Tính năng:**  
 - ✅ Kiểm tra tự động mọi điều kiện cần thiết (Node.js, Java, file)  
 - ✅ Xác minh cấu hình .env  
@@ -106,7 +92,6 @@
 - ✅ Khởi động bot Discord  
 - ✅ Giám sát mọi thứ và hiển thị log theo thời gian thực  
 
-📖 Xem thêm [LAUNCHER_README.md](LAUNCHER_README.md) để biết chi tiết.
 
 ---
 
