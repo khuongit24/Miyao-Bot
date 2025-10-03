@@ -31,24 +31,6 @@
 
 ## ✨ Features
 
-### � Unified Launcher (NEW v2.0!)
-- **Single executable** - One file để start toàn bộ bot (`MiyaoLauncher.exe`)
-- **Automatic validation** - Pre-flight checks cho mọi requirements
-- **Smart startup** - Auto-start Lavalink → Deploy → Bot sequence
-- **Intelligent memory** - Dynamic RAM allocation based on system
-- **Real-time monitoring** - Live logs với color-coded output
-- **Error recovery** - Advanced error handling với suggested solutions
-- **Zero configuration** - Works out-of-the-box after .env setup
-- **50-80% smaller** - Compared to old Electron launcher
-
-### �🖥️ Desktop Launcher (Legacy - Still Available)
-- **One-click management** - Start/stop bot với một click
-- **Real-time terminals** - Xem logs của Lavalink và Bot trực tiếp
-- **Visual config editor** - Chỉnh sửa config.json trong giao diện
-- **Settings manager** - Quản lý .env file dễ dàng
-- **Modern UI** - Glassmorphism design với gradient màu tím/hồng
-- **Auto-login** - Tự động detect credentials từ .env
-
 ### 🎵 Music System
 - **42 Commands** - 21 slash commands + 21 prefix commands
 - **High-quality audio** - Lavalink v4 streaming
@@ -459,5 +441,6 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 
 
 </div>
+
 
 
