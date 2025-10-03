@@ -1,4 +1,4 @@
-# 🎵 Miyao Music Bot v1.4.0
+# 🎵 Miyao Music Bot
 
 <div align="center">
 
@@ -6,7 +6,6 @@
 ![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-**Discord Music Bot với History Replay, Desktop Launcher & Modern UI/UX**
 
 [Features](#-features) • [Quick Start](#-quick-start) • [Documentation](#-documentation) • [Support](#-support)
 
@@ -77,80 +76,7 @@
 
 ---
 
-## 🆕 What's New in v1.4.0
-
-### 🎉 Major Features
-- 📜 **History Replay System** - Phát lại bài hát đã nghe gần đây
-  - Nút Replay trên Now Playing controls
-  - Dropdown hiển thị 10 bài gần nhất
-  - Thông tin chi tiết: thời lượng, nghệ sĩ, thời gian phát
-  - Smart caching với auto-cleanup
-- 🚀 **Major Code Optimization** - Cải thiện 70% error rate
-  - Enhanced error handling với comprehensive validation
-  - Memory leak prevention với periodic cleanup
-  - Defensive programming throughout codebase
-  - 37% faster response time
-- 🛡️ **Stability Improvements** - Production-ready reliability
-  - Input validation pipeline
-  - Graceful error recovery
-  - Safe property access (optional chaining)
-  - Zero-crash guarantee
-
-### 🔧 Performance Enhancements
-- ⚡ Response time: 80ms → <50ms (+37% faster)
-- 📊 Error rate: 3.5% → 1.0% (-71% errors)
-- 💾 Memory: Stable with automatic cleanup
-- 🎯 Cache hit rate: 85% → 95% (+12%)
-- ⏱️ Uptime: 99.0% → 99.8%
-
-### 🐛 Bug Fixes
-- ✅ Fixed memory leak in history cache
-- ✅ Fixed potential crash from invalid entries
-- ✅ Fixed race condition in cache cleanup
-- ✅ Fixed missing null checks throughout
-- ✅ Fixed NaN in time calculations
-- ✅ Fixed improper error handling in seek operations
-- ✅ Fixed validation issues in replay handler
-
-### 📚 Documentation
-- **NEW:** `docs/V1.4.0_RELEASE_NOTES_VI.md` - Chi tiết v1.4.0 (Vietnamese)
-- Updated `CHANGELOG.md` with comprehensive v1.4.0 changes
-
-See [CHANGELOG.md](CHANGELOG.md) for complete technical details.
-
----
-
 ## 🚀 Quick Start
-
-### ⭐ Option 1: Unified Launcher (NEWEST & RECOMMENDED!)
-
-**The easiest way to start Miyao Bot - just one file!**
-
-```batch
-# Step 1: Build the launcher (one-time only)
-.\build-launcher.bat
-
-# Step 2: Start the bot
-.\MiyaoLauncher.exe
-
-# Or use quick-start helper
-.\START.bat
-```
-
-**What it does:**
-- ✅ Automatically checks all prerequisites (Node.js, Java, files)
-- ✅ Validates your .env configuration
-- ✅ Auto-installs dependencies if needed
-- ✅ Starts Lavalink server with optimal memory
-- ✅ Deploys slash commands to Discord
-- ✅ Starts the Discord bot
-- ✅ Monitors everything and provides real-time logs
-
-📖 See [LAUNCHER_README.md](LAUNCHER_README.md) for detailed documentation.
-
----
-
-### Option 2: Traditional Method (Manual Steps)
 
 **Windows:**
 ```batch
@@ -178,18 +104,6 @@ npm start
 
 ---
 
-### Option 3: Electron GUI Launcher (Legacy)
-
-```bash
-# After installation
-cd launcher
-npm start
-# Click "Start Bot" in the interface
-```
-
-**Note:** The Electron launcher is being phased out in favor of the new unified launcher.
-
----
 
 ## 💻 System Requirements
 
@@ -526,7 +440,6 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 - Discord.js community
 - Shoukaku developers
 - Lavalink team
-- All contributors and beta testers
 
 ---
 
@@ -543,10 +456,8 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 
 <div align="center">
 
-**Made with ❤️ by Miyao Team**
-
 [⭐ Star us on GitHub](https://github.com/khuongit24) • [🐛 Report Bug](https://github.com/khuongit24/issues) • [💡 Request Feature](https://github.com/khuongit24/issues)
 
-**Happy music botting!** 🎵🤖
 
 </div>
+
