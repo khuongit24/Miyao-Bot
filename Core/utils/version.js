@@ -6,12 +6,12 @@
 export const VERSION = {
     // Main version
     major: 1,
-    minor: 4,
+    minor: 5,
     patch: 3,
     
     // Build info
-    build: '2025.10.03',
-    codename: 'Phoenix',
+    build: '2025.10.04',
+    codename: 'Aria',
     
     // Full version string
     get full() {

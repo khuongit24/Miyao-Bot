@@ -1,6 +1,15 @@
-import { SlashCommandBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import { createTrackAddedEmbed, createPlaylistAddedEmbed, createErrorEmbed, createNowPlayingEmbed, createInfoEmbed } from '../../UI/embeds/MusicEmbeds.js';
 import { createNowPlayingButtons, createSearchResultButtons } from '../../UI/components/MusicControls.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { 
+    UserNotInVoiceError, 
+    VoiceChannelPermissionError, 
+    DifferentVoiceChannelError,
+    NoSearchResultsError 
+} from '../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../utils/resilience.js';
+import { CircuitBreakerError } from '../utils/CircuitBreaker.js';
 import logger from '../utils/logger.js';
 
 export default {
@@ -17,23 +26,32 @@ export default {
         await interaction.deferReply();
         
         try {
+            // Check if music system is available (graceful degradation)
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                const degradedMessage = getDegradedModeMessage('phát nhạc');
+                const embed = new EmbedBuilder()
+                    .setColor(degradedMessage.color)
+                    .setTitle(degradedMessage.title)
+                    .setDescription(degradedMessage.description)
+                    .addFields(degradedMessage.fields)
+                    .setTimestamp(degradedMessage.timestamp);
+                
+                return await interaction.editReply({ embeds: [embed] });
+            }
+            
             const query = interaction.options.getString('query');
             const member = interaction.member;
             const voiceChannel = member.voice.channel;
             
             // Check if user is in voice channel
             if (!voiceChannel) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Bạn phải ở trong voice channel để sử dụng lệnh này!', client.config)]
-                });
+                throw new UserNotInVoiceError();
             }
             
             // Check bot permissions
             const permissions = voiceChannel.permissionsFor(interaction.client.user);
             if (!permissions.has(['Connect', 'Speak'])) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Bot không có quyền kết nối hoặc nói trong voice channel này!', client.config)]
-                });
+                throw new VoiceChannelPermissionError(voiceChannel.name);
             }
             
             // Get or create queue
@@ -49,18 +67,14 @@ export default {
             
             // Check if bot is in different voice channel
             if (queue.voiceChannelId && queue.voiceChannelId !== voiceChannel.id) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Bot đang phát nhạc ở voice channel khác!', client.config)]
-                });
+                throw new DifferentVoiceChannelError();
             }
             
             // Search for tracks
             const result = await client.musicManager.search(query, interaction.user);
             
             if (!result || !result.tracks || result.tracks.length === 0) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Không tìm thấy kết quả nào!', client.config)]
-                });
+                throw new NoSearchResultsError(query);
             }
             
             // If query isn't a URL and result is a search with many tracks, let user pick top 5
@@ -87,6 +101,11 @@ export default {
 
             // Handle different result types
             if (result.loadType === 'playlist') {
+                // Add requester to all tracks
+                result.tracks.forEach(track => {
+                    track.requester = interaction.user.id;
+                });
+                
                 // Add all tracks from playlist
                 queue.add(result.tracks);
                 
@@ -110,6 +129,7 @@ export default {
             } else {
                 // Add single track (first search result)
                 const track = result.tracks[0];
+                track.requester = interaction.user.id;
                 queue.add(track);
                 
                 // Track metrics
@@ -147,13 +167,24 @@ export default {
             logger.command('play', interaction.user.id, interaction.guildId);
             
         } catch (error) {
-            logger.error('Play command error', error);
-            
-            if (interaction.deferred) {
-                await interaction.editReply({
-                    embeds: [createErrorEmbed('Đã xảy ra lỗi khi phát nhạc!', client.config)]
-                });
+            // Handle circuit breaker errors with specific message
+            if (error instanceof CircuitBreakerError) {
+                const degradedMessage = getDegradedModeMessage('tìm kiếm nhạc');
+                degradedMessage.description = 'Hệ thống tìm kiếm nhạc đang quá tải hoặc không khả dụng.\n\n' +
+                    'Chúng tôi đang tự động khắc phục. Vui lòng thử lại sau 1-2 phút.';
+                
+                const embed = new EmbedBuilder()
+                    .setColor(degradedMessage.color)
+                    .setTitle(degradedMessage.title)
+                    .setDescription(degradedMessage.description)
+                    .addFields(degradedMessage.fields)
+                    .setTimestamp(degradedMessage.timestamp);
+                
+                return await interaction.editReply({ embeds: [embed] });
             }
+            
+            logger.error('Play command error', error);
+            await sendErrorResponse(interaction, error, client.config);
         }
     }
 };

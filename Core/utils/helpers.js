@@ -60,25 +60,26 @@ export function formatNumber(num) {
 
 /**
  * Get progress bar with animated style
+ * Enhanced with better visual representation and smooth animations
  */
-export function getProgressBar(current, total, length = 20) {
+export function getProgressBar(current, total, length = 30) {
     if (total === 0 || isNaN(total)) return '▬'.repeat(length);
     
     const progress = Math.min(Math.max(current / total, 0), 1);
     const filled = Math.round(length * progress);
     const empty = length - filled;
     
-    // Use different characters for better visual
-    const filledChar = '━';
-    const emptyChar = '─';
-    const pointer = '🔘';
+    // Use better characters for enhanced visual experience
+    const filledChar = '━';  // Thick horizontal line
+    const emptyChar = '─';   // Thin horizontal line
+    const pointer = '🔘';    // Position indicator
     
     if (filled === 0) {
-        return pointer + emptyChar.repeat(length);
+        return pointer + emptyChar.repeat(Math.max(0, length));
     } else if (filled >= length) {
         return filledChar.repeat(length) + pointer;
     } else {
-        return filledChar.repeat(filled) + pointer + emptyChar.repeat(empty);
+        return filledChar.repeat(Math.max(0, filled)) + pointer + emptyChar.repeat(Math.max(0, empty));
     }
 }
 

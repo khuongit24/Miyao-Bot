@@ -1,10 +1,13 @@
 /**
  * Metrics API Server
  * Provides real-time bot metrics for launcher dashboard
+ * Enhanced with security features: rate limiting, helmet, request logging
  */
 
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { metricsTracker } from '../utils/metrics.js';
 import { VERSION } from '../utils/version.js';
 import logger from '../utils/logger.js';
@@ -13,32 +16,140 @@ const app = express();
 const PORT = process.env.METRICS_PORT || 3000;
 const API_KEY = process.env.METRICS_API_KEY || 'miyao-metrics-dev-key';
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// Security middleware
+app.use(helmet());
+app.use(cors({
+    origin: process.env.CORS_ORIGIN || '*',
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type', 'x-api-key']
+}));
+app.use(express.json({ limit: '1mb' }));
 
-// API Key authentication middleware
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per windowMs
+    message: {
+        error: 'Too many requests',
+        message: 'Rate limit exceeded. Please try again later.'
+    },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+const strictLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: 10, // Limit each IP to 10 requests per minute
+    message: {
+        error: 'Too many requests',
+        message: 'Rate limit exceeded. Please slow down.'
+    }
+});
+
+// Apply rate limiting to all routes
+app.use('/api/', limiter);
+
+// Request logging middleware
+app.use((req, res, next) => {
+    const start = Date.now();
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        logger.info('API Request', {
+            method: req.method,
+            path: req.path,
+            ip: req.ip,
+            statusCode: res.statusCode,
+            duration: `${duration}ms`,
+            userAgent: req.get('user-agent')
+        });
+    });
+    next();
+});
+
+// API Key authentication middleware with audit logging
 const authenticate = (req, res, next) => {
     const apiKey = req.headers['x-api-key'] || req.query.apiKey;
     
+    if (!apiKey) {
+        logger.warn('API request without key', { ip: req.ip, path: req.path });
+        return res.status(401).json({
+            error: 'Unauthorized',
+            message: 'API key required'
+        });
+    }
+    
     if (apiKey !== API_KEY) {
+        logger.warn('API request with invalid key', { ip: req.ip, path: req.path });
         return res.status(401).json({
             error: 'Unauthorized',
             message: 'Invalid API key'
         });
     }
     
+    // Log successful authentication
+    logger.debug('API authenticated', { ip: req.ip, path: req.path });
     next();
 };
 
 // Health check endpoint (no auth required)
-app.get('/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        timestamp: new Date().toISOString(),
-        version: VERSION.full,
-        uptime: process.uptime()
-    });
+app.get('/health', async (req, res) => {
+    try {
+        const client = app.locals.client;
+        let healthStatus = 'ok';
+        let checks = {};
+        
+        // Get detailed health if health check manager is available
+        if (client && client.healthCheck) {
+            const health = await client.healthCheck.getOverallHealth();
+            healthStatus = health.status;
+            checks = health.checks;
+        }
+        
+        res.json({
+            status: healthStatus,
+            timestamp: new Date().toISOString(),
+            version: VERSION.full,
+            uptime: process.uptime(),
+            checks: checks
+        });
+    } catch (error) {
+        res.status(503).json({
+            status: 'error',
+            timestamp: new Date().toISOString(),
+            error: error.message
+        });
+    }
+});
+
+// Detailed health check endpoint (requires auth)
+app.get('/api/health', authenticate, async (req, res) => {
+    try {
+        const client = app.locals.client;
+        
+        if (!client || !client.healthCheck) {
+            return res.status(503).json({
+                success: false,
+                error: 'Health check not available',
+                message: 'Health check manager not initialized'
+            });
+        }
+        
+        const health = await client.healthCheck.getOverallHealth();
+        
+        res.json({
+            success: true,
+            timestamp: new Date().toISOString(),
+            overall: health.status,
+            checks: health.checks
+        });
+    } catch (error) {
+        logger.error('Error fetching health status:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Internal server error',
+            message: error.message
+        });
+    }
 });
 
 // Get all metrics (requires auth)

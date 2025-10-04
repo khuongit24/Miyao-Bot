@@ -7,7 +7,7 @@ const categories = {
         emoji: '🏠',
         title: 'Trang chủ',
         description: 'Chào mừng bạn đến với Miyao Music Bot!\n\n' +
-                    '**Miyao** là bot phát nhạc chất lượng cao với nhiều tính năng hiện đại:\n' +
+                    '**Miyao** là bot phát nhạc độc quyền cho server lười với các tính năng:\n' +
                     '• 🎵 Phát nhạc từ nhiều nguồn (YouTube, Spotify, SoundCloud...)\n' +
                     '• 🎚️ Bộ lọc âm thanh chuyên nghiệp (8 options)\n' +
                     '• 📊 Giám sát hiệu suất real-time\n' +
@@ -160,7 +160,7 @@ export default {
                         .setLabel('GitHub')
                         .setEmoji('💻')
                         .setStyle(ButtonStyle.Link)
-                        .setURL('https://github.com/khuongit24')
+                        .setURL('https://github.com/khuongit24/Miyao-Bot')
                 );
             
             // Create initial embed (home)

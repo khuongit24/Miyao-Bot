@@ -63,6 +63,8 @@ export async function handleMusicButton(interaction, client) {
                     components: []
                 });
             }
+            // Add requester to track
+            track.requester = interaction.user.id;
             queue.add(track);
             const position = queue.current ? queue.tracks.length : 1;
             
@@ -681,7 +683,7 @@ export async function handleHistoryReplaySelect(interaction, client) {
         // Add track to queue with new requester
         const replayTrack = {
             ...track,
-            requester: interaction.user
+            requester: interaction.user.id
         };
         
         queue.add(replayTrack);
@@ -773,6 +775,9 @@ export async function handleSearchSelect(interaction, client) {
                 components: []
             });
         }
+        
+        // Add requester to track
+        track.requester = interaction.user.id;
         
         // Add track to queue
         queue.add(track);

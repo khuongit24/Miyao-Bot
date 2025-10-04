@@ -10,6 +10,9 @@
 import { Shoukaku, Connectors } from 'shoukaku';
 import logger from '../utils/logger.js';
 import { EventEmitter } from 'events';
+import { TIME, CACHE, QUEUE, PLAYBACK, LAVALINK } from '../utils/constants.js';
+import CircuitBreaker, { CircuitBreakerError } from '../utils/CircuitBreaker.js';
+import { retryWithBackoff, withFallback } from '../utils/resilience.js';
 
 /**
  * Node Health Monitor - Track node performance and availability
@@ -21,7 +24,7 @@ class NodeHealthMonitor extends EventEmitter {
         this.healthCheckInterval = null;
     }
 
-    start(shoukaku, intervalMs = 30000) {
+    start(shoukaku, intervalMs = LAVALINK.HEALTH_CHECK_INTERVAL) {
         this.healthCheckInterval = setInterval(() => {
             for (const [name, node] of shoukaku.nodes) {
                 // Shoukaku v4 state: 0=DISCONNECTED, 1=CONNECTING, 2=CONNECTED, 3=RECONNECTING
@@ -83,7 +86,7 @@ class NodeHealthMonitor extends EventEmitter {
  * Search Cache with TTL and LRU eviction
  */
 class SearchCache {
-    constructor(maxSize = 100, ttlMs = 300000) { // 5 minutes TTL
+    constructor(maxSize = CACHE.MAX_SIZE, ttlMs = TIME.SEARCH_CACHE_TTL) {
         this.cache = new Map();
         this.maxSize = maxSize;
         this.ttlMs = ttlMs;
@@ -125,57 +128,8 @@ class SearchCache {
 }
 
 /**
- * Circuit Breaker for error handling
- */
-class CircuitBreaker {
-    constructor(threshold = 5, timeout = 60000) {
-        this.failureCount = 0;
-        this.threshold = threshold;
-        this.timeout = timeout;
-        this.state = 'CLOSED'; // CLOSED, OPEN, HALF_OPEN
-        this.nextAttempt = Date.now();
-    }
-
-    async execute(fn) {
-        if (this.state === 'OPEN') {
-            if (Date.now() < this.nextAttempt) {
-                throw new Error('Circuit breaker is OPEN');
-            }
-            this.state = 'HALF_OPEN';
-        }
-
-        try {
-            const result = await fn();
-            this.onSuccess();
-            return result;
-        } catch (error) {
-            this.onFailure();
-            throw error;
-        }
-    }
-
-    onSuccess() {
-        this.failureCount = 0;
-        this.state = 'CLOSED';
-    }
-
-    onFailure() {
-        this.failureCount++;
-        if (this.failureCount >= this.threshold) {
-            this.state = 'OPEN';
-            this.nextAttempt = Date.now() + this.timeout;
-            logger.warn(`Circuit breaker opened after ${this.failureCount} failures`);
-        }
-    }
-
-    reset() {
-        this.failureCount = 0;
-        this.state = 'CLOSED';
-    }
-}
-
-/**
  * Enhanced Music Manager with advanced features
+ * Now using the comprehensive CircuitBreaker from Core/utils/CircuitBreaker.js
  */
 export class MusicManager extends EventEmitter {
     constructor(client, config) {
@@ -187,7 +141,21 @@ export class MusicManager extends EventEmitter {
         // Performance enhancements
         this.searchCache = new SearchCache(100, 300000);
         this.nodeMonitor = new NodeHealthMonitor();
-        this.circuitBreaker = new CircuitBreaker(5, 60000);
+        
+        // Circuit breaker for Lavalink calls (prevent cascading failures)
+        this.circuitBreaker = new CircuitBreaker({
+            name: 'Lavalink',
+            failureThreshold: 5,
+            successThreshold: 2,
+            timeout: 60000, // 60s before retry
+            resetTimeout: 30000,
+            onStateChange: (oldState, newState, stats) => {
+                this.emit('circuitBreakerStateChange', { oldState, newState, stats });
+            }
+        });
+        
+        // In-flight request deduplication (prevents duplicate concurrent searches)
+        this.pendingSearches = new Map();
         
         // Metrics
         this.metrics = {
@@ -195,7 +163,8 @@ export class MusicManager extends EventEmitter {
             cacheHits: 0,
             cacheMisses: 0,
             totalTracks: 0,
-            errors: 0
+            errors: 0,
+            dedupHits: 0 // Track how many duplicate requests were prevented
         };
         
         // Initialize Shoukaku with enhanced options
@@ -316,7 +285,7 @@ export class MusicManager extends EventEmitter {
                 logger.warn('High memory usage detected, performing cleanup...');
                 this.performCleanup();
             }
-        }, 60000); // Check every minute
+        }, TIME.CACHE_CLEANUP_INTERVAL);
     }
     
     /**
@@ -375,7 +344,7 @@ export class MusicManager extends EventEmitter {
     }
     
     /**
-     * Enhanced search with caching and retry
+     * Enhanced search with caching, deduplication, and retry
      */
     async search(query, requester, options = {}) {
         this.metrics.totalSearches++;
@@ -394,6 +363,42 @@ export class MusicManager extends EventEmitter {
         
         this.metrics.cacheMisses++;
         
+        // Check if same query is already in-flight (deduplication)
+        if (this.pendingSearches.has(cacheKey)) {
+            this.metrics.dedupHits++;
+            logger.debug(`Dedup hit: Waiting for existing search: ${query}`);
+            
+            try {
+                // Wait for existing search to complete
+                const result = await this.pendingSearches.get(cacheKey);
+                return {
+                    ...result,
+                    tracks: result.tracks.map(t => ({ ...t, requester }))
+                };
+            } catch (error) {
+                // If pending search failed, fall through to create new search
+                logger.warn('Pending search failed, retrying', { query, error: error.message });
+            }
+        }
+        
+        // Create a new search promise and store it for deduplication
+        const searchPromise = this.executeSearch(query, requester, options, cacheKey);
+        this.pendingSearches.set(cacheKey, searchPromise);
+        
+        try {
+            const result = await searchPromise;
+            return result;
+        } finally {
+            // Clean up pending search after completion (whether success or failure)
+            this.pendingSearches.delete(cacheKey);
+        }
+    }
+    
+    /**
+     * Execute actual search with circuit breaker
+     * @private
+     */
+    async executeSearch(query, requester, options, cacheKey) {
         // Use circuit breaker for resilience
         try {
             const result = await this.circuitBreaker.execute(async () => {
@@ -420,7 +425,7 @@ export class MusicManager extends EventEmitter {
                 const result = await Promise.race([
                     node.rest.resolve(searchQuery),
                     new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('Search timeout')), 10000)
+                        setTimeout(() => reject(new Error('Search timeout')), 10 * TIME.SECOND)
                     )
                 ]);
                 
@@ -466,6 +471,99 @@ export class MusicManager extends EventEmitter {
     }
     
     /**
+     * Warm cache with popular tracks
+     * Call this on startup or periodically to preload frequently played tracks
+     * @param {number} topN - Number of top tracks to preload (default: 50)
+     * @returns {Object} Warming results
+     */
+    async warmCache(topN = 50) {
+        try {
+            logger.info(`Starting cache warming for top ${topN} tracks...`);
+            
+            // Dynamically import History model to avoid circular dependency
+            const { default: History } = await import('../database/models/History.js');
+            
+            // Get top tracks across all guilds (by play count)
+            const popularTracks = await this.getPopularTracksForWarming(topN);
+            
+            if (popularTracks.length === 0) {
+                logger.info('No tracks in history to warm cache');
+                return { warmed: 0, failed: 0, skipped: 0 };
+            }
+            
+            let warmed = 0;
+            let failed = 0;
+            let skipped = 0;
+            
+            // Warm cache in small batches to avoid overloading
+            const BATCH_SIZE = 5;
+            for (let i = 0; i < popularTracks.length; i += BATCH_SIZE) {
+                const batch = popularTracks.slice(i, i + BATCH_SIZE);
+                
+                await Promise.allSettled(
+                    batch.map(async track => {
+                        try {
+                            // Check if already cached
+                            const cacheKey = `${track.track_url}:youtube`;
+                            if (this.searchCache.get(cacheKey)) {
+                                skipped++;
+                                return;
+                            }
+                            
+                            // Search to populate cache (no requester needed for warming)
+                            await this.search(track.track_url, null, { bypassCache: false });
+                            warmed++;
+                            logger.debug(`Cached: ${track.track_title}`);
+                        } catch (error) {
+                            failed++;
+                            logger.debug(`Failed to cache: ${track.track_title}`, { error: error.message });
+                        }
+                    })
+                );
+                
+                // Small delay between batches to be gentle on Lavalink
+                if (i + BATCH_SIZE < popularTracks.length) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+            }
+            
+            const result = { warmed, failed, skipped, total: popularTracks.length };
+            logger.info(`Cache warming completed:`, result);
+            
+            return result;
+        } catch (error) {
+            logger.error('Cache warming failed', error);
+            return { warmed: 0, failed: 0, skipped: 0, error: error.message };
+        }
+    }
+    
+    /**
+     * Get popular tracks for cache warming
+     * @private
+     */
+    async getPopularTracksForWarming(limit = 50) {
+        try {
+            const { getDatabaseManager } = await import('../database/DatabaseManager.js');
+            const db = getDatabaseManager();
+            
+            // Get most played tracks across all guilds in the last 30 days
+            return db.query(
+                `SELECT track_title, track_author, track_url, COUNT(*) as play_count
+                 FROM history
+                 WHERE played_at > datetime('now', '-30 days')
+                 AND track_url IS NOT NULL
+                 GROUP BY track_url
+                 ORDER BY play_count DESC
+                 LIMIT ?`,
+                [limit]
+            );
+        } catch (error) {
+            logger.error('Failed to get popular tracks for warming', error);
+            return [];
+        }
+    }
+    
+    /**
      * Get performance metrics
      */
     getMetrics() {
@@ -473,11 +571,17 @@ export class MusicManager extends EventEmitter {
             ? (this.metrics.cacheHits / this.metrics.totalSearches * 100).toFixed(2) 
             : 0;
         
+        const dedupRate = this.metrics.totalSearches > 0
+            ? (this.metrics.dedupHits / this.metrics.totalSearches * 100).toFixed(2)
+            : 0;
+        
         return {
             ...this.metrics,
             cacheHitRate: `${cacheHitRate}%`,
+            dedupRate: `${dedupRate}%`,
             activeQueues: this.queues.size,
             cacheSize: this.searchCache.size(),
+            pendingSearches: this.pendingSearches.size,
             nodeStats: Array.from(this.nodeMonitor.nodeStats.values()),
             circuitBreakerState: this.circuitBreaker.state,
             uptime: process.uptime()
@@ -637,7 +741,7 @@ export class EnhancedQueue {
     setupPlayerEvents() {
         if (!this.player) return;
         
-        this.player.on('start', (data) => {
+        this.player.on('start', async (data) => {
             logger.music('Track started', { 
                 guildId: this.guildId,
                 track: data.track?.info?.title 
@@ -645,7 +749,7 @@ export class EnhancedQueue {
             this.clearLeaveTimeout();
             this.stats.tracksPlayed++;
             
-            // Add to history
+            // Add to in-memory history
             if (this.current) {
                 this.history.unshift({
                     track: this.current,
@@ -654,6 +758,15 @@ export class EnhancedQueue {
                 if (this.history.length > this.maxHistory) {
                     this.history.pop();
                 }
+                
+                // Add to database history (non-blocking)
+                this._saveToDatabase(this.current).catch(error => {
+                    logger.error('Failed to save track to database history', { 
+                        guildId: this.guildId,
+                        track: this.current?.info?.title,
+                        error 
+                    });
+                });
             }
             
             if (this.nowPlayingMessage) {
@@ -973,7 +1086,7 @@ export class EnhancedQueue {
     
     scheduleLeave() {
         this.clearLeaveTimeout();
-        const delay = this.manager.config.music.leaveOnEndDelay || 60000;
+        const delay = this.manager.config.music.leaveOnEndDelay || PLAYBACK.AUTO_LEAVE_DELAY;
         if (this.manager.config.music.leaveOnEnd) {
             this.leaveTimeout = setTimeout(() => {
                 this.destroy();
@@ -996,7 +1109,7 @@ export class EnhancedQueue {
             } catch (error) {
                 logger.error('Failed to update now playing message', error);
             }
-        }, 10000);
+        }, TIME.PROGRESS_UPDATE_INTERVAL);
     }
     
     stopProgressUpdates() {
@@ -1060,6 +1173,36 @@ export class EnhancedQueue {
         this.nowPlayingMessage = null;
         
         this.manager.queues.delete(this.guildId);
+    }
+    
+    /**
+     * Save track to database history (non-blocking)
+     * @private
+     */
+    async _saveToDatabase(track) {
+        try {
+            // Dynamically import to avoid circular dependencies
+            const { default: History } = await import('../database/models/History.js');
+            
+            // Get requester from track metadata
+            const userId = track.requester || track.requesterId || 'unknown';
+            
+            // Save to database
+            History.add(this.guildId, userId, track);
+            
+            logger.debug('Track saved to database history', { 
+                guildId: this.guildId, 
+                track: track.info?.title,
+                userId 
+            });
+        } catch (error) {
+            // Don't throw - this is a non-critical operation
+            logger.warn('Failed to save track to database history', { 
+                guildId: this.guildId,
+                track: track?.info?.title,
+                error: error.message 
+            });
+        }
     }
     
     /**

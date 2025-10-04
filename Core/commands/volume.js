@@ -1,5 +1,7 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { createSuccessEmbed, createErrorEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { NothingPlayingError, DifferentVoiceChannelError } from '../utils/errors.js';
 import logger from '../utils/logger.js';
 
 export default {
@@ -20,19 +22,13 @@ export default {
             
             // Check if there's a queue
             if (!queue) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Không có nhạc nào đang phát!', client.config)],
-                    ephemeral: true
-                });
+                throw new NothingPlayingError();
             }
             
             // Check if user is in the same voice channel
             const member = interaction.member;
             if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Bạn phải ở trong cùng voice channel với bot!', client.config)],
-                    ephemeral: true
-                });
+                throw new DifferentVoiceChannelError();
             }
             
             const volume = interaction.options.getInteger('level');
@@ -48,10 +44,7 @@ export default {
             
         } catch (error) {
             logger.error('Volume command error', error);
-            await interaction.reply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi điều chỉnh âm lượng!', client.config)],
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };
