@@ -9,6 +9,9 @@ import { VERSION } from './Core/utils/version.js';
 import metricsTracker from './Core/utils/metrics.js';
 import MusicManager from './Core/music/MusicManagerEnhanced.js';
 import { startMetricsServer } from './Core/api/metrics-server.js';
+import { getDatabaseManager } from './Core/database/DatabaseManager.js';
+import { TIME } from './Core/utils/constants.js';
+import { createHealthCheckManager } from './Core/utils/health-check.js';
 
 // Load environment variables
 dotenvConfig();
@@ -48,7 +51,7 @@ setInterval(() => {
     const now = Date.now();
     let cleanedCount = 0;
     for (const [key, value] of client._lastSearchResults.entries()) {
-        if (!value?.createdAt || now - value.createdAt > 5 * 60 * 1000) {
+        if (!value?.createdAt || now - value.createdAt > TIME.SEARCH_CACHE_TTL) {
             client._lastSearchResults.delete(key);
             cleanedCount++;
         }
@@ -56,7 +59,7 @@ setInterval(() => {
     if (cleanedCount > 0) {
         logger.debug(`Cleaned ${cleanedCount} expired search cache entries`);
     }
-}, 60 * 1000);
+}, TIME.CACHE_CLEANUP_INTERVAL);
 
 /**
  * Load commands
@@ -114,6 +117,30 @@ async function loadEvents() {
 }
 
 /**
+ * Initialize Database
+ */
+async function initializeDatabase() {
+    try {
+        logger.info('Initializing database...');
+        const db = getDatabaseManager();
+        await db.initialize();
+        client.database = db;
+        logger.info('Database initialized successfully');
+        
+        // Schedule periodic cleanup
+        setInterval(() => {
+            db.cleanupCache();
+            db.cleanupHistory();
+        }, TIME.DAY);
+        
+        return true;
+    } catch (error) {
+        logger.error('Failed to initialize database', error);
+        throw error;
+    }
+}
+
+/**
  * Initialize Music Manager
  */
 function initializeMusicManager() {
@@ -155,6 +182,18 @@ process.on('SIGINT', async () => {
             logger.info(`Cleared ${historyCacheSize} history cache entries`);
         }
         
+        // Stop health check manager
+        if (client.healthCheck) {
+            client.healthCheck.stop();
+            logger.info('Health check manager stopped');
+        }
+        
+        // Close database connection
+        if (client.database) {
+            client.database.close();
+            logger.info('Database connection closed');
+        }
+        
         // Use enhanced shutdown method if available
         if (client.musicManager) {
             if (typeof client.musicManager.shutdown === 'function') {
@@ -188,6 +227,9 @@ async function start() {
         logger.info(`Node.js version: ${process.version}`);
         logger.info(`Environment: ${process.env.NODE_ENV || 'development'}`);
         
+        // Initialize Database first
+        await initializeDatabase();
+        
         // Load commands and events
         await loadCommands();
         await loadEvents();
@@ -199,13 +241,31 @@ async function start() {
         logger.info('Logging in to Discord...');
         await client.login(process.env.DISCORD_TOKEN);
         
+        // Warm cache after successful login (background task, don't await)
+        // This preloads popular tracks to improve first-play experience
+        setTimeout(async () => {
+            try {
+                logger.info('Starting background cache warming...');
+                const result = await client.musicManager.warmCache(50);
+                logger.info('Cache warming completed', result);
+            } catch (error) {
+                logger.warn('Cache warming failed (non-critical)', { error: error.message });
+            }
+        }, 10000); // Wait 10 seconds after login to ensure bot is fully ready
+        
         // Start metrics API server
         startMetricsServer(client);
+        
+        // Initialize health check manager
+        logger.info('Starting health check manager...');
+        client.healthCheck = createHealthCheckManager(client);
+        client.healthCheck.start();
+        logger.info('Health check manager started');
         
         // Log metrics summary every hour
         setInterval(() => {
             metricsTracker.logSummary();
-        }, 3600000); // 1 hour
+        }, TIME.METRICS_LOG_INTERVAL);
         
     } catch (error) {
         logger.error('Failed to start bot', error);

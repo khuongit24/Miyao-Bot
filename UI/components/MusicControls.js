@@ -88,36 +88,46 @@ export function createMusicButtons(queue, disabled = false) {
  * @returns {ActionRowBuilder[]} Array of action rows with buttons
  */
 export function createNowPlayingButtons(queue, disabled = false) {
+    // Enhanced buttons with dynamic states and better visual feedback
     // Row 1: Main playback controls
+    const isPaused = queue?.paused;
+    const hasQueue = queue && queue.tracks && queue.tracks.length > 0;
+    const loopMode = queue?.loop || 'off';
+    
     const row1 = new ActionRowBuilder()
         .addComponents(
             new ButtonBuilder()
-                .setCustomId(queue?.paused ? 'music_resume' : 'music_pause')
-                .setEmoji(queue?.paused ? '▶️' : '⏸️')
-                .setStyle(ButtonStyle.Primary)
+                .setCustomId(isPaused ? 'music_resume' : 'music_pause')
+                .setEmoji(isPaused ? '▶️' : '⏸️')
+                .setLabel(isPaused ? 'Resume' : 'Pause')
+                .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary)
                 .setDisabled(disabled || !queue?.current),
             
             new ButtonBuilder()
                 .setCustomId('music_skip')
                 .setEmoji('⏭️')
+                .setLabel('Skip')
                 .setStyle(ButtonStyle.Primary)
                 .setDisabled(disabled || !queue?.current),
             
             new ButtonBuilder()
                 .setCustomId('music_stop')
                 .setEmoji('⏹️')
+                .setLabel('Stop')
                 .setStyle(ButtonStyle.Danger)
                 .setDisabled(disabled || !queue?.current),
             
             new ButtonBuilder()
                 .setCustomId('music_loop')
-                .setEmoji(getLoopEmoji(queue?.loop || 'off'))
-                .setStyle(ButtonStyle.Secondary)
+                .setEmoji(getLoopEmoji(loopMode))
+                .setLabel(getLoopLabel(loopMode))
+                .setStyle(loopMode !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue),
             
             new ButtonBuilder()
                 .setCustomId('music_shuffle')
                 .setEmoji('🔀')
+                .setLabel('Shuffle')
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue || queue?.tracks?.length < 2)
         );

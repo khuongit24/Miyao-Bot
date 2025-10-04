@@ -19,7 +19,7 @@ export function createNowPlayingEmbed(track, queue, config, currentPosition = nu
     // Use provided position or get from player
     const progress = currentPosition !== null ? currentPosition : (queue.player?.position || track.position || 0);
     const duration = info.length || 0;
-    const progressBar = getProgressBar(progress, duration, 24);
+    const progressBar = getProgressBar(progress, duration, 30); // Use 30-char progress bar for better visualization
     
     // Calculate percentage
     const percentage = duration > 0 ? Math.min(Math.round((progress / duration) * 100), 100) : 0;
