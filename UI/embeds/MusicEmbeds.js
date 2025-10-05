@@ -1,5 +1,11 @@
 import { EmbedBuilder } from 'discord.js';
 import { formatDuration, getProgressBar, truncate, getPlatformIcon } from '../../Core/utils/helpers.js';
+import { 
+    optimizeEmbedForMobile, 
+    splitEmbedDescription, 
+    formatDurationMobile,
+    exceedsMobileLimits 
+} from '../../Core/utils/mobile-optimization.js';
 
 /**
  * Create now playing embed with dynamic progress
@@ -193,8 +199,8 @@ export function createQueueEmbed(queue, config, page = 1) {
                     }
                 ]);
             } else if (trackList && trackList.length > 1024) {
-                // If too long, truncate and add indication
-                const truncated = trackList.substring(0, 1000) + '\n\n*... và nhiều bài khác*';
+                // Use mobile-optimized truncation for long lists
+                const truncated = trackList.substring(0, 950) + '\n\n✨ *...và ' + (queue.tracks.length - tracks.length + 1) + ' bài khác*';
                 embed.addFields([
                     {
                         name: `📝 Tiếp theo (${queue.tracks.length} bài)`,
@@ -366,6 +372,52 @@ export function createInfoEmbed(title, message, config) {
 }
 
 /**
+ * Create search confirmation embed for first track result
+ */
+export function createSearchConfirmEmbed(track, config) {
+    // Validate track and info
+    if (!track || !track.info) {
+        return new EmbedBuilder()
+            .setColor('#FF0000')
+            .setTitle('❌ Lỗi')
+            .setDescription('Không thể hiển thị thông tin bài hát')
+            .setTimestamp();
+    }
+    
+    const info = track.info;
+    
+    // Safe access with fallbacks
+    const icon = getPlatformIcon(info.sourceName || 'unknown');
+    const title = info.title || 'Unknown Track';
+    const uri = info.uri || '#';
+    const author = info.author || 'Unknown Artist';
+    const isStream = info.isStream || false;
+    const length = info.length || 0;
+    
+    // Create compact description for mobile
+    const description = 
+        `${icon} **[${title}](${uri})**\n\n` +
+        `👤 **Tác giả:** ${author}\n` +
+        `⏱️ **Thời lượng:** ${isStream ? '🔴 LIVE' : formatDurationMobile(length)}\n\n` +
+        `✅ Đúng? Nhấn "Phát ngay"\n` +
+        `🔍 Không? Nhấn "Chi tiết"`;
+    
+    const embed = new EmbedBuilder()
+        .setColor(config.bot.color)
+        .setTitle('🎵 Bài hát này đúng không?')
+        .setDescription(description);
+    
+    if (info.artworkUrl) {
+        embed.setThumbnail(info.artworkUrl);
+    }
+    
+    embed.setFooter({ text: config.bot.footer })
+        .setTimestamp();
+    
+    return embed;
+}
+
+/**
  * Create history replay embed
  */
 export function createHistoryReplayEmbed(history, config) {
@@ -465,5 +517,6 @@ export default {
     createErrorEmbed,
     createSuccessEmbed,
     createInfoEmbed,
+    createSearchConfirmEmbed,
     createHistoryReplayEmbed
 };

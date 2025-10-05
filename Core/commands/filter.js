@@ -18,7 +18,8 @@ export default {
                     { name: '🌙 Nightcore', value: 'nightcore' },
                     { name: '🌊 Vaporwave', value: 'vaporwave' },
                     { name: '🔊 8D Audio', value: '8d' },
-                    { name: '❌ Clear All', value: 'clear' }
+                    { name: '📋 Xem filters đang dùng', value: 'status' },
+                    { name: '❌ Xóa tất cả filters', value: 'clear' }
                 )
         ),
     
@@ -52,58 +53,120 @@ export default {
             }
             
             let filterName = '';
+            let success = false;
             
+            // Handle status check
+            if (filterType === 'status') {
+                const activeFilters = queue.getActiveFilters();
+                
+                if (activeFilters.length === 0) {
+                    return interaction.editReply({
+                        embeds: [createInfoEmbed(
+                            '📋 Trạng thái Filters',
+                            '✨ Không có filter nào đang hoạt động.\n🎵 Âm thanh đang ở trạng thái mặc định.',
+                            client.config
+                        )]
+                    });
+                }
+                
+                const filterEmojis = {
+                    equalizer: '🎚️',
+                    timescale: '⏱️',
+                    rotation: '🔊',
+                    karaoke: '🎤',
+                    tremolo: '〰️',
+                    vibrato: '📳',
+                    distortion: '⚡',
+                    channelMix: '🔀',
+                    lowPass: '🔉'
+                };
+                
+                const filterList = activeFilters.map(f => 
+                    `${filterEmojis[f] || '🎵'} \`${f}\``
+                ).join('\n');
+                
+                return interaction.editReply({
+                    embeds: [createInfoEmbed(
+                        '📋 Filters đang hoạt động',
+                        `**${activeFilters.length}** filter(s) đang được áp dụng:\n\n${filterList}\n\n💡 Dùng \`/filter clear\` để xóa tất cả.`,
+                        client.config
+                    )]
+                });
+            }
+            
+            // Handle filter application
             switch (filterType) {
                 case 'bass':
-                    await queue.setEqualizer('bass');
+                    success = await queue.setEqualizer('bass');
                     filterName = '🎸 Bass Boost';
                     break;
                 case 'pop':
-                    await queue.setEqualizer('pop');
+                    success = await queue.setEqualizer('pop');
                     filterName = '🎵 Pop';
                     break;
                 case 'jazz':
-                    await queue.setEqualizer('jazz');
+                    success = await queue.setEqualizer('jazz');
                     filterName = '🎹 Jazz';
                     break;
                 case 'rock':
-                    await queue.setEqualizer('rock');
+                    success = await queue.setEqualizer('rock');
                     filterName = '🎤 Rock';
                     break;
                 case 'nightcore':
-                    await queue.setNightcore(true);
+                    success = await queue.setNightcore(true);
                     filterName = '🌙 Nightcore';
                     break;
                 case 'vaporwave':
-                    await queue.setVaporwave(true);
+                    success = await queue.setVaporwave(true);
                     filterName = '🌊 Vaporwave';
                     break;
                 case '8d':
-                    await queue.set8D(true);
+                    success = await queue.set8D(true);
                     filterName = '🔊 8D Audio';
                     break;
                 case 'clear':
-                    queue.filters = {
-                        equalizer: [],
-                        karaoke: null,
-                        timescale: null,
-                        tremolo: null,
-                        vibrato: null,
-                        rotation: null,
-                        distortion: null,
-                        channelMix: null,
-                        lowPass: null
-                    };
-                    await queue.applyFilters();
-                    return interaction.editReply({
-                        embeds: [createSuccessEmbed('Đã xóa filters', 'Tất cả audio filters đã được xóa.', client.config)]
-                    });
+                    success = await queue.clearFilters();
+                    
+                    if (success) {
+                        return interaction.editReply({
+                            embeds: [createSuccessEmbed(
+                                '✅ Đã xóa tất cả filters', 
+                                'Tất cả audio filters đã được xóa hoàn toàn.\n🎵 Âm thanh đã trở về trạng thái mặc định.',
+                                client.config
+                            )]
+                        });
+                    } else {
+                        return interaction.editReply({
+                            embeds: [createErrorEmbed(
+                                'Không thể xóa filters. Vui lòng thử lại sau!', 
+                                client.config
+                            )]
+                        });
+                    }
             }
+            
+            // Check if filter was applied successfully
+            if (!success) {
+                return interaction.editReply({
+                    embeds: [createErrorEmbed(
+                        `Không thể áp dụng filter **${filterName}**. Vui lòng thử lại!`, 
+                        client.config
+                    )]
+                });
+            }
+            
+            // Get currently active filters for display
+            const activeFilters = queue.getActiveFilters();
+            const activeFiltersList = activeFilters.length > 0 
+                ? `\n\n📋 **Filters đang hoạt động**: ${activeFilters.join(', ')}`
+                : '';
             
             await interaction.editReply({
                 embeds: [createSuccessEmbed(
-                    'Đã áp dụng filter',
-                    `Filter **${filterName}** đã được áp dụng!\n⚠️ Có thể mất vài giây để có hiệu lực.`,
+                    '✅ Đã áp dụng filter',
+                    `Filter **${filterName}** đã được áp dụng thành công!` +
+                    `\n⚠️ Có thể mất vài giây để có hiệu lực.` +
+                    activeFiltersList,
                     client.config
                 )]
             });

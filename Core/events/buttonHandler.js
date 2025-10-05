@@ -36,6 +36,85 @@ export async function handleMusicButton(interaction, client) {
             await interaction.update({ content: '❌ Đã hủy lựa chọn.', embeds: [], components: [] });
             return;
         }
+        
+        // Handle confirm play button - Play the first track immediately
+        if (customId === 'search_confirm_play') {
+            const key = `${interaction.user.id}:${interaction.guildId}`;
+            const userCache = client._lastSearchResults?.get(key);
+            if (!userCache || !Array.isArray(userCache.tracks) || userCache.tracks.length === 0) {
+                return interaction.update({
+                    embeds: [createErrorEmbed('Phiên tìm kiếm đã hết hạn, hãy dùng lại /play.', client.config)],
+                    components: []
+                });
+            }
+            const track = userCache.tracks[0]; // Always get the first track
+            
+            // Ensure queue exists and same voice
+            if (!queue) {
+                queue = await client.musicManager.createQueue(interaction.guildId, voiceChannel.id, interaction.channel);
+            }
+            if (queue.voiceChannelId !== voiceChannel.id) {
+                return interaction.update({
+                    embeds: [createErrorEmbed('Bot đang ở voice channel khác!', client.config)],
+                    components: []
+                });
+            }
+            // Add requester to track
+            track.requester = interaction.user.id;
+            queue.add(track);
+            const position = queue.current ? queue.tracks.length : 1;
+            
+            // Clean up cache immediately after use
+            client._lastSearchResults.delete(key);
+            
+            await interaction.update({
+                embeds: [createTrackAddedEmbed(track, position, client.config)],
+                components: []
+            });
+            if (!queue.current) {
+                await queue.play();
+                try {
+                    const nowPlayingMessage = await interaction.channel.send({
+                        embeds: [createNowPlayingEmbed(queue.current, queue, client.config)],
+                        components: createNowPlayingButtons(queue, false)
+                    });
+                    queue.setNowPlayingMessage(nowPlayingMessage);
+                } catch (err) {
+                    logger.error('Failed to send now playing message after confirm play', err);
+                }
+            }
+            logger.command('play-confirmed', interaction.user.id, interaction.guildId);
+            return;
+        }
+        
+        // Handle detailed search button - Show dropdown with 5 tracks
+        if (customId === 'search_show_detailed') {
+            const key = `${interaction.user.id}:${interaction.guildId}`;
+            const userCache = client._lastSearchResults?.get(key);
+            if (!userCache || !Array.isArray(userCache.tracks)) {
+                return interaction.update({
+                    embeds: [createErrorEmbed('Phiên tìm kiếm đã hết hạn, hãy dùng lại /play.', client.config)],
+                    components: []
+                });
+            }
+            const choices = userCache.tracks;
+            const description = choices.map((t, i) => {
+                const title = t.info.title.length > 60 ? t.info.title.substring(0, 57) + '...' : t.info.title;
+                const duration = t.info.isStream ? '🔴 LIVE' : `${Math.round(t.info.length/1000/60) || 0}p`;
+                return `**${i + 1}.** ${title} • ${duration}`;
+            }).join('\n');
+            
+            // Import createSearchResultButtons dynamically
+            const { createSearchResultButtons } = await import('../../UI/components/MusicControls.js');
+            
+            await interaction.update({
+                embeds: [createInfoEmbed('Kết quả tìm kiếm', `Chọn một kết quả bên dưới để phát:\n\n${description}`, client.config)],
+                components: createSearchResultButtons(choices)
+            });
+            logger.command('play-detailed-search', interaction.user.id, interaction.guildId);
+            return;
+        }
+        
         if (customId.startsWith('search_pick_')) {
             const idx = parseInt(customId.split('search_pick_')[1]);
             const key = `${interaction.user.id}:${interaction.guildId}`;
@@ -818,9 +897,132 @@ export async function handleSearchSelect(interaction, client) {
     }
 }
 
+/**
+ * Handle discovery select dropdown (discover, similar, trending)
+ * @param {Interaction} interaction - Discord interaction
+ * @param {Client} client - Discord client
+ * @param {string} type - Type of discovery: 'discover', 'similar', or 'trending'
+ */
+export async function handleDiscoverySelect(interaction, client, type) {
+    try {
+        // Get selected index
+        const selectedValue = interaction.values?.[0];
+        if (!selectedValue) {
+            return interaction.update({
+                embeds: [createErrorEmbed('Không thể xác định lựa chọn của bạn.', client.config)],
+                components: []
+            });
+        }
+
+        const idx = parseInt(selectedValue.split('_')[1]);
+        if (isNaN(idx) || idx < 0) {
+            return interaction.update({
+                embeds: [createErrorEmbed('Lựa chọn không hợp lệ.', client.config)],
+                components: []
+            });
+        }
+        
+        // Get cache based on type
+        const cacheMap = type === 'discover' ? client._discoveryCache :
+                         type === 'similar' ? client._similarCache :
+                         type === 'trending' ? client._trendingCache : null;
+
+        if (!cacheMap) {
+            return interaction.update({
+                embeds: [createErrorEmbed('Loại khám phá không hợp lệ.', client.config)],
+                components: []
+            });
+        }
+
+        const key = `${interaction.user.id}:${interaction.guildId}`;
+        const userCache = cacheMap.get(key);
+        
+        if (!userCache || !Array.isArray(userCache.tracks)) {
+            return interaction.update({
+                embeds: [createErrorEmbed('Phiên tìm kiếm đã hết hạn, hãy sử dụng lại lệnh.', client.config)],
+                components: []
+            });
+        }
+        
+        const track = userCache.tracks[idx];
+        if (!track) {
+            return interaction.update({
+                embeds: [createErrorEmbed('Bài hát không hợp lệ.', client.config)],
+                components: []
+            });
+        }
+        
+        // Check voice channel
+        const member = interaction.member;
+        const voiceChannel = member.voice.channel;
+        
+        if (!voiceChannel) {
+            return interaction.update({
+                embeds: [createErrorEmbed('Bạn phải ở trong voice channel!', client.config)],
+                components: []
+            });
+        }
+        
+        // Get or create queue
+        let queue = client.musicManager.getQueue(interaction.guildId);
+        
+        if (!queue) {
+            queue = await client.musicManager.createQueue(interaction.guildId, voiceChannel.id, interaction.channel);
+        }
+        
+        if (queue.voiceChannelId !== voiceChannel.id) {
+            return interaction.update({
+                embeds: [createErrorEmbed('Bot đang ở voice channel khác!', client.config)],
+                components: []
+            });
+        }
+        
+        // Add requester to track
+        track.requester = interaction.user.id;
+        
+        // Add track to queue
+        queue.add(track);
+        const position = queue.current ? queue.tracks.length : 1;
+        
+        // Clean up cache immediately
+        cacheMap.delete(key);
+        
+        // Update message
+        await interaction.update({
+            embeds: [createTrackAddedEmbed(track, position, client.config)],
+            components: []
+        });
+        
+        // Start playing if not already
+        if (!queue.current) {
+            await queue.play();
+            
+            try {
+                const nowPlayingMessage = await interaction.channel.send({
+                    embeds: [createNowPlayingEmbed(queue.current, queue, client.config)],
+                    components: createNowPlayingButtons(queue, false)
+                });
+                queue.setNowPlayingMessage(nowPlayingMessage);
+            } catch (err) {
+                logger.error('Failed to send now playing message after discovery select', err);
+            }
+        }
+        
+        logger.info(`Track selected from ${type}: ${track.info?.title}`);
+        
+    } catch (error) {
+        logger.error(`Discovery select handler error (${type})`, error);
+        await interaction.update({
+            embeds: [createErrorEmbed('Đã xảy ra lỗi khi chọn bài hát!', client.config)],
+            components: []
+        }).catch(() => {});
+    }
+}
+
 export default {
     handleMusicButton,
     handleQueueButton,
     handleSearchSelect,
-    handleHistoryReplaySelect
+    handleHistoryReplaySelect,
+    handleDiscoverySelect
 };

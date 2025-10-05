@@ -14,7 +14,10 @@ import logger from '../utils/logger.js';
 
 const app = express();
 const PORT = process.env.METRICS_PORT || 3000;
-const API_KEY = process.env.METRICS_API_KEY || 'miyao-metrics-dev-key';
+
+// API key and whitelist will be validated on server start
+let VALID_API_KEYS = [];
+let IP_WHITELIST = [];
 
 // Security middleware
 app.use(helmet());
@@ -49,6 +52,32 @@ const strictLimiter = rateLimit({
 // Apply rate limiting to all routes
 app.use('/api/', limiter);
 
+// IP Whitelist middleware
+app.use('/api/', (req, res, next) => {
+    // Skip if whitelist is empty (allow all)
+    if (IP_WHITELIST.length === 0) {
+        return next();
+    }
+    
+    const clientIp = req.ip || req.connection.remoteAddress;
+    
+    // Check if IP is whitelisted
+    const isAllowed = IP_WHITELIST.some(allowedIp => {
+        // Support CIDR notation or exact match
+        return clientIp === allowedIp || clientIp.startsWith(allowedIp);
+    });
+    
+    if (!isAllowed) {
+        logger.warn('IP blocked by whitelist', { ip: clientIp, path: req.path });
+        return res.status(403).json({
+            error: 'Forbidden',
+            message: 'Your IP address is not whitelisted'
+        });
+    }
+    
+    next();
+});
+
 // Request logging middleware
 app.use((req, res, next) => {
     const start = Date.now();
@@ -74,12 +103,19 @@ const authenticate = (req, res, next) => {
         logger.warn('API request without key', { ip: req.ip, path: req.path });
         return res.status(401).json({
             error: 'Unauthorized',
-            message: 'API key required'
+            message: 'API key required. Please provide x-api-key header or apiKey query parameter.'
         });
     }
     
-    if (apiKey !== API_KEY) {
-        logger.warn('API request with invalid key', { ip: req.ip, path: req.path });
+    // Check against all valid API keys (support rotation)
+    const isValidKey = VALID_API_KEYS.includes(apiKey);
+    
+    if (!isValidKey) {
+        logger.warn('API request with invalid key', { 
+            ip: req.ip, 
+            path: req.path,
+            keyPrefix: apiKey.substring(0, 8) + '...' // Log only prefix for security
+        });
         return res.status(401).json({
             error: 'Unauthorized',
             message: 'Invalid API key'
@@ -365,6 +401,36 @@ function getCPUUsage() {
  * Start metrics server
  */
 export function startMetricsServer(client) {
+    // Validate API key configuration
+    const API_KEY = process.env.METRICS_API_KEY;
+    if (!API_KEY) {
+        logger.error('METRICS_API_KEY environment variable is required but not set');
+        logger.error('Please set METRICS_API_KEY in your .env file with a strong random key (min 32 characters)');
+        logger.error('Example: METRICS_API_KEY=your-secure-random-key-here');
+        throw new Error('METRICS_API_KEY is required for security');
+    }
+
+    // Validate API key strength
+    if (API_KEY.length < 32) {
+        logger.error('METRICS_API_KEY must be at least 32 characters long for security');
+        throw new Error('METRICS_API_KEY too short (minimum 32 characters)');
+    }
+
+    // Support multiple API keys for rotation (comma-separated)
+    VALID_API_KEYS = API_KEY.split(',').map(k => k.trim());
+    logger.info(`Metrics API initialized with ${VALID_API_KEYS.length} API key(s)`);
+
+    // IP Whitelist (optional, empty = allow all)
+    IP_WHITELIST = process.env.METRICS_ALLOWED_IPS 
+        ? process.env.METRICS_ALLOWED_IPS.split(',').map(ip => ip.trim()) 
+        : [];
+        
+    if (IP_WHITELIST.length > 0) {
+        logger.info(`IP whitelist enabled with ${IP_WHITELIST.length} allowed IP(s)`);
+    } else {
+        logger.warn('IP whitelist is empty - all IPs allowed (set METRICS_ALLOWED_IPS to restrict)');
+    }
+    
     // Store client reference for future use
     app.locals.client = client;
     

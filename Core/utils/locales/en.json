@@ -1,0 +1,40 @@
+{
+  "command.play.description": "Play music from URL or search",
+  "command.play.no_query": "Please provide a song name or URL!",
+  "command.play.searching": "🔍 Searching for **{query}**...",
+  "command.play.no_results": "No results found for: **{query}**",
+  
+  "command.pause.description": "Pause the currently playing music",
+  "command.pause.success": "⏸️ Paused",
+  "command.pause.not_playing": "Nothing is playing!",
+  
+  "command.skip.description": "Skip the current song",
+  "command.skip.success": "⏭️ Skipped",
+  
+  "command.queue.description": "View the music queue",
+  "command.queue.empty": "Queue is empty!",
+  
+  "command.help.description": "Show help guide",
+  "command.help.title": "📚 Help Guide",
+  
+  "error.not_in_voice": "❌ You must be in a voice channel to use this command!",
+  "error.different_voice": "❌ You must be in the same voice channel as the bot!",
+  "error.no_permission": "❌ Bot doesn't have permission to connect to this voice channel!",
+  "error.internal": "❌ An internal error occurred. Please try again later!",
+  
+  "playlist.created": "✅ Created playlist **{name}**!",
+  "playlist.not_found": "❌ Playlist **{name}** not found!",
+  "playlist.added": "✅ Added **{title}** to playlist **{name}**!",
+  
+  "common.loading": "⏳ Loading...",
+  "common.success": "✅ Success!",
+  "common.error": "❌ Error!",
+  "common.cancelled": "🚫 Cancelled",
+  
+  "music.now_playing": "🎵 Now Playing",
+  "music.added_to_queue": "📋 Added to Queue",
+  "music.queue_cleared": "🗑️ Queue Cleared",
+  
+  "settings.language_changed": "🌐 Language changed to {language}!",
+  "settings.volume_changed": "🔊 Volume: {volume}%"
+}

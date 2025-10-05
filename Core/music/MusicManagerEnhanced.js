@@ -832,42 +832,116 @@ export class EnhancedQueue {
      * Apply filters to player
      */
     async applyFilters() {
-        if (!this.player) return;
-        
-        const filters = {};
-        
-        if (this.filters.equalizer.length > 0) {
-            filters.equalizer = this.filters.equalizer;
-        }
-        if (this.filters.karaoke) {
-            filters.karaoke = this.filters.karaoke;
-        }
-        if (this.filters.timescale) {
-            filters.timescale = this.filters.timescale;
-        }
-        if (this.filters.tremolo) {
-            filters.tremolo = this.filters.tremolo;
-        }
-        if (this.filters.vibrato) {
-            filters.vibrato = this.filters.vibrato;
-        }
-        if (this.filters.rotation) {
-            filters.rotation = this.filters.rotation;
-        }
-        if (this.filters.distortion) {
-            filters.distortion = this.filters.distortion;
-        }
-        if (this.filters.channelMix) {
-            filters.channelMix = this.filters.channelMix;
-        }
-        if (this.filters.lowPass) {
-            filters.lowPass = this.filters.lowPass;
+        if (!this.player) {
+            logger.warn('Cannot apply filters: player not connected', { guildId: this.guildId });
+            return false;
         }
         
-        if (Object.keys(filters).length > 0) {
+        try {
+            const filters = {};
+            
+            // Build filters object from current state
+            if (this.filters.equalizer.length > 0) {
+                filters.equalizer = this.filters.equalizer;
+            }
+            if (this.filters.karaoke) {
+                filters.karaoke = this.filters.karaoke;
+            }
+            if (this.filters.timescale) {
+                filters.timescale = this.filters.timescale;
+            }
+            if (this.filters.tremolo) {
+                filters.tremolo = this.filters.tremolo;
+            }
+            if (this.filters.vibrato) {
+                filters.vibrato = this.filters.vibrato;
+            }
+            if (this.filters.rotation) {
+                filters.rotation = this.filters.rotation;
+            }
+            if (this.filters.distortion) {
+                filters.distortion = this.filters.distortion;
+            }
+            if (this.filters.channelMix) {
+                filters.channelMix = this.filters.channelMix;
+            }
+            if (this.filters.lowPass) {
+                filters.lowPass = this.filters.lowPass;
+            }
+            
+            // CRITICAL FIX: Always call setFilters, even with empty object
+            // This is required to clear filters in Lavalink
+            // According to Lavalink v4 docs: "filters overrides all previously applied filters"
             await this.player.setFilters(filters);
-            logger.info(`Applied ${Object.keys(filters).length} filters to player`, { guildId: this.guildId });
+            
+            const filterCount = Object.keys(filters).length;
+            if (filterCount > 0) {
+                logger.info(`Applied ${filterCount} filter(s) to player`, { 
+                    guildId: this.guildId, 
+                    filters: Object.keys(filters) 
+                });
+            } else {
+                logger.info('Cleared all filters from player', { guildId: this.guildId });
+            }
+            
+            return true;
+        } catch (error) {
+            logger.error('Failed to apply filters', error, { guildId: this.guildId });
+            return false;
         }
+    }
+    
+    /**
+     * Clear all filters and reset to default state
+     * @returns {Promise<boolean>} Success status
+     */
+    async clearFilters() {
+        try {
+            // Reset all filter states to default
+            this.filters = {
+                equalizer: [],
+                karaoke: null,
+                timescale: null,
+                tremolo: null,
+                vibrato: null,
+                rotation: null,
+                distortion: null,
+                channelMix: null,
+                lowPass: null
+            };
+            
+            // Apply empty filters to Lavalink
+            const success = await this.applyFilters();
+            
+            if (success) {
+                logger.info('Successfully cleared all filters', { guildId: this.guildId });
+            }
+            
+            return success;
+        } catch (error) {
+            logger.error('Failed to clear filters', error, { guildId: this.guildId });
+            return false;
+        }
+    }
+    
+    /**
+     * Get active filter names
+     * @returns {string[]} Array of active filter names
+     */
+    getActiveFilters() {
+        const active = [];
+        
+        if (this.filters.equalizer.length > 0) active.push('equalizer');
+        if (this.filters.karaoke) active.push('karaoke');
+        if (this.filters.timescale) active.push('timescale');
+        if (this.filters.tremolo) active.push('tremolo');
+        if (this.filters.vibrato) active.push('vibrato');
+        if (this.filters.rotation) active.push('rotation');
+        if (this.filters.distortion) active.push('distortion');
+        if (this.filters.channelMix) active.push('channelMix');
+        if (this.filters.lowPass) active.push('lowPass');
+        
+        return active;
     }
     
     /**
@@ -906,48 +980,88 @@ export class EnhancedQueue {
             ]
         };
         
-        this.filters.equalizer = presets[preset] || [];
-        await this.applyFilters();
-        return preset;
+        if (!presets[preset]) {
+            logger.warn(`Unknown equalizer preset: ${preset}`, { guildId: this.guildId });
+            return false;
+        }
+        
+        // Clear timescale filters when applying equalizer to avoid conflicts
+        this.filters.timescale = null;
+        this.filters.equalizer = presets[preset];
+        
+        const success = await this.applyFilters();
+        if (success) {
+            logger.info(`Applied equalizer preset: ${preset}`, { guildId: this.guildId });
+        }
+        
+        return success;
     }
     
     /**
      * Set nightcore filter
      */
     async setNightcore(enabled) {
-        if (enabled) {
-            this.filters.timescale = { speed: 1.1, pitch: 1.1, rate: 1 };
-        } else {
-            this.filters.timescale = null;
+        try {
+            if (enabled) {
+                // Clear conflicting filters
+                this.filters.equalizer = [];
+                this.filters.timescale = { speed: 1.1, pitch: 1.1, rate: 1 };
+                logger.info('Enabled nightcore filter', { guildId: this.guildId });
+            } else {
+                this.filters.timescale = null;
+                logger.info('Disabled nightcore filter', { guildId: this.guildId });
+            }
+            
+            const success = await this.applyFilters();
+            return success;
+        } catch (error) {
+            logger.error('Failed to set nightcore filter', error, { guildId: this.guildId });
+            return false;
         }
-        await this.applyFilters();
-        return enabled;
     }
     
     /**
      * Set vaporwave filter
      */
     async setVaporwave(enabled) {
-        if (enabled) {
-            this.filters.timescale = { speed: 0.8, pitch: 0.8, rate: 1 };
-        } else {
-            this.filters.timescale = null;
+        try {
+            if (enabled) {
+                // Clear conflicting filters
+                this.filters.equalizer = [];
+                this.filters.timescale = { speed: 0.8, pitch: 0.8, rate: 1 };
+                logger.info('Enabled vaporwave filter', { guildId: this.guildId });
+            } else {
+                this.filters.timescale = null;
+                logger.info('Disabled vaporwave filter', { guildId: this.guildId });
+            }
+            
+            const success = await this.applyFilters();
+            return success;
+        } catch (error) {
+            logger.error('Failed to set vaporwave filter', error, { guildId: this.guildId });
+            return false;
         }
-        await this.applyFilters();
-        return enabled;
     }
     
     /**
      * Set 8D audio filter
      */
     async set8D(enabled) {
-        if (enabled) {
-            this.filters.rotation = { rotationHz: 0.2 };
-        } else {
-            this.filters.rotation = null;
+        try {
+            if (enabled) {
+                this.filters.rotation = { rotationHz: 0.2 };
+                logger.info('Enabled 8D audio filter', { guildId: this.guildId });
+            } else {
+                this.filters.rotation = null;
+                logger.info('Disabled 8D audio filter', { guildId: this.guildId });
+            }
+            
+            const success = await this.applyFilters();
+            return success;
+        } catch (error) {
+            logger.error('Failed to set 8D filter', error, { guildId: this.guildId });
+            return false;
         }
-        await this.applyFilters();
-        return enabled;
     }
     
     add(track) {

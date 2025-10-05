@@ -6,12 +6,12 @@
 export const VERSION = {
     // Main version
     major: 1,
-    minor: 5,
-    patch: 3,
+    minor: 6,
+    patch: 1,
     
     // Build info
-    build: '2025.10.04',
-    codename: 'Aria',
+    build: '2025.10.05',
+    codename: 'Starfield',
     
     // Full version string
     get full() {
@@ -76,27 +76,39 @@ export const ENVIRONMENT = {
 // Release notes for this version
 export const RELEASE_NOTES = {
     version: VERSION.full,
-    date: '2025-10-03',
+    date: '2025-10-05',
     changes: [
         {
             type: 'fixed',
-            description: 'Fixed queue embed validation error when adding playlists'
+            description: 'Fixed ready event name mismatch (clientReady -> ready)'
+        },
+        {
+            type: 'fixed',
+            description: 'Fixed Playlist.create() signature in database tests'
+        },
+        {
+            type: 'fixed',
+            description: 'Fixed rate limiter tests - corrected method signatures'
+        },
+        {
+            type: 'fixed',
+            description: 'Fixed interaction event tests - added missing mock methods'
         },
         {
             type: 'improved',
-            description: 'Enhanced error handling and defensive programming across all embeds'
+            description: 'Enhanced error handling in ready event with comprehensive try-catch'
+        },
+        {
+            type: 'improved',
+            description: 'Updated test assertions to match current UI text/labels'
         },
         {
             type: 'added',
-            description: 'Centralized version management system'
+            description: 'Better defensive programming in autoplay command error handling'
         },
         {
-            type: 'optimized',
-            description: 'Better memory management and caching strategies'
-        },
-        {
-            type: 'improved',
-            description: 'Enhanced UX/UI with better feedback and loading states'
+            type: 'fixed',
+            description: 'Fixed database index names in integrity tests'
         }
     ]
 };

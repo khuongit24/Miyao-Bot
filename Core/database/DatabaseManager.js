@@ -41,6 +41,10 @@ class DatabaseManager {
             // Run migrations
             await this.runMigrations();
             
+            // Initialize audit log table
+            const { AuditLog } = await import('./models/AuditLog.js');
+            AuditLog.initialize(this.db);
+            
             this.isReady = true;
             logger.info('Database initialized successfully');
             
@@ -64,7 +68,8 @@ class DatabaseManager {
             const migrations = [
                 '001_initial_schema.sql',
                 '002_optimize_schema.sql',
-                '003_optimize_stats_indexes.sql'
+                '003_optimize_stats_indexes.sql',
+                '004_playlists.sql'
             ];
             
             // Check if migrations table exists
@@ -208,6 +213,11 @@ class DatabaseManager {
      */
     backup(backupPath) {
         try {
+            // Check if database is open
+            if (!this.db || !this.db.open) {
+                throw new Error('Database connection is not open');
+            }
+            
             // Use better-sqlite3 backup method with string path
             // The backup() method expects a filename string, not a Database object
             this.db.backup(backupPath);

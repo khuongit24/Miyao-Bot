@@ -53,6 +53,7 @@ export default {
                 .addStringOption(option =>
                     option.setName('name')
                         .setDescription('Tên playlist')
+                        .setAutocomplete(true)
                         .setRequired(true)
                 )
         )
@@ -63,6 +64,7 @@ export default {
                 .addStringOption(option =>
                     option.setName('name')
                         .setDescription('Tên playlist')
+                        .setAutocomplete(true)
                         .setRequired(true)
                 )
         )
@@ -73,6 +75,7 @@ export default {
                 .addStringOption(option =>
                     option.setName('name')
                         .setDescription('Tên playlist')
+                        .setAutocomplete(true)
                         .setRequired(true)
                 )
                 .addStringOption(option =>
@@ -88,6 +91,7 @@ export default {
                 .addStringOption(option =>
                     option.setName('name')
                         .setDescription('Tên playlist')
+                        .setAutocomplete(true)
                         .setRequired(true)
                 )
                 .addIntegerOption(option =>
@@ -104,6 +108,7 @@ export default {
                 .addStringOption(option =>
                     option.setName('name')
                         .setDescription('Tên playlist')
+                        .setAutocomplete(true)
                         .setRequired(true)
                 )
         ),
@@ -163,17 +168,20 @@ async function handleCreate(interaction, client) {
     }
 
     // Check if playlist already exists
-    const existing = Playlist.getByName(interaction.user.id, name);
+    const existing = Playlist.getByName(name, interaction.user.id, interaction.guildId);
     if (existing) {
         throw new ValidationError(`Playlist "${name}" đã tồn tại`, 'name');
     }
 
     // Create playlist
-    const playlist = Playlist.create(interaction.user.id, name, [], {
+    const playlist = Playlist.create(
+        name, 
+        interaction.user.id,
+        interaction.user.username,
+        interaction.guildId,
         description,
-        isPublic,
-        username: interaction.user.username
-    });
+        isPublic
+    );
 
     if (!playlist) {
         logger.error('Playlist creation returned null', { 
@@ -211,7 +219,7 @@ async function handleCreate(interaction, client) {
 async function handleList(interaction, client) {
     await interaction.deferReply({ ephemeral: true });
 
-    const playlists = Playlist.getUserPlaylists(interaction.user.id);
+    const playlists = Playlist.getByOwner(interaction.user.id, interaction.guildId);
 
     if (playlists.length === 0) {
         const embed = new EmbedBuilder()
@@ -224,8 +232,8 @@ async function handleList(interaction, client) {
     }
 
     const description = playlists.map((pl, index) => {
-        const trackCount = pl.tracks.length;
-        const publicIcon = pl.isPublic ? '🌐' : '🔒';
+        const trackCount = pl.track_count || 0;
+        const publicIcon = pl.is_public ? '🌐' : '🔒';
         return `**${index + 1}. ${publicIcon} ${pl.name}**\n   └ ${trackCount} bài hát${pl.description ? `\n   └ *${pl.description}*` : ''}`;
     }).join('\n\n');
 
@@ -246,29 +254,30 @@ async function handleShow(interaction, client) {
     await interaction.deferReply({ ephemeral: true });
 
     const name = interaction.options.getString('name');
-    const playlist = Playlist.getByName(interaction.user.id, name);
+    const playlist = Playlist.getByName(name, interaction.user.id, interaction.guildId);
 
     if (!playlist) {
         throw new PlaylistNotFoundError(name);
     }
 
-    let description = `**Mô tả:** ${playlist.description || 'Không có'}\n`;
-    description += `**Công khai:** ${playlist.isPublic ? 'Có' : 'Không'}\n`;
-    description += `**Số lần phát:** ${playlist.playCount}\n`;
-    description += `**Tạo lúc:** ${new Date(playlist.createdAt).toLocaleString('vi-VN')}\n\n`;
+    const tracks = Playlist.getTracks(playlist.id);
 
-    if (playlist.tracks.length === 0) {
+    let description = `**Mô tả:** ${playlist.description || 'Không có'}\n`;
+    description += `**Công khai:** ${playlist.is_public ? 'Có' : 'Không'}\n`;
+    description += `**Tạo lúc:** ${new Date(playlist.created_at).toLocaleString('vi-VN')}\n\n`;
+
+    if (tracks.length === 0) {
         description += '*Playlist đang trống*';
     } else {
         description += `**Danh sách bài hát:**\n`;
-        const tracks = playlist.tracks.slice(0, 10).map((track, index) => {
-            const title = track.title.length > 50 ? track.title.substring(0, 47) + '...' : track.title;
+        const trackList = tracks.slice(0, 10).map((track, index) => {
+            const title = track.track_title.length > 50 ? track.track_title.substring(0, 47) + '...' : track.track_title;
             return `${index + 1}. ${title}`;
         }).join('\n');
-        description += tracks;
+        description += trackList;
         
-        if (playlist.tracks.length > 10) {
-            description += `\n\n...và ${playlist.tracks.length - 10} bài khác`;
+        if (tracks.length > 10) {
+            description += `\n\n...và ${tracks.length - 10} bài khác`;
         }
     }
 
@@ -289,13 +298,13 @@ async function handleDelete(interaction, client) {
     await interaction.deferReply({ ephemeral: true });
 
     const name = interaction.options.getString('name');
-    const playlist = Playlist.getByName(interaction.user.id, name);
+    const playlist = Playlist.getByName(name, interaction.user.id, interaction.guildId);
 
     if (!playlist) {
         throw new PlaylistNotFoundError(name);
     }
 
-    const success = Playlist.delete(playlist.id);
+    const success = Playlist.delete(playlist.id, interaction.user.id);
 
     if (!success) {
         throw new InternalError('Không thể xóa playlist');
@@ -319,7 +328,7 @@ async function handleAdd(interaction, client) {
     const name = interaction.options.getString('name');
     const query = interaction.options.getString('query');
 
-    const playlist = Playlist.getByName(interaction.user.id, name);
+    const playlist = Playlist.getByName(name, interaction.user.id, interaction.guildId);
 
     if (!playlist) {
         throw new PlaylistNotFoundError(name);
@@ -336,24 +345,25 @@ async function handleAdd(interaction, client) {
 
     // Convert to simple format for storage
     const simpleTrack = {
+        url: track.info.uri,
         title: track.info.title,
         author: track.info.author,
-        uri: track.info.uri,
-        length: track.info.length,
-        identifier: track.info.identifier
+        duration: track.info.length
     };
 
-    const success = Playlist.addTrack(playlist.id, simpleTrack);
+    const addedTrack = Playlist.addTrack(playlist.id, simpleTrack, interaction.user.id);
 
-    if (!success) {
+    if (!addedTrack) {
         throw new InternalError('Không thể thêm bài hát vào playlist');
     }
+
+    const tracks = Playlist.getTracks(playlist.id);
 
     const embed = new EmbedBuilder()
         .setColor(client.config.bot.color)
         .setTitle('✅ Đã Thêm Vào Playlist')
         .setDescription(`**${track.info.title}**\n└ Đã thêm vào playlist **${name}**`)
-        .setFooter({ text: `Tổng ${playlist.tracks.length + 1} bài hát` })
+        .setFooter({ text: `Tổng ${tracks.length} bài hát` })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -368,30 +378,38 @@ async function handleRemove(interaction, client) {
     const name = interaction.options.getString('name');
     const position = interaction.options.getInteger('position');
 
-    const playlist = Playlist.getByName(interaction.user.id, name);
+    const playlist = Playlist.getByName(name, interaction.user.id, interaction.guildId);
 
     if (!playlist) {
         throw new PlaylistNotFoundError(name);
     }
 
-    if (position < 1 || position > playlist.tracks.length) {
-        throw new ValidationError(`Vị trí không hợp lệ. Playlist có ${playlist.tracks.length} bài hát`, 'position');
+    const tracks = Playlist.getTracks(playlist.id);
+
+    if (position < 1 || position > tracks.length) {
+        throw new ValidationError(`Vị trí không hợp lệ. Playlist có ${tracks.length} bài hát`, 'position');
     }
 
-    const trackIndex = position - 1;
-    const removedTrack = playlist.tracks[trackIndex];
+    // Find track by position
+    const trackToRemove = tracks.find(t => t.position === position);
+    
+    if (!trackToRemove) {
+        throw new ValidationError('Không tìm thấy bài hát ở vị trí này', 'position');
+    }
 
-    const success = Playlist.removeTrack(playlist.id, trackIndex);
+    const success = Playlist.removeTrack(playlist.id, trackToRemove.id, interaction.user.id);
 
     if (!success) {
         throw new InternalError('Không thể xóa bài hát khỏi playlist');
     }
 
+    const remainingTracks = Playlist.getTracks(playlist.id);
+
     const embed = new EmbedBuilder()
         .setColor(client.config.bot.color)
         .setTitle('✅ Đã Xóa Khỏi Playlist')
-        .setDescription(`**${removedTrack.title}**\n└ Đã xóa khỏi playlist **${name}**`)
-        .setFooter({ text: `Còn ${playlist.tracks.length - 1} bài hát` })
+        .setDescription(`**${trackToRemove.track_title}**\n└ Đã xóa khỏi playlist **${name}**`)
+        .setFooter({ text: `Còn ${remainingTracks.length} bài hát` })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -418,13 +436,15 @@ async function handlePlay(interaction, client) {
         throw new VoiceChannelPermissionError(voiceChannel.name);
     }
 
-    const playlist = Playlist.getByName(interaction.user.id, name);
+    const playlist = Playlist.getByName(name, interaction.user.id, interaction.guildId);
 
     if (!playlist) {
         throw new PlaylistNotFoundError(name);
     }
 
-    if (playlist.tracks.length === 0) {
+    const playlistTracks = Playlist.getTracks(playlist.id);
+
+    if (playlistTracks.length === 0) {
         throw new ValidationError('Playlist đang trống', 'tracks');
     }
 
@@ -445,7 +465,7 @@ async function handlePlay(interaction, client) {
     }
 
     // Resolve all tracks from URIs to get encoded data (PARALLEL PROCESSING)
-    logger.info('Resolving playlist tracks (parallel)', { playlistId: playlist.id, trackCount: playlist.tracks.length });
+    logger.info('Resolving playlist tracks (parallel)', { playlistId: playlist.id, trackCount: playlistTracks.length });
     
     const resolvedTracks = [];
     let failedCount = 0;
@@ -453,13 +473,13 @@ async function handlePlay(interaction, client) {
     // Batch processing to avoid overwhelming Lavalink
     const BATCH_SIZE = 10; // Process 10 tracks concurrently
     
-    for (let i = 0; i < playlist.tracks.length; i += BATCH_SIZE) {
-        const batch = playlist.tracks.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < playlistTracks.length; i += BATCH_SIZE) {
+        const batch = playlistTracks.slice(i, i + BATCH_SIZE);
         
         // Resolve batch in parallel using Promise.allSettled
         const results = await Promise.allSettled(
             batch.map(simpleTrack => 
-                client.musicManager.search(simpleTrack.uri, interaction.user)
+                client.musicManager.search(simpleTrack.track_url, interaction.user)
                     .then(result => ({ success: true, result, track: simpleTrack }))
                     .catch(error => ({ success: false, error, track: simpleTrack }))
             )
@@ -474,8 +494,8 @@ async function handlePlay(interaction, client) {
                     resolvedTracks.push(result.tracks[0]);
                 } else {
                     logger.warn('Failed to resolve track from playlist', { 
-                        uri: track.uri, 
-                        title: track.title 
+                        uri: track.track_url, 
+                        title: track.track_title 
                     });
                     failedCount++;
                 }
@@ -488,9 +508,9 @@ async function handlePlay(interaction, client) {
         }
         
         // Progress logging for large playlists
-        if (playlist.tracks.length > BATCH_SIZE) {
-            const processed = Math.min(i + BATCH_SIZE, playlist.tracks.length);
-            logger.debug(`Resolved ${processed}/${playlist.tracks.length} tracks`);
+        if (playlistTracks.length > BATCH_SIZE) {
+            const processed = Math.min(i + BATCH_SIZE, playlistTracks.length);
+            logger.debug(`Resolved ${processed}/${playlistTracks.length} tracks`);
         }
     }
     
@@ -506,15 +526,12 @@ async function handlePlay(interaction, client) {
     // Add all resolved tracks to queue
     queue.add(resolvedTracks);
 
-    // Increment play count
-    Playlist.incrementPlayCount(playlist.id);
-
     const embed = new EmbedBuilder()
         .setColor(client.config.bot.color)
         .setTitle('📋 Đang Phát Playlist')
         .setDescription(
             `**${playlist.name}**\n` +
-            `└ Đã thêm ${resolvedTracks.length}/${playlist.tracks.length} bài hát vào hàng đợi` +
+            `└ Đã thêm ${resolvedTracks.length}/${playlistTracks.length} bài hát vào hàng đợi` +
             (failedCount > 0 ? `\n⚠️ ${failedCount} bài không tải được` : '')
         )
         .setTimestamp();

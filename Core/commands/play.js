@@ -1,6 +1,6 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
-import { createTrackAddedEmbed, createPlaylistAddedEmbed, createErrorEmbed, createNowPlayingEmbed, createInfoEmbed } from '../../UI/embeds/MusicEmbeds.js';
-import { createNowPlayingButtons, createSearchResultButtons } from '../../UI/components/MusicControls.js';
+import { createTrackAddedEmbed, createPlaylistAddedEmbed, createErrorEmbed, createNowPlayingEmbed, createInfoEmbed, createSearchConfirmEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createNowPlayingButtons, createSearchResultButtons, createSearchConfirmButtons } from '../../UI/components/MusicControls.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import { 
     UserNotInVoiceError, 
@@ -77,25 +77,23 @@ export default {
                 throw new NoSearchResultsError(query);
             }
             
-            // If query isn't a URL and result is a search with many tracks, let user pick top 5
+            // If query isn't a URL and result is a search with many tracks, show confirmation for first track
             const isUrl = /^https?:\/\//.test(query);
-            if (!isUrl && result.loadType === 'search' && result.tracks.length > 1) {
+            if (!isUrl && result.loadType === 'search' && result.tracks.length > 0) {
                 const choices = result.tracks.slice(0, 5);
+                const firstTrack = choices[0];
+                
                 // Save choices in memory to resolve on button click
                 if (!client._lastSearchResults) client._lastSearchResults = new Map();
                 const key = `${interaction.user.id}:${interaction.guildId}`;
                 client._lastSearchResults.set(key, { tracks: choices, createdAt: Date.now() });
-                const description = choices.map((t, i) => {
-                    const title = t.info.title.length > 60 ? t.info.title.substring(0, 57) + '...' : t.info.title;
-                    const duration = t.info.isStream ? '🔴 LIVE' : `${Math.round(t.info.length/1000/60) || 0}p`;
-                    return `**${i + 1}.** ${title} • ${duration}`;
-                }).join('\n');
                 
+                // Show confirmation embed for the first track
                 await interaction.editReply({
-                    embeds: [createInfoEmbed('Kết quả tìm kiếm', `Chọn một kết quả bên dưới để phát:\n\n${description}`, client.config)],
-                    components: createSearchResultButtons(choices)
+                    embeds: [createSearchConfirmEmbed(firstTrack, client.config)],
+                    components: createSearchConfirmButtons(firstTrack)
                 });
-                logger.command('play-search', interaction.user.id, interaction.guildId);
+                logger.command('play-search-confirm', interaction.user.id, interaction.guildId);
                 return; // Wait for button selection
             }
 

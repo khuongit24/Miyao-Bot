@@ -347,7 +347,7 @@ class History {
         try {
             const db = getDatabaseManager();
             const result = db.execute(
-                'DELETE FROM history WHERE played_at < datetime("now", ?)',
+                "DELETE FROM history WHERE played_at < datetime('now', ?)",
                 [`-${days} days`]
             );
             

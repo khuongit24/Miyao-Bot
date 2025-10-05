@@ -1,4 +1,5 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder } from 'discord.js';
+import { shortenButtonLabel } from '../../Core/utils/mobile-optimization.js';
 
 /**
  * Create music control buttons
@@ -47,14 +48,14 @@ export function createMusicButtons(queue, disabled = false) {
             new ButtonBuilder()
                 .setCustomId('music_loop')
                 .setEmoji(getLoopEmoji(queue?.loop || 'off'))
-                .setLabel(getLoopLabel(queue?.loop || 'off'))
+                .setLabel(shortenButtonLabel(getLoopLabel(queue?.loop || 'off'), 12))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue),
             
             new ButtonBuilder()
                 .setCustomId('music_shuffle')
                 .setEmoji('🔀')
-                .setLabel('Shuffle')
+                .setLabel(shortenButtonLabel('Shuffle', 12))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue || queue?.tracks?.length < 2),
             
@@ -73,7 +74,7 @@ export function createMusicButtons(queue, disabled = false) {
             new ButtonBuilder()
                 .setCustomId('music_lyrics')
                 .setEmoji('📝')
-                .setLabel('Lyrics')
+                .setLabel(shortenButtonLabel('Lyrics', 12))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(true) // Not implemented yet
         );
@@ -99,35 +100,31 @@ export function createNowPlayingButtons(queue, disabled = false) {
             new ButtonBuilder()
                 .setCustomId(isPaused ? 'music_resume' : 'music_pause')
                 .setEmoji(isPaused ? '▶️' : '⏸️')
-                .setLabel(isPaused ? 'Resume' : 'Pause')
                 .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary)
                 .setDisabled(disabled || !queue?.current),
             
             new ButtonBuilder()
                 .setCustomId('music_skip')
                 .setEmoji('⏭️')
-                .setLabel('Skip')
                 .setStyle(ButtonStyle.Primary)
                 .setDisabled(disabled || !queue?.current),
             
             new ButtonBuilder()
                 .setCustomId('music_stop')
                 .setEmoji('⏹️')
-                .setLabel('Stop')
                 .setStyle(ButtonStyle.Danger)
                 .setDisabled(disabled || !queue?.current),
             
             new ButtonBuilder()
                 .setCustomId('music_loop')
                 .setEmoji(getLoopEmoji(loopMode))
-                .setLabel(getLoopLabel(loopMode))
                 .setStyle(loopMode !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue),
             
             new ButtonBuilder()
                 .setCustomId('music_shuffle')
                 .setEmoji('🔀')
-                .setLabel('Shuffle')
+                .setLabel(shortenButtonLabel('Shuffle', 12))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue || queue?.tracks?.length < 2)
         );
@@ -139,35 +136,35 @@ export function createNowPlayingButtons(queue, disabled = false) {
             new ButtonBuilder()
                 .setCustomId('music_seek_backward_30')
                 .setEmoji('⏪')
-                .setLabel('30s')
+                .setLabel(shortenButtonLabel('-30s', 8))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !isSeekable),
             
             new ButtonBuilder()
                 .setCustomId('music_seek_backward_10')
                 .setEmoji('◀️')
-                .setLabel('10s')
+                .setLabel(shortenButtonLabel('-10s', 8))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !isSeekable),
             
             new ButtonBuilder()
                 .setCustomId('music_seek_start')
                 .setEmoji('🔄')
-                .setLabel('Restart')
+                .setLabel(shortenButtonLabel('Restart', 8))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !isSeekable),
             
             new ButtonBuilder()
                 .setCustomId('music_seek_forward_10')
                 .setEmoji('▶️')
-                .setLabel('10s')
+                .setLabel(shortenButtonLabel('+10s', 8))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !isSeekable),
             
             new ButtonBuilder()
                 .setCustomId('music_seek_forward_30')
                 .setEmoji('⏩')
-                .setLabel('30s')
+                .setLabel(shortenButtonLabel('+30s', 8))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !isSeekable)
         );
@@ -178,28 +175,26 @@ export function createNowPlayingButtons(queue, disabled = false) {
             new ButtonBuilder()
                 .setCustomId('music_volume_down')
                 .setEmoji('🔉')
-                .setLabel('-10%')
+                .setLabel(shortenButtonLabel('Vol -10%', 10))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue || queue?.volume <= 0),
             
             new ButtonBuilder()
                 .setCustomId('music_volume_up')
                 .setEmoji('🔊')
-                .setLabel('+10%')
+                .setLabel(shortenButtonLabel('Vol +10%', 10))
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue || queue?.volume >= 100),
             
             new ButtonBuilder()
                 .setCustomId('music_replay')
                 .setEmoji('📜')
-                .setLabel('Replay')
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue || (queue?.history && queue.history.length === 0)),
             
             new ButtonBuilder()
                 .setCustomId('music_queue')
                 .setEmoji('📋')
-                .setLabel('Queue')
                 .setStyle(ButtonStyle.Secondary)
                 .setDisabled(disabled || !queue)
         );
@@ -284,6 +279,35 @@ function getLoopLabel(mode) {
 }
 
 /**
+ * Create search confirmation buttons (Yes play it / Detailed search)
+ * @param {Object} track - First track object to confirm
+ * @returns {ActionRowBuilder[]} rows of buttons
+ */
+export function createSearchConfirmButtons(track) {
+    const row = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId('search_confirm_play')
+                .setEmoji('✅')
+                .setLabel(shortenButtonLabel('Phát ngay', 12))
+                .setStyle(ButtonStyle.Success),
+            
+            new ButtonBuilder()
+                .setCustomId('search_show_detailed')
+                .setEmoji('🔍')
+                .setLabel(shortenButtonLabel('Chi tiết', 12))
+                .setStyle(ButtonStyle.Primary),
+            
+            new ButtonBuilder()
+                .setCustomId('search_cancel')
+                .setEmoji('❌')
+                .setStyle(ButtonStyle.Danger)
+        );
+    
+    return [row];
+}
+
+/**
  * Create search result buttons for up to 5 tracks
  * Each button id encodes the index to pick: search_pick_<index>
  * @param {Array} tracks - Array of track objects
@@ -323,7 +347,7 @@ export function createSearchResultButtons(tracks) {
             new ButtonBuilder()
                 .setCustomId('search_cancel')
                 .setEmoji('❌')
-                .setLabel('Hủy')
+                .setLabel(shortenButtonLabel('Hủy', 8))
                 .setStyle(ButtonStyle.Danger)
         );
     
@@ -394,7 +418,7 @@ export function createHistoryReplayButtons(history) {
             new ButtonBuilder()
                 .setCustomId('history_replay_cancel')
                 .setEmoji('❌')
-                .setLabel('Hủy')
+                .setLabel(shortenButtonLabel('Hủy', 8))
                 .setStyle(ButtonStyle.Danger)
         );
     
@@ -406,5 +430,6 @@ export default {
     createNowPlayingButtons,
     createQueueButtons,
     createSearchResultButtons,
+    createSearchConfirmButtons,
     createHistoryReplayButtons
 };
