@@ -169,7 +169,7 @@ export function createNowPlayingButtons(queue, disabled = false) {
                 .setDisabled(disabled || !isSeekable)
         );
     
-    // Row 3: Volume and queue controls
+    // Row 3: Volume and queue controls + Add to Playlist
     const row3 = new ActionRowBuilder()
         .addComponents(
             new ButtonBuilder()
@@ -196,20 +196,28 @@ export function createNowPlayingButtons(queue, disabled = false) {
                 .setCustomId('music_queue')
                 .setEmoji('📋')
                 .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue)
+                .setDisabled(disabled || !queue),
+            
+            new ButtonBuilder()
+                .setCustomId('music_add_to_playlist')
+                .setEmoji('➕')
+                .setLabel(shortenButtonLabel('Playlist', 10))
+                .setStyle(ButtonStyle.Success)
+                .setDisabled(disabled || !queue?.current)
         );
     
     return [row1, row2, row3];
 }
 
 /**
- * Create queue navigation buttons
+ * Create queue navigation buttons with Add to Playlist button
  * @param {number} page - Current page
  * @param {number} totalPages - Total pages
- * @returns {ActionRowBuilder} Action row with navigation buttons
+ * @param {Object} queue - The music queue (optional, for playlist button)
+ * @returns {ActionRowBuilder[]} Array of action rows with buttons
  */
-export function createQueueButtons(page, totalPages) {
-    const row = new ActionRowBuilder()
+export function createQueueButtons(page, totalPages, queue = null) {
+    const row1 = new ActionRowBuilder()
         .addComponents(
             new ButtonBuilder()
                 .setCustomId('queue_first')
@@ -243,7 +251,24 @@ export function createQueueButtons(page, totalPages) {
                 .setDisabled(page >= totalPages)
         );
     
-    return [row];
+    // Row 2: Add entire queue to playlist and remove track
+    const row2 = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId('queue_add_to_playlist')
+                .setEmoji('➕')
+                .setLabel(shortenButtonLabel('Thêm Toàn Bộ Vào Playlist', 40))
+                .setStyle(ButtonStyle.Success)
+                .setDisabled(!queue || (!queue.current && (!queue.tracks || queue.tracks.length === 0))),
+            new ButtonBuilder()
+                .setCustomId('queue_remove_track')
+                .setEmoji('🗑️')
+                .setLabel(shortenButtonLabel('Xóa Bài Nhạc', 40))
+                .setStyle(ButtonStyle.Danger)
+                .setDisabled(!queue || (!queue.current && (!queue.tracks || queue.tracks.length === 0)))
+        );
+    
+    return [row1, row2];
 }
 
 /**
@@ -295,7 +320,7 @@ export function createSearchConfirmButtons(track) {
             new ButtonBuilder()
                 .setCustomId('search_show_detailed')
                 .setEmoji('🔍')
-                .setLabel(shortenButtonLabel('Chi tiết', 12))
+                .setLabel(shortenButtonLabel('Tìm kiếm', 12))
                 .setStyle(ButtonStyle.Primary),
             
             new ButtonBuilder()

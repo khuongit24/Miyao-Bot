@@ -6,6 +6,7 @@ import {
     formatDurationMobile,
     exceedsMobileLimits 
 } from '../../Core/utils/mobile-optimization.js';
+import logger from '../../Core/utils/logger.js';
 
 /**
  * Create now playing embed with dynamic progress
@@ -103,13 +104,19 @@ export function createNowPlayingEmbed(track, queue, config, currentPosition = nu
  * Create queue embed
  */
 export function createQueueEmbed(queue, config, page = 1) {
-    // Validate inputs
-    if (!queue || !config?.bot) {
-        throw new Error('Invalid queue or config object');
+    // Validate inputs with better error handling
+    if (!queue) {
+        throw new Error('Queue object is required');
+    }
+    if (!config?.bot) {
+        throw new Error('Config object with bot property is required');
     }
     
+    // Ensure tracks array exists (even if empty)
+    const tracks = Array.isArray(queue.tracks) ? queue.tracks : [];
+    
     const perPage = 10;
-    const totalPages = Math.ceil((queue.tracks.length + 1) / perPage);
+    const totalPages = Math.max(1, Math.ceil((tracks.length + 1) / perPage));
     const start = (page - 1) * perPage;
     const end = start + perPage;
     
@@ -117,7 +124,7 @@ export function createQueueEmbed(queue, config, page = 1) {
         .setColor(config.bot.color || '#5865F2')
         .setTitle('📋 Hàng đợi phát nhạc')
         .setFooter({ 
-            text: `${config.bot.footer || 'Miyao Music Bot'} • Trang ${page}/${totalPages || 1}` 
+            text: `${config.bot.footer || 'Miyao Music Bot'} • Trang ${page}/${totalPages}` 
         })
         .setTimestamp();
     
@@ -153,7 +160,7 @@ export function createQueueEmbed(queue, config, page = 1) {
             }
         } catch (error) {
             // Log error but don't fail the entire embed
-            console.error('Error creating current track field:', error);
+            logger.error('Error creating current track field:', error);
         }
     }
     
@@ -181,7 +188,7 @@ export function createQueueEmbed(queue, config, page = 1) {
                                `⏱️ ${isStream ? '🔴 LIVE' : formatDuration(length)} | ` +
                                `👤 ${author}`;
                     } catch (error) {
-                        console.error('Error formatting track:', error);
+                        logger.error('Error formatting track:', error);
                         return null;
                     }
                 })
@@ -210,7 +217,7 @@ export function createQueueEmbed(queue, config, page = 1) {
                 ]);
             }
         } catch (error) {
-            console.error('Error creating queue tracks field:', error);
+            logger.error('Error creating queue tracks field:', error);
         }
     }
     
@@ -247,7 +254,7 @@ export function createQueueEmbed(queue, config, page = 1) {
             ]);
         }
     } catch (error) {
-        console.error('Error creating queue info field:', error);
+        logger.error('Error creating queue info field:', error);
     }
     
     return embed;
@@ -339,10 +346,13 @@ export function createPlaylistAddedEmbed(playlistName, trackCount, config) {
  * Create error embed
  */
 export function createErrorEmbed(message, config) {
+    // Ensure message is a string and not empty
+    const errorMessage = message ? String(message) : 'Đã xảy ra lỗi không xác định';
+    
     return new EmbedBuilder()
         .setColor('#FF0000')
         .setTitle('❌ Lỗi')
-        .setDescription(message)
+        .setDescription(errorMessage)
         .setFooter({ text: config.bot.footer })
         .setTimestamp();
 }
@@ -351,6 +361,11 @@ export function createErrorEmbed(message, config) {
  * Create success embed
  */
 export function createSuccessEmbed(title, message, config) {
+    // Validate config to prevent errors
+    if (!config?.bot?.footer) {
+        throw new Error('Config object with bot.footer is required');
+    }
+    
     return new EmbedBuilder()
         .setColor('#00FF00')
         .setTitle(`✅ ${title}`)
@@ -399,12 +414,12 @@ export function createSearchConfirmEmbed(track, config) {
         `${icon} **[${title}](${uri})**\n\n` +
         `👤 **Tác giả:** ${author}\n` +
         `⏱️ **Thời lượng:** ${isStream ? '🔴 LIVE' : formatDurationMobile(length)}\n\n` +
-        `✅ Đúng? Nhấn "Phát ngay"\n` +
-        `🔍 Không? Nhấn "Chi tiết"`;
+        `✅ Đúng rồi? Nhấn "Phát ngay"\n` +
+        `🔍 Không phải à? Bạn nhấn "Tìm kiếm" nhé`;
     
     const embed = new EmbedBuilder()
         .setColor(config.bot.color)
-        .setTitle('🎵 Bài hát này đúng không?')
+        .setTitle('🤔 Bạn muốn phát bài này phải không?')
         .setDescription(description);
     
     if (info.artworkUrl) {
@@ -469,7 +484,7 @@ export function createHistoryReplayEmbed(history, config) {
                                `⏱️ ${isStream ? '🔴 LIVE' : formatDuration(length)} | ` +
                                `👤 ${author} | 🕐 ${timeText}`;
                     } catch (error) {
-                        console.error('Error formatting history track:', error);
+                        logger.error('Error formatting history track:', error);
                         return null;
                     }
                 })
@@ -499,7 +514,7 @@ export function createHistoryReplayEmbed(history, config) {
                 embed.setDescription('Không có bài hát hợp lệ trong lịch sử.');
             }
         } catch (error) {
-            console.error('Error creating history embed:', error);
+            logger.error('Error creating history embed:', error);
             embed.setDescription('Đã xảy ra lỗi khi tải lịch sử phát nhạc.');
         }
     } else {
