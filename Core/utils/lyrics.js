@@ -6,7 +6,7 @@
 import logger from '../utils/logger.js';
 
 const LRCLIB_API_BASE = 'https://lrclib.net/api';
-const USER_AGENT = 'Miyao Music Bot v1.5.0 (https://github.com/your-repo/miyao-bot)';
+const USER_AGENT = 'Miyao Music Bot (https://github.com/your-repo/miyao-bot)';
 
 // In-memory cache for lyrics (TTL: 1 hour)
 const lyricsCache = new Map();

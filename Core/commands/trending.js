@@ -121,16 +121,17 @@ export default {
  */
 function buildTrendingQuery(region, genre) {
     const year = new Date().getFullYear();
+    const month = new Date().toLocaleString('en-US', { month: 'long' });
     const queries = [];
 
-    // Region-specific queries
+    // Region-specific queries with better keywords
     const regionQueries = {
-        'global': `top hits ${year}`,
-        'vn': `nhạc việt hay nhất ${year}`,
-        'kr': `kpop trending ${year}`,
-        'jp': `jpop hits ${year}`,
-        'us': `billboard hot 100 ${year}`,
-        'uk': `uk top 40 ${year}`
+        'global': `top global hits ${year} ${month}`,
+        'vn': `nhạc việt hot ${year} vpop trending`,
+        'kr': `kpop trending ${year} ${month} official`,
+        'jp': `jpop hits ${year} trending japan`,
+        'us': `billboard top 100 ${year} us trending`,
+        'uk': `uk top 40 ${year} trending chart`
     };
 
     queries.push(regionQueries[region] || regionQueries['global']);
@@ -140,7 +141,8 @@ function buildTrendingQuery(region, genre) {
         queries.push(genre);
     }
 
-    queries.push('official playlist');
+    // Add playlist keywords for better results
+    queries.push('playlist official audio');
 
     return queries.join(' ');
 }

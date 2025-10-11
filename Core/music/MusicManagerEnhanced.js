@@ -83,47 +83,161 @@ class NodeHealthMonitor extends EventEmitter {
 }
 
 /**
- * Search Cache with TTL and LRU eviction
+ * Enhanced Search Cache with TTL, LRU eviction, compression, and warming
  */
 class SearchCache {
     constructor(maxSize = CACHE.MAX_SIZE, ttlMs = TIME.SEARCH_CACHE_TTL) {
         this.cache = new Map();
         this.maxSize = maxSize;
         this.ttlMs = ttlMs;
+        this.accessCount = new Map(); // Track access frequency for LRU
+        this.stats = {
+            hits: 0,
+            misses: 0,
+            evictions: 0,
+            compressionSavings: 0
+        };
     }
 
-    set(key, value) {
-        // Evict oldest if at capacity
+    set(key, value, compress = false) {
+        // Evict LRU item if at capacity
         if (this.cache.size >= this.maxSize) {
-            const firstKey = this.cache.keys().next().value;
-            this.cache.delete(firstKey);
+            this.evictLRU();
         }
 
-        this.cache.set(key, {
+        const entry = {
             value,
-            timestamp: Date.now()
-        });
+            timestamp: Date.now(),
+            compressed: compress,
+            size: this.estimateSize(value)
+        };
+
+        // Compress large objects if requested
+        if (compress && entry.size > 10000) {
+            entry.value = this.compress(value);
+            const newSize = this.estimateSize(entry.value);
+            this.stats.compressionSavings += (entry.size - newSize);
+            entry.size = newSize;
+        }
+
+        this.cache.set(key, entry);
+        this.accessCount.set(key, 1);
     }
 
     get(key) {
         const entry = this.cache.get(key);
-        if (!entry) return null;
+        if (!entry) {
+            this.stats.misses++;
+            return null;
+        }
 
         // Check if expired
         if (Date.now() - entry.timestamp > this.ttlMs) {
             this.cache.delete(key);
+            this.accessCount.delete(key);
+            this.stats.misses++;
             return null;
         }
 
-        return entry.value;
+        // Update access count for LRU
+        this.accessCount.set(key, (this.accessCount.get(key) || 0) + 1);
+        this.stats.hits++;
+
+        // Decompress if needed
+        return entry.compressed ? this.decompress(entry.value) : entry.value;
+    }
+
+    evictLRU() {
+        // Find least recently used (lowest access count)
+        let minAccess = Infinity;
+        let lruKey = null;
+
+        for (const [key, count] of this.accessCount.entries()) {
+            if (count < minAccess) {
+                minAccess = count;
+                lruKey = key;
+            }
+        }
+
+        if (lruKey) {
+            this.cache.delete(lruKey);
+            this.accessCount.delete(lruKey);
+            this.stats.evictions++;
+        } else {
+            // Fallback to oldest
+            const firstKey = this.cache.keys().next().value;
+            if (firstKey) {
+                this.cache.delete(firstKey);
+                this.accessCount.delete(firstKey);
+                this.stats.evictions++;
+            }
+        }
+    }
+
+    compress(value) {
+        // Simple compression: JSON stringify and remove whitespace
+        // For production, consider using zlib or similar
+        return JSON.stringify(value);
+    }
+
+    decompress(value) {
+        return JSON.parse(value);
+    }
+
+    estimateSize(obj) {
+        // Rough estimate of object size in bytes
+        try {
+            return JSON.stringify(obj).length * 2; // UTF-16
+        } catch {
+            return 1000; // Default estimate
+        }
     }
 
     clear() {
         this.cache.clear();
+        this.accessCount.clear();
     }
 
     size() {
         return this.cache.size;
+    }
+
+    getStats() {
+        const hitRate = this.stats.hits + this.stats.misses > 0
+            ? (this.stats.hits / (this.stats.hits + this.stats.misses) * 100).toFixed(2)
+            : 0;
+
+        return {
+            ...this.stats,
+            hitRate: hitRate + '%',
+            size: this.cache.size,
+            maxSize: this.maxSize
+        };
+    }
+
+    /**
+     * Pre-warm cache with popular searches
+     */
+    async warmCache(searches, searchFn) {
+        logger.info(`Warming cache with ${searches.length} popular searches...`);
+        
+        let warmed = 0;
+        for (const query of searches) {
+            if (this.cache.has(query)) continue;
+            
+            try {
+                const result = await searchFn(query);
+                if (result) {
+                    this.set(query, result, true);
+                    warmed++;
+                }
+            } catch (error) {
+                logger.debug(`Cache warm failed for: ${query}`, { error: error.message });
+            }
+        }
+
+        logger.info(`Cache warmed: ${warmed}/${searches.length} entries`);
+        return { warmed, total: searches.length };
     }
 }
 
@@ -629,6 +743,7 @@ export class EnhancedQueue {
         this.loop = 'off';
         this.volume = manager.config.music.defaultVolume || 50;
         this.paused = false;
+        this.autoplay = false; // Autoplay related tracks
         
         // Filters
         this.filters = {
@@ -795,6 +910,14 @@ export class EnhancedQueue {
             
             if (this.tracks.length > 0) {
                 this.play();
+            } else if (this.autoplay && this.current) {
+                // Autoplay: add related track
+                logger.info('Autoplay enabled, searching for related track', { guildId: this.guildId });
+                this.addRelatedTrack().catch(error => {
+                    logger.error('Autoplay failed', { guildId: this.guildId, error: error.message });
+                    this.current = null;
+                    this.scheduleLeave();
+                });
             } else {
                 this.current = null;
                 this.scheduleLeave();
@@ -1266,6 +1389,159 @@ export class EnhancedQueue {
             this.startProgressUpdates();
         } else {
             this.stopProgressUpdates();
+        }
+    }
+    
+    /**
+     * Set autoplay state
+     */
+    setAutoplay(enabled) {
+        this.autoplay = enabled;
+        logger.music(`Autoplay ${enabled ? 'enabled' : 'disabled'}`, { guildId: this.guildId });
+    }
+    
+    /**
+     * Add a related track when queue is empty (autoplay feature)
+     */
+    async addRelatedTrack() {
+        if (!this.current || !this.current.info) {
+            logger.warn('Cannot add related track: no current track', { guildId: this.guildId });
+            return;
+        }
+        
+        try {
+            const track = this.current;
+            const title = track.info.title;
+            const author = track.info.author;
+            
+            // Build multiple search strategies for better results
+            const searchStrategies = [
+                `${author} ${title} official audio`,  // Primary: Same artist + title
+                `${author} top songs hits`,           // Fallback 1: Artist's popular tracks
+                `${title.split(' ').slice(0, 3).join(' ')} remix cover`,  // Fallback 2: Similar title variations
+                `trending ${author.split(' ')[0]} music 2025`  // Fallback 3: Trending from artist
+            ];
+            
+            logger.info('Autoplay searching for related track', { 
+                guildId: this.guildId,
+                currentTrack: title,
+                currentAuthor: author,
+                strategies: searchStrategies.length
+            });
+            
+            let result = null;
+            let strategyUsed = 0;
+            
+            // Try strategies in order until we get results
+            for (let i = 0; i < searchStrategies.length && !result; i++) {
+                try {
+                    const searchQuery = searchStrategies[i];
+                    logger.debug(`Autoplay strategy ${i + 1}: ${searchQuery}`, { guildId: this.guildId });
+                    
+                    const searchResult = await this.manager.search(`ytsearch:${searchQuery}`, null);
+                    
+                    if (searchResult && searchResult.tracks && searchResult.tracks.length > 0) {
+                        result = searchResult;
+                        strategyUsed = i + 1;
+                        logger.debug(`Autoplay strategy ${i + 1} succeeded with ${searchResult.tracks.length} results`);
+                        break;
+                    }
+                } catch (error) {
+                    logger.debug(`Autoplay strategy ${i + 1} failed: ${error.message}`);
+                }
+            }
+            
+            if (!result || !result.tracks || result.tracks.length === 0) {
+                logger.warn('Autoplay: No related tracks found after all strategies', { guildId: this.guildId });
+                this.current = null;
+                this.scheduleLeave();
+                return;
+            }
+            
+            // Filter out recently played tracks and current track
+            const currentLower = title.toLowerCase();
+            const recentTitles = new Set(
+                this.history.slice(0, 5).map(h => h.track?.info?.title?.toLowerCase())
+            );
+            
+            const candidates = result.tracks.filter(t => {
+                const tTitle = t.info?.title?.toLowerCase() || '';
+                // Skip if same as current or recently played
+                if (tTitle === currentLower || recentTitles.has(tTitle)) {
+                    return false;
+                }
+                // Skip if too short (likely ads/intros)
+                if (t.info?.length < 60000) {
+                    return false;
+                }
+                return true;
+            });
+            
+            if (candidates.length === 0) {
+                logger.warn('Autoplay: All results were filtered out (recent/duplicate/too short)', { guildId: this.guildId });
+                // Use first track as last resort
+                if (result.tracks.length > 1) {
+                    const fallback = result.tracks[1]; // Skip first to avoid exact duplicate
+                    fallback.requester = 'autoplay';
+                    this.tracks.push(fallback);
+                    logger.info('Autoplay: Added fallback track', { 
+                        guildId: this.guildId,
+                        track: fallback.info.title
+                    });
+                    await this.play();
+                    
+                    // Send notification
+                    await this._sendAutoplayNotification(fallback);
+                    return;
+                }
+                this.current = null;
+                this.scheduleLeave();
+                return;
+            }
+            
+            // Select a random track from candidates for variety
+            const selectedTrack = candidates[Math.floor(Math.random() * Math.min(candidates.length, 5))];
+            selectedTrack.requester = 'autoplay';
+            
+            logger.info('Autoplay: Added related track', { 
+                guildId: this.guildId,
+                track: selectedTrack.info.title,
+                author: selectedTrack.info.author,
+                strategy: strategyUsed,
+                candidatesCount: candidates.length
+            });
+            
+            this.tracks.push(selectedTrack);
+            await this.play();
+            
+            // Send notification
+            await this._sendAutoplayNotification(selectedTrack);
+            
+        } catch (error) {
+            logger.error('Autoplay error', { guildId: this.guildId, error: error.message, stack: error.stack });
+            this.current = null;
+            this.scheduleLeave();
+        }
+    }
+    
+    /**
+     * Send autoplay notification to text channel
+     * @private
+     */
+    async _sendAutoplayNotification(track) {
+        if (!this.textChannel || !track) return;
+        
+        try {
+            const { EmbedBuilder } = await import('discord.js');
+            
+            const embed = new EmbedBuilder()
+                .setColor('#9B59B6')
+                .setDescription(`🎵 **Autoplay:** Thêm [${track.info.title}](${track.info.uri})\nBởi ${track.info.author}`)
+                .setFooter({ text: 'Dùng /autoplay để tắt' });
+            
+            await this.textChannel.send({ embeds: [embed] });
+        } catch (error) {
+            logger.debug('Could not send autoplay notification', { guildId: this.guildId, error: error.message });
         }
     }
     

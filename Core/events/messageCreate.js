@@ -40,6 +40,14 @@ export default {
                 // Options handling
                 options: {
                     _hoistedOptions: [],
+                    getSubcommand: () => {
+                        // For playlist command, default to 'menu' if no subcommand provided
+                        if (commandName === 'playlist' && args.length === 0) {
+                            return 'menu';
+                        }
+                        // Otherwise return first arg as subcommand, or null
+                        return args.length > 0 ? args[0] : null;
+                    },
                     getString: (name) => {
                         const optIndex = command.data.options?.findIndex(opt => opt.name === name);
                         if (optIndex === undefined || optIndex === -1) return null;
@@ -58,6 +66,9 @@ export default {
                         
                         const value = parseInt(args[optIndex]);
                         return isNaN(value) ? null : value;
+                    },
+                    getBoolean: (name) => {
+                        return null; // Prefix commands don't support boolean options well
                     }
                 },
                 

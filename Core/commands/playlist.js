@@ -103,6 +103,26 @@ export default {
         )
         .addSubcommand(subcommand =>
             subcommand
+                .setName('save')
+                .setDescription('Lưu bài hát đang phát hoặc hàng đợi vào playlist')
+                .addStringOption(option =>
+                    option.setName('name')
+                        .setDescription('Tên playlist')
+                        .setAutocomplete(true)
+                        .setRequired(true)
+                )
+                .addStringOption(option =>
+                    option.setName('source')
+                        .setDescription('Nguồn lưu')
+                        .setRequired(false)
+                        .addChoices(
+                            { name: 'Bài đang phát', value: 'current' },
+                            { name: 'Toàn bộ hàng đợi', value: 'queue' }
+                        )
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
                 .setName('play')
                 .setDescription('Phát toàn bộ playlist')
                 .addStringOption(option =>
@@ -111,6 +131,11 @@ export default {
                         .setAutocomplete(true)
                         .setRequired(true)
                 )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('menu')
+                .setDescription('Hiển thị menu quản lý playlist')
         ),
 
     async execute(interaction, client) {
@@ -118,6 +143,9 @@ export default {
             const subcommand = interaction.options.getSubcommand();
 
             switch (subcommand) {
+                case 'menu':
+                    await handleMenu(interaction, client);
+                    break;
                 case 'create':
                     await handleCreate(interaction, client);
                     break;
@@ -136,11 +164,16 @@ export default {
                 case 'remove':
                     await handleRemove(interaction, client);
                     break;
+                case 'save':
+                    await handleSave(interaction, client);
+                    break;
                 case 'play':
                     await handlePlay(interaction, client);
                     break;
                 default:
-                    throw new ValidationError('Subcommand không hợp lệ');
+                    // Default to menu if subcommand not recognized
+                    await handleMenu(interaction, client);
+                    break;
             }
 
             logger.command(`playlist-${subcommand}`, interaction.user.id, interaction.guildId);
@@ -151,6 +184,56 @@ export default {
         }
     }
 };
+
+/**
+ * Display playlist management menu
+ */
+async function handleMenu(interaction, client) {
+    const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = await import('discord.js');
+    
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle('🎵 Quản Lý Playlist')
+        .setDescription(
+            '**Chào mừng đến với hệ thống quản lý playlist!**\n\n' +
+            '📝 **Tạo playlist:** Tạo playlist mới với tên và mô tả\n' +
+            '🔍 **Tìm kiếm:** Xem chi tiết playlist của bạn\n' +
+            '➕ **Thêm nhạc:** Thêm bài hát vào playlist có sẵn\n' +
+            '🗑️ **Xóa playlist:** Xóa playlist không còn dùng\n\n' +
+            '💡 *Chọn một nút bên dưới để bắt đầu!*'
+        )
+        .setFooter({ text: client.config.bot.footer })
+        .setTimestamp();
+    
+    const row = new ActionRowBuilder()
+        .addComponents(
+            new ButtonBuilder()
+                .setCustomId('playlist_create_modal')
+                .setLabel('Thêm Playlist')
+                .setEmoji('📝')
+                .setStyle(ButtonStyle.Success),
+            
+            new ButtonBuilder()
+                .setCustomId('playlist_search_modal')
+                .setLabel('Tìm Kiếm')
+                .setEmoji('🔍')
+                .setStyle(ButtonStyle.Primary),
+            
+            new ButtonBuilder()
+                .setCustomId('playlist_add_track_modal')
+                .setLabel('Thêm Nhạc')
+                .setEmoji('➕')
+                .setStyle(ButtonStyle.Primary),
+            
+            new ButtonBuilder()
+                .setCustomId('playlist_delete_modal')
+                .setLabel('Xóa Playlist')
+                .setEmoji('🗑️')
+                .setStyle(ButtonStyle.Danger)
+        );
+    
+    await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
+}
 
 /**
  * Create new playlist
@@ -410,6 +493,88 @@ async function handleRemove(interaction, client) {
         .setTitle('✅ Đã Xóa Khỏi Playlist')
         .setDescription(`**${trackToRemove.track_title}**\n└ Đã xóa khỏi playlist **${name}**`)
         .setFooter({ text: `Còn ${remainingTracks.length} bài hát` })
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+/**
+ * Save current track or queue to playlist
+ */
+async function handleSave(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const name = interaction.options.getString('name');
+    const source = interaction.options.getString('source') || 'current';
+
+    const playlist = Playlist.getByName(name, interaction.user.id, interaction.guildId);
+
+    if (!playlist) {
+        throw new PlaylistNotFoundError(name);
+    }
+
+    const queue = client.musicManager.getQueue(interaction.guildId);
+
+    if (!queue || (!queue.current && queue.tracks.length === 0)) {
+        throw new ValidationError('Không có nhạc nào đang phát', 'queue');
+    }
+
+    let tracksToSave = [];
+    let savedCount = 0;
+    let skippedCount = 0;
+
+    if (source === 'current') {
+        // Save only current track
+        if (!queue.current) {
+            throw new ValidationError('Không có bài nào đang phát', 'current');
+        }
+        tracksToSave = [queue.current];
+    } else {
+        // Save all tracks in queue including current
+        tracksToSave = queue.current ? [queue.current, ...queue.tracks] : queue.tracks;
+    }
+
+    if (tracksToSave.length === 0) {
+        throw new ValidationError('Không có bài hát nào để lưu', 'tracks');
+    }
+
+    // Add each track to playlist
+    for (const track of tracksToSave) {
+        try {
+            const simpleTrack = {
+                url: track.info.uri,
+                title: track.info.title,
+                author: track.info.author,
+                duration: track.info.length
+            };
+
+            const added = Playlist.addTrack(playlist.id, simpleTrack, interaction.user.id);
+            
+            if (added) {
+                savedCount++;
+            } else {
+                skippedCount++;
+            }
+        } catch (error) {
+            logger.error('Failed to add track to playlist', { 
+                error: error.message, 
+                track: track.info?.title 
+            });
+            skippedCount++;
+        }
+    }
+
+    const finalTracks = Playlist.getTracks(playlist.id);
+
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle('✅ Đã Lưu Vào Playlist')
+        .setDescription(
+            `**${playlist.name}**\n` +
+            `└ Đã lưu ${savedCount}/${tracksToSave.length} bài hát` +
+            (skippedCount > 0 ? `\n⚠️ ${skippedCount} bài đã tồn tại hoặc lỗi` : '')
+        )
+        .setFooter({ text: `Tổng ${finalTracks.length} bài hát trong playlist` })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });

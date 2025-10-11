@@ -101,13 +101,16 @@ export default {
 
             // Strategy 3: Fallback to trending if no history and no filters
             if (!searchQuery) {
-                searchQuery = 'trending music 2025';
+                const year = new Date().getFullYear();
+                searchQuery = `trending hits ${year}`;
             }
 
-            // Add keywords for variety
-            searchQuery += ' mix playlist';
+            // Add keywords for better playlist results
+            const playlistKeywords = ['official playlist', 'top songs', 'best music'];
+            const randomKeyword = playlistKeywords[Math.floor(Math.random() * playlistKeywords.length)];
+            searchQuery += ` ${randomKeyword}`;
 
-            // Search for recommendations
+            // Search for recommendations with better query
             const result = await client.musicManager.search(`ytsearch:${searchQuery}`, interaction.user);
 
             if (!result || !result.tracks || result.tracks.length === 0) {

@@ -6,11 +6,11 @@
 export const VERSION = {
     // Main version
     major: 1,
-    minor: 6,
-    patch: 1,
+    minor: 7,
+    patch: 2,
     
     // Build info
-    build: '2025.10.05',
+    build: '2025.10.07',
     codename: 'Starfield',
     
     // Full version string
@@ -76,39 +76,27 @@ export const ENVIRONMENT = {
 // Release notes for this version
 export const RELEASE_NOTES = {
     version: VERSION.full,
-    date: '2025-10-05',
+    date: '2025-10-07',
     changes: [
         {
             type: 'fixed',
-            description: 'Fixed ready event name mismatch (clientReady -> ready)'
-        },
-        {
-            type: 'fixed',
-            description: 'Fixed Playlist.create() signature in database tests'
-        },
-        {
-            type: 'fixed',
-            description: 'Fixed rate limiter tests - corrected method signatures'
-        },
-        {
-            type: 'fixed',
-            description: 'Fixed interaction event tests - added missing mock methods'
-        },
-        {
-            type: 'improved',
-            description: 'Enhanced error handling in ready event with comprehensive try-catch'
-        },
-        {
-            type: 'improved',
-            description: 'Updated test assertions to match current UI text/labels'
+            description: 'Playlist "Phát Playlist" button now works correctly in search results'
         },
         {
             type: 'added',
-            description: 'Better defensive programming in autoplay command error handling'
+            description: 'Playlist track removal - "Xóa Bài Hát" button in playlist detail view'
         },
         {
-            type: 'fixed',
-            description: 'Fixed database index names in integrity tests'
+            type: 'added',
+            description: 'Queue track removal - "Xóa Bài Nhạc" button in queue view'
+        },
+        {
+            type: 'improved',
+            description: 'Track removal supports both position numbers and song name search'
+        },
+        {
+            type: 'improved',
+            description: 'Enhanced playlist playback with parallel track resolution and progress logging'
         }
     ]
 };

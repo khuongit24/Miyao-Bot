@@ -1,6 +1,8 @@
 import { createErrorEmbed, createSuccessEmbed, createQueueEmbed, createInfoEmbed, createTrackAddedEmbed, createNowPlayingEmbed, createHistoryReplayEmbed } from '../../UI/embeds/MusicEmbeds.js';
 import { createQueueButtons, createNowPlayingButtons, createHistoryReplayButtons } from '../../UI/components/MusicControls.js';
 import logger from '../utils/logger.js';
+import { ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } from 'discord.js';
+import Playlist from '../database/models/Playlist.js';
 
 /**
  * Handle button interactions for music controls
@@ -240,6 +242,18 @@ export async function handleMusicButton(interaction, client) {
                 });
                 break;
             
+            case 'music_add_to_playlist':
+                await handleAddCurrentTrackToPlaylist(interaction, queue, client);
+                break;
+            
+            case 'queue_add_to_playlist':
+                await handleAddQueueToPlaylist(interaction, queue, client);
+                break;
+            
+            case 'queue_remove_track':
+                await handleRemoveQueueTrack(interaction, queue, client);
+                break;
+            
             default:
                 await interaction.reply({
                     embeds: [createErrorEmbed('Nút này chưa được triển khai!', client.config)],
@@ -274,7 +288,7 @@ async function handleShowQueue(interaction, queue, client) {
     
     await interaction.reply({
         embeds: [createQueueEmbed(queue, client.config, page)],
-        components: totalPages > 1 ? createQueueButtons(page, totalPages) : [],
+        components: createQueueButtons(page, totalPages, queue),
         ephemeral: false
     });
 }
@@ -341,7 +355,7 @@ export async function handleQueueButton(interaction, queue, client) {
     // Update message
     await interaction.update({
         embeds: [createQueueEmbed(queue, client.config, page)],
-        components: updatedTotalPages > 1 ? createQueueButtons(page, updatedTotalPages) : []
+        components: createQueueButtons(page, updatedTotalPages, queue)
     });
 }
 
@@ -397,6 +411,7 @@ async function handleResume(interaction, queue, client) {
 }
 
 async function handleStop(interaction, queue, client) {
+    // Check before stopping
     if (!queue || !queue.current) {
         return interaction.reply({
             embeds: [createErrorEmbed('Không có nhạc nào đang phát!', client.config)],
@@ -404,10 +419,12 @@ async function handleStop(interaction, queue, client) {
         });
     }
     
+    // Stop the queue
     await queue.stop();
     
+    // Send success message
     await interaction.reply({
-        embeds: [createSuccessEmbed('Đã dừng', 'Đã dừng phát nhạc và xóa hàng đợi.', client.config)],
+        embeds: [createSuccessEmbed('✅ Đã dừng phát nhạc', 'Đã dừng phát nhạc và xóa hàng đợi thành công.', client.config)],
         ephemeral: true
     });
     
@@ -1019,10 +1036,223 @@ export async function handleDiscoverySelect(interaction, client, type) {
     }
 }
 
+/**
+ * Handle adding current track to a playlist
+ */
+async function handleAddCurrentTrackToPlaylist(interaction, queue, client) {
+    if (!queue || !queue.current) {
+        return interaction.reply({
+            embeds: [createErrorEmbed('Không có bài hát nào đang phát!', client.config)],
+            ephemeral: true
+        });
+    }
+
+    // Show modal to enter playlist name
+    const modal = new ModalBuilder()
+        .setCustomId('add_current_track_to_playlist_modal')
+        .setTitle('Thêm bài hát vào playlist');
+
+    const playlistNameInput = new TextInputBuilder()
+        .setCustomId('playlist_name')
+        .setLabel('Tên playlist')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Nhập tên playlist...')
+        .setRequired(true)
+        .setMaxLength(100);
+
+    const actionRow = new ActionRowBuilder().addComponents(playlistNameInput);
+    modal.addComponents(actionRow);
+
+    await interaction.showModal(modal);
+}
+
+/**
+ * Handle adding entire queue to a playlist
+ */
+async function handleAddQueueToPlaylist(interaction, queue, client) {
+    if (!queue) {
+        return interaction.reply({
+            embeds: [createErrorEmbed('Không có hàng đợi nào!', client.config)],
+            ephemeral: true
+        });
+    }
+
+    const totalTracks = (queue.current ? 1 : 0) + (queue.tracks?.length || 0);
+    
+    if (totalTracks === 0) {
+        return interaction.reply({
+            embeds: [createErrorEmbed('Hàng đợi trống!', client.config)],
+            ephemeral: true
+        });
+    }
+
+    // Show modal to enter playlist name
+    const modal = new ModalBuilder()
+        .setCustomId('add_queue_to_playlist_modal')
+        .setTitle(`Thêm ${totalTracks} bài vào playlist`);
+
+    const playlistNameInput = new TextInputBuilder()
+        .setCustomId('playlist_name')
+        .setLabel('Tên playlist')
+        .setStyle(TextInputStyle.Short)
+        .setPlaceholder('Nhập tên playlist...')
+        .setRequired(true)
+        .setMaxLength(100);
+
+    const actionRow = new ActionRowBuilder().addComponents(playlistNameInput);
+    modal.addComponents(actionRow);
+
+    await interaction.showModal(modal);
+}
+
+/**
+ * Handle removing track from queue
+ */
+async function handleRemoveQueueTrack(interaction, queue, client) {
+    if (!queue) {
+        return interaction.reply({
+            embeds: [createErrorEmbed('Không có hàng đợi nào!', client.config)],
+            ephemeral: true
+        });
+    }
+    
+    const totalTracks = (queue.current ? 1 : 0) + (queue.tracks?.length || 0);
+    
+    if (totalTracks === 0) {
+        return interaction.reply({
+            embeds: [createErrorEmbed('Hàng đợi trống!', client.config)],
+            ephemeral: true
+        });
+    }
+    
+    // Show modal to enter track identifier
+    const modal = new ModalBuilder()
+        .setCustomId('queue_remove_track_modal')
+        .setTitle('Xóa Bài Nhạc Khỏi Hàng Đợi');
+    
+    const trackInput = new TextInputBuilder()
+        .setCustomId('track_identifier')
+        .setLabel('Tên hoặc số thứ tự bài nhạc')
+        .setPlaceholder('Nhập tên bài nhạc hoặc số thứ tự (ví dụ: 1, 2, 3...)')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMaxLength(200);
+    
+    const actionRow = new ActionRowBuilder().addComponents(trackInput);
+    modal.addComponents(actionRow);
+    
+    await interaction.showModal(modal);
+}
+
+/**
+ * Handle queue remove track modal submission
+ */
+export async function handleQueueRemoveTrackModalSubmit(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+    
+    const queue = client.musicManager.getQueue(interaction.guildId);
+    
+    if (!queue) {
+        return interaction.editReply({
+            embeds: [createErrorEmbed('Không có hàng đợi nào!', client.config)]
+        });
+    }
+    
+    const trackIdentifier = interaction.fields.getTextInputValue('track_identifier').trim();
+    
+    if (!trackIdentifier) {
+        return interaction.editReply({
+            embeds: [createErrorEmbed('Vui lòng nhập tên hoặc số thứ tự bài nhạc!', client.config)]
+        });
+    }
+    
+    // Build list of all tracks (current + queued)
+    const allTracks = [];
+    if (queue.current) {
+        allTracks.push({ track: queue.current, position: 0, isCurrent: true });
+    }
+    if (queue.tracks && queue.tracks.length > 0) {
+        queue.tracks.forEach((track, index) => {
+            allTracks.push({ track, position: index + 1, isCurrent: false });
+        });
+    }
+    
+    if (allTracks.length === 0) {
+        return interaction.editReply({
+            embeds: [createErrorEmbed('Hàng đợi trống!', client.config)]
+        });
+    }
+    
+    let trackToRemove = null;
+    let removePosition = -1;
+    
+    // Check if it's a number (position)
+    const position = parseInt(trackIdentifier);
+    if (!isNaN(position)) {
+        if (position === 0) {
+            return interaction.editReply({
+                embeds: [createErrorEmbed('Không thể xóa bài đang phát! Hãy dùng /skip hoặc /stop.', client.config)]
+            });
+        }
+        
+        if (position < 1 || position > allTracks.length - 1) {
+            return interaction.editReply({
+                embeds: [createErrorEmbed(`Vị trí không hợp lệ! Hàng đợi có ${allTracks.length - 1} bài (1-${allTracks.length - 1})`, client.config)]
+            });
+        }
+        
+        trackToRemove = allTracks[position];
+        removePosition = position - 1; // Queue array is 0-indexed for queued tracks
+    } else {
+        // Search by name (excluding current track)
+        const searchTerm = trackIdentifier.toLowerCase();
+        const queuedTracks = allTracks.filter(t => !t.isCurrent);
+        
+        const foundTrack = queuedTracks.find(t => 
+            t.track.info.title.toLowerCase().includes(searchTerm)
+        );
+        
+        if (!foundTrack) {
+            return interaction.editReply({
+                embeds: [createErrorEmbed(`Không tìm thấy bài nhạc có tên "${trackIdentifier}" trong hàng đợi.`, client.config)]
+            });
+        }
+        
+        trackToRemove = foundTrack;
+        removePosition = foundTrack.position - 1;
+    }
+    
+    if (!trackToRemove || trackToRemove.isCurrent) {
+        return interaction.editReply({
+            embeds: [createErrorEmbed('Không thể xóa bài đang phát! Hãy dùng /skip hoặc /stop.', client.config)]
+        });
+    }
+    
+    // Remove track from queue
+    try {
+        queue.remove(removePosition);
+        
+        const embed = createSuccessEmbed(
+            '✅ Đã Xóa Bài Nhạc',
+            `**${trackToRemove.track.info.title}**\n└ Đã xóa khỏi hàng đợi`,
+            client.config
+        );
+        
+        await interaction.editReply({ embeds: [embed] });
+        logger.command('queue-remove-track-modal', interaction.user.id, interaction.guildId);
+    } catch (error) {
+        logger.error('Failed to remove track from queue', error);
+        await interaction.editReply({
+            embeds: [createErrorEmbed('Đã xảy ra lỗi khi xóa bài nhạc khỏi hàng đợi!', client.config)]
+        });
+    }
+}
+
 export default {
     handleMusicButton,
     handleQueueButton,
     handleSearchSelect,
     handleHistoryReplaySelect,
-    handleDiscoverySelect
+    handleDiscoverySelect,
+    handleQueueRemoveTrackModalSubmit
 };

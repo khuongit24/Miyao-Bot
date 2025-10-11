@@ -1,6 +1,7 @@
 import logger from '../utils/logger.js';
-import { handleMusicButton, handleQueueButton, handleSearchSelect, handleHistoryReplaySelect, handleDiscoverySelect } from './buttonHandler.js';
+import { handleMusicButton, handleQueueButton, handleSearchSelect, handleHistoryReplaySelect, handleDiscoverySelect, handleQueueRemoveTrackModalSubmit } from './buttonHandler.js';
 import { handleHelpCategory, handleFeedback, handleBugReport, handleFeedbackSubmit, handleBugReportSubmit } from './helpHandler.js';
+import { handlePlaylistButton, handlePlaylistModalSubmit } from './playlistHandler.js';
 import { commandRateLimiter } from '../utils/rate-limiter.js';
 import Playlist from '../database/models/Playlist.js';
 
@@ -57,6 +58,14 @@ export default {
                     await handleFeedbackSubmit(interaction, client);
                 } else if (interaction.customId === 'bugreport_modal') {
                     await handleBugReportSubmit(interaction, client);
+                } else if (interaction.customId.startsWith('playlist_') || 
+                           interaction.customId.startsWith('add_current_track_to_playlist') ||
+                           interaction.customId.startsWith('add_queue_to_playlist')) {
+                    // Handle all playlist modal submissions
+                    await handlePlaylistModalSubmit(interaction, client);
+                } else if (interaction.customId === 'queue_remove_track_modal') {
+                    // Handle queue track removal modal
+                    await handleQueueRemoveTrackModalSubmit(interaction, client);
                 }
                 
                 logger.info(`Modal handled successfully: ${interaction.customId}`);
@@ -127,8 +136,12 @@ export default {
                     return;
                 }
                 
+                // Check if it's a playlist management button
+                if (interaction.customId.startsWith('playlist_')) {
+                    await handlePlaylistButton(interaction, client);
+                }
                 // Check if it's a queue navigation button
-                if (interaction.customId.startsWith('queue_')) {
+                else if (interaction.customId.startsWith('queue_')) {
                     await handleQueueButton(interaction, client.musicManager.getQueue(interaction.guildId), client);
                 }
                 // Check if it's a music control button, search selection (including confirm/detailed), or history replay
@@ -151,8 +164,8 @@ export default {
             return;
         }
         
-        // Handle context menu commands
-        if (interaction.isContextMenuCommand()) {
+        // Handle context menu commands (check for method existence)
+        if (interaction.isContextMenuCommand && interaction.isContextMenuCommand()) {
             logger.debug(`Context menu command: ${interaction.commandName}`);
             
             try {
