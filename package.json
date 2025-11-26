@@ -1,28 +1,51 @@
 {
   "name": "miyao-bot",
-  "version": "1.4.0",
-  "description": "Miyao Discord Music Bot - High performance music bot with desktop launcher, advanced features, and modern UI/UX",
+  "version": "1.8.0",
+  "description": "Miyao Discord Music Bot",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js",
     "dev": "node --watch index.js",
-    "deploy": "node deploy-commands.js",
-    "setup": "node auto-setup.js",
-    "clear-commands": "node clear-commands.js",
-    "launcher": "node miyao-launcher.js",
-    "build-launcher": "pkg miyao-launcher.js --targets node18-win-x64 --output MiyaoLauncher.exe --compress Brotli"
+    "deploy": "node src/scripts/deploy-commands.js",
+    "setup": "node src/scripts/auto-setup.js",
+    "clear-commands": "node src/scripts/clear-commands.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage",
+    "test:verbose": "node --experimental-vm-modules node_modules/jest/bin/jest.js --verbose",
+    "lint": "eslint src/ index.js --ext .js",
+    "lint:fix": "eslint src/ index.js --ext .js --fix",
+    "format": "prettier --write \"**/*.{js,json,md}\"",
+    "format:check": "prettier --check \"**/*.{js,json,md}\""
   },
-  "keywords": ["discord", "music", "bot", "lavalink"],
+  "keywords": [
+    "discord",
+    "music",
+    "bot",
+    "lavalink"
+  ],
   "author": "Miyao Team",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "dependencies": {
-    "discord.js": "^14.16.3",
+    "better-sqlite3": "^12.4.1",
+    "cors": "^2.8.5",
+    "discord.js": "^14.22.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.18.2",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
     "shoukaku": "^4.1.1",
-    "winston": "^3.17.0",
-    "dotenv": "^16.4.7"
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "eslint": "^9.37.0",
+    "eslint-config-prettier": "^10.1.8",
+    "jest": "^30.2.0",
+    "prettier": "^3.6.2"
   }
 }

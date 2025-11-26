@@ -1,0 +1,60 @@
+# Codecov Configuration
+# https://docs.codecov.io/docs/codecov-yaml
+
+# Coverage thresholds
+coverage:
+  precision: 2
+  round: down
+  range: "70...100"
+  
+  status:
+    # Project-level coverage
+    project:
+      default:
+        target: 70%
+        threshold: 5%
+        base: auto
+        if_not_found: success
+        if_ci_failed: error
+    
+    # Patch-level coverage (for PRs)
+    patch:
+      default:
+        target: 80%
+        threshold: 10%
+        base: auto
+        if_not_found: success
+        if_ci_failed: error
+
+# Comment configuration
+comment:
+  layout: "header, diff, files, footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+  branches:
+    - main
+    - develop
+
+# Ignore patterns
+ignore:
+  - "tests/**"
+  - "coverage/**"
+  - "node_modules/**"
+  - "launcher-v2/**"
+  - "master-setup/**"
+  - "docs/**"
+  - "**/*.test.js"
+  - "**/*.spec.js"
+  - "**/setup.js"
+  - "jest.config.js"
+  - "deploy-commands.js"
+  - "clear-commands.js"
+
+# Flag configurations
+flags:
+  unittests:
+    paths:
+      - src/
+    carryforward: true
