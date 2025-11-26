@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+    <title>Miyao Launcher</title>
+    <link rel="stylesheet" href="styles/main.css">
+</head>
+<body>
+    <!-- Setup Wizard (First Run) -->
+    <div id="setup-wizard" class="setup-wizard hidden">
+        <div class="setup-container">
+            <div class="setup-header">
+                <div class="logo">
+                    <span class="logo-icon">🎵</span>
+                    <h1>Miyao Launcher</h1>
+                </div>
+                <p class="setup-subtitle">Thiết lập ban đầu</p>
+            </div>
+
+            <!-- Step 1: Requirements Check -->
+            <div class="setup-step" id="step-requirements">
+                <h2>🔍 Kiểm tra yêu cầu hệ thống</h2>
+                <p class="step-description">Đang kiểm tra các yêu cầu cần thiết để chạy Miyao Bot...</p>
+                
+                <div class="requirements-list">
+                    <div class="requirement-item" id="req-node">
+                        <span class="req-icon">⏳</span>
+                        <div class="req-info">
+                            <span class="req-name">Node.js</span>
+                            <span class="req-version">Phiên bản yêu cầu: ≥ 20.0.0</span>
+                        </div>
+                        <span class="req-status">Đang kiểm tra...</span>
+                    </div>
+                    <div class="requirement-item" id="req-java">
+                        <span class="req-icon">⏳</span>
+                        <div class="req-info">
+                            <span class="req-name">Java (cho Lavalink)</span>
+                            <span class="req-version">Phiên bản yêu cầu: ≥ 17</span>
+                        </div>
+                        <span class="req-status">Đang kiểm tra...</span>
+                    </div>
+                    <div class="requirement-item" id="req-npm">
+                        <span class="req-icon">⏳</span>
+                        <div class="req-info">
+                            <span class="req-name">npm</span>
+                            <span class="req-version">Quản lý gói Node.js</span>
+                        </div>
+                        <span class="req-status">Đang kiểm tra...</span>
+                    </div>
+                </div>
+
+                <div class="requirements-result hidden" id="requirements-result">
+                    <div class="result-message"></div>
+                </div>
+
+                <div class="setup-actions">
+                    <button class="btn btn-primary" id="btn-check-requirements">Kiểm tra lại</button>
+                    <button class="btn btn-success" id="btn-next-step" disabled>Tiếp tục</button>
+                </div>
+            </div>
+
+            <!-- Step 2: Select Bot Directory -->
+            <div class="setup-step hidden" id="step-select-directory">
+                <h2>📁 Chọn thư mục Miyao Bot</h2>
+                <p class="step-description">Chọn thư mục chứa mã nguồn Miyao Bot (phiên bản ≥ 1.4.0)</p>
+                
+                <div class="directory-select">
+                    <div class="directory-path" id="selected-path">
+                        <span class="path-placeholder">Chưa chọn thư mục</span>
+                    </div>
+                    <button class="btn btn-secondary" id="btn-browse">Duyệt...</button>
+                </div>
+
+                <div class="directory-validation hidden" id="directory-validation">
+                    <div class="validation-message"></div>
+                </div>
+
+                <div class="setup-actions">
+                    <button class="btn btn-secondary" id="btn-back-step">Quay lại</button>
+                    <button class="btn btn-success" id="btn-finish-setup" disabled>Hoàn tất</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Application -->
+    <div id="main-app" class="main-app hidden">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <span class="logo-icon">🎵</span>
+                    <span class="logo-text">Miyao</span>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-tab="lavalink">
+                    <span class="nav-icon">🎛️</span>
+                    <span class="nav-text">Lavalink</span>
+                    <span class="status-dot" id="lavalink-status-dot"></span>
+                </button>
+                <button class="nav-item" data-tab="bot">
+                    <span class="nav-icon">🤖</span>
+                    <span class="nav-text">Bot</span>
+                    <span class="status-dot" id="bot-status-dot"></span>
+                </button>
+                <button class="nav-item" data-tab="settings">
+                    <span class="nav-icon">⚙️</span>
+                    <span class="nav-text">Cài đặt</span>
+                </button>
+                <button class="nav-item" data-tab="info">
+                    <span class="nav-icon">ℹ️</span>
+                    <span class="nav-text">Thông tin</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="bot-path-info">
+                    <span class="path-label">Đường dẫn Bot:</span>
+                    <span class="path-value" id="current-bot-path" title="">...</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="main-content">
+            <!-- Lavalink Tab -->
+            <section class="tab-content active" id="tab-lavalink">
+                <div class="tab-header">
+                    <h1>🎛️ Lavalink Server</h1>
+                    <div class="status-badge" id="lavalink-status-badge">
+                        <span class="status-indicator"></span>
+                        <span class="status-text">Đã dừng</span>
+                    </div>
+                </div>
+
+                <div class="tab-body">
+                    <div class="control-panel">
+                        <div class="control-buttons">
+                            <button class="btn btn-success btn-lg" id="btn-start-lavalink">
+                                <span class="btn-icon">▶️</span>
+                                <span class="btn-text">Khởi động Lavalink</span>
+                            </button>
+                            <button class="btn btn-danger btn-lg" id="btn-stop-lavalink" disabled>
+                                <span class="btn-icon">⏹️</span>
+                                <span class="btn-text">Dừng Lavalink</span>
+                            </button>
+                        </div>
+                        <div class="control-info">
+                            <p>Lavalink là server âm thanh cần thiết để bot phát nhạc.</p>
+                            <p>Hãy khởi động Lavalink trước khi chạy Bot.</p>
+                        </div>
+                    </div>
+
+                    <div class="terminal-container">
+                        <div class="terminal-header">
+                            <div class="terminal-dots">
+                                <span class="terminal-dot red"></span>
+                                <span class="terminal-dot yellow"></span>
+                                <span class="terminal-dot green"></span>
+                            </div>
+                            <span class="terminal-title">📟 Lavalink Terminal</span>
+                            <button class="btn btn-sm btn-secondary" id="btn-clear-lavalink-terminal">Xóa</button>
+                        </div>
+                        <div class="terminal-output" id="lavalink-terminal">
+                            <div class="terminal-welcome">Chưa có output. Nhấn "Khởi động Lavalink" để bắt đầu.</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Bot Tab -->
+            <section class="tab-content" id="tab-bot">
+                <div class="tab-header">
+                    <h1>🤖 Discord Bot</h1>
+                    <div class="status-badge" id="bot-status-badge">
+                        <span class="status-indicator"></span>
+                        <span class="status-text">Đã dừng</span>
+                    </div>
+                </div>
+
+                <div class="tab-body">
+                    <div class="control-panel">
+                        <div class="control-buttons">
+                            <button class="btn btn-success btn-lg" id="btn-start-bot">
+                                <span class="btn-icon">▶️</span>
+                                <span class="btn-text">Khởi động Bot</span>
+                            </button>
+                            <button class="btn btn-danger btn-lg" id="btn-stop-bot" disabled>
+                                <span class="btn-icon">⏹️</span>
+                                <span class="btn-text">Dừng Bot</span>
+                            </button>
+                            <button class="btn btn-primary btn-lg" id="btn-deploy-commands">
+                                <span class="btn-icon">🚀</span>
+                                <span class="btn-text">Deploy Commands</span>
+                            </button>
+                        </div>
+                        <div class="control-info">
+                            <p>⚠️ Khuyến nghị: Khởi động Lavalink trước khi chạy Bot.</p>
+                            <p>Deploy Commands: Đăng ký/cập nhật slash commands lên Discord.</p>
+                        </div>
+                    </div>
+
+                    <div class="terminal-container">
+                        <div class="terminal-header">
+                            <div class="terminal-dots">
+                                <span class="terminal-dot red"></span>
+                                <span class="terminal-dot yellow"></span>
+                                <span class="terminal-dot green"></span>
+                            </div>
+                            <span class="terminal-title">📟 Bot Terminal</span>
+                            <button class="btn btn-sm btn-secondary" id="btn-clear-bot-terminal">Xóa</button>
+                        </div>
+                        <div class="terminal-output" id="bot-terminal">
+                            <div class="terminal-welcome">Chưa có output. Nhấn "Khởi động Bot" để bắt đầu.</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Settings Tab -->
+            <section class="tab-content" id="tab-settings">
+                <div class="tab-header">
+                    <h1>⚙️ Cài đặt</h1>
+                </div>
+
+                <div class="tab-body settings-body">
+                    <!-- .env Settings Section -->
+                    <div class="settings-section">
+                        <div class="section-header">
+                            <h2>📝 Cài đặt .env</h2>
+                            <p>Chỉnh sửa file cấu hình .env của bot</p>
+                        </div>
+                        
+                        <div class="env-editor-container">
+                            <div class="env-editor-toolbar">
+                                <button class="btn btn-secondary" id="btn-reload-env">
+                                    <span>🔄</span> Tải lại
+                                </button>
+                                <button class="btn btn-success" id="btn-save-env">
+                                    <span>💾</span> Lưu thay đổi
+                                </button>
+                            </div>
+                            <div class="env-editor-status" id="env-editor-status"></div>
+                            <textarea class="env-editor" id="env-editor" placeholder="Đang tải file .env..."></textarea>
+                            <div class="env-editor-hint">
+                                <p>💡 Mẹo: Các dòng bắt đầu bằng # là comment và sẽ bị bỏ qua.</p>
+                                <p>⚠️ Lưu ý: Khởi động lại bot sau khi thay đổi cấu hình để áp dụng.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bot Directory Section -->
+                    <div class="settings-section">
+                        <div class="section-header">
+                            <h2>📁 Đường dẫn thư mục Bot</h2>
+                            <p>Thay đổi đường dẫn đến thư mục chứa Miyao Bot</p>
+                        </div>
+                        
+                        <div class="directory-settings">
+                            <div class="current-directory">
+                                <span class="label">Đường dẫn hiện tại:</span>
+                                <span class="value" id="settings-bot-path">...</span>
+                            </div>
+                            <button class="btn btn-primary" id="btn-change-directory">
+                                <span>📂</span> Thay đổi đường dẫn
+                            </button>
+                            <div class="directory-note">
+                                <p>Yêu cầu: Miyao Bot phiên bản ≥ 1.4.0</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Info Tab -->
+            <section class="tab-content" id="tab-info">
+                <div class="tab-header">
+                    <h1>ℹ️ Thông tin</h1>
+                </div>
+
+                <div class="tab-body info-body">
+                    <!-- Launcher Info -->
+                    <div class="info-card">
+                        <div class="info-card-header">
+                            <span class="info-icon">🚀</span>
+                            <h2>Miyao Launcher</h2>
+                        </div>
+                        <div class="info-card-body">
+                            <div class="info-row">
+                                <span class="info-label">Phiên bản:</span>
+                                <span class="info-value" id="launcher-version">...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Mã build:</span>
+                                <span class="info-value" id="launcher-build">...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Tên mã:</span>
+                                <span class="info-value" id="launcher-codename">...</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Bot Info -->
+                    <div class="info-card">
+                        <div class="info-card-header">
+                            <span class="info-icon">🤖</span>
+                            <h2>Miyao Bot</h2>
+                        </div>
+                        <div class="info-card-body">
+                            <div class="info-row">
+                                <span class="info-label">Phiên bản:</span>
+                                <span class="info-value" id="bot-version">...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Mã build:</span>
+                                <span class="info-value" id="bot-build">...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Tên mã:</span>
+                                <span class="info-value" id="bot-codename">...</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Ngày phát hành:</span>
+                                <span class="info-value" id="bot-release-date">...</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Credits -->
+                    <div class="info-card">
+                        <div class="info-card-header">
+                            <span class="info-icon">💝</span>
+                            <h2>Credits</h2>
+                        </div>
+                        <div class="info-card-body">
+                            <div class="info-row">
+                                <span class="info-label">Phát triển bởi:</span>
+                                <span class="info-value">Trần Tuấn Khương</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">Framework:</span>
+                                <span class="info-value">Electron</span>
+                            </div>
+                            <div class="info-row">
+                                <span class="info-label">License:</span>
+                                <span class="info-value">MIT</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Toast Notifications Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="loading-spinner"></div>
+        <p class="loading-text">Đang xử lý...</p>
+    </div>
+
+    <script src="renderer.js"></script>
+</body>
+</html>
