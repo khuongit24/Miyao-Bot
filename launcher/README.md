@@ -98,4 +98,5 @@ launcher/
 
 ## License
 
-MIT License - Miyao Team
+MIT License - TRẦN TUẤN KHƯƠNG
+
