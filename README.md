@@ -378,6 +378,3 @@ Xem file [LICENSE](LICENSE) để biết thêm chi tiết.
 
 ---
 
-<p align="center">
-  Made with ❤️ by Miyao Team
-</p>
