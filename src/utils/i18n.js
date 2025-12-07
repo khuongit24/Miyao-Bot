@@ -105,7 +105,7 @@ export async function setUserLocale(userId, locale) {
     try {
         const { default: UserPreferences } = await import('../database/models/UserPreferences.js');
         UserPreferences.set(userId, { locale });
-        logger.info(`User locale updated`, { userId, locale });
+        logger.info('User locale updated', { userId, locale });
         return true;
     } catch (error) {
         logger.error('Failed to set user locale', { userId, locale, error: error.message });

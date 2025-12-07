@@ -94,11 +94,11 @@ class PerformanceProfiler {
 
         const first = this.memorySnapshots[0];
         const last = this.memorySnapshots[this.memorySnapshots.length - 1];
-        
+
         const heapGrowth = last.memory.heapUsed - first.memory.heapUsed;
         const rssGrowth = last.memory.rss - first.memory.rss;
         const timeDelta = last.timestamp - first.timestamp;
-        
+
         const heapGrowthRate = heapGrowth / (timeDelta / 1000); // bytes per second
         const rssGrowthRate = rssGrowth / (timeDelta / 1000);
 
@@ -183,9 +183,7 @@ class PerformanceProfiler {
             });
         }
 
-        return allocations.sort((a, b) => 
-            this.parseBytes(b.totalHeap) - this.parseBytes(a.totalHeap)
-        );
+        return allocations.sort((a, b) => this.parseBytes(b.totalHeap) - this.parseBytes(a.totalHeap));
     }
 
     /**
@@ -215,17 +213,17 @@ class PerformanceProfiler {
     async exportReport(filepath = null) {
         const report = this.generateReport();
         const path = filepath || resolve(process.cwd(), `profile-${Date.now()}.json`);
-        
+
         return new Promise((resolve, reject) => {
             const stream = createWriteStream(path);
             stream.write(JSON.stringify(report, null, 2));
             stream.end();
-            
+
             stream.on('finish', () => {
                 logger.info(`Profile report exported to: ${path}`);
                 resolve(path);
             });
-            
+
             stream.on('error', reject);
         });
     }
@@ -249,7 +247,9 @@ class PerformanceProfiler {
         console.log('\n🔥 HOT PATHS (Top 10):');
         report.hotPaths.slice(0, 10).forEach((hp, i) => {
             console.log(`  ${i + 1}. ${hp.label}`);
-            console.log(`     Calls: ${hp.count} | Avg: ${hp.avgDurationMs}ms | Max: ${hp.maxDurationMs}ms | Total: ${hp.totalDurationMs}ms`);
+            console.log(
+                `     Calls: ${hp.count} | Avg: ${hp.avgDurationMs}ms | Max: ${hp.maxDurationMs}ms | Total: ${hp.totalDurationMs}ms`
+            );
         });
 
         console.log('\n⏱️  SLOW OPERATIONS (Top 10):');
@@ -285,7 +285,7 @@ class PerformanceProfiler {
     formatBytes(bytes) {
         const abs = Math.abs(bytes);
         const sign = bytes < 0 ? '-' : '';
-        
+
         if (abs >= 1024 * 1024 * 1024) {
             return sign + (abs / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
         }
@@ -301,11 +301,11 @@ class PerformanceProfiler {
     parseBytes(str) {
         const match = str.match(/([\d.]+)\s*(GB|MB|KB|B)/);
         if (!match) return 0;
-        
+
         const value = parseFloat(match[1]);
         const unit = match[2];
-        
-        const multipliers = { GB: 1024**3, MB: 1024**2, KB: 1024, B: 1 };
+
+        const multipliers = { GB: 1024 ** 3, MB: 1024 ** 2, KB: 1024, B: 1 };
         return value * multipliers[unit];
     }
 
@@ -313,7 +313,7 @@ class PerformanceProfiler {
         const seconds = Math.floor(ms / 1000);
         const minutes = Math.floor(seconds / 60);
         const hours = Math.floor(minutes / 60);
-        
+
         if (hours > 0) {
             return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
         }
@@ -339,8 +339,11 @@ class PerformanceProfiler {
 const profiler = new PerformanceProfiler();
 
 // Auto-snapshot every 5 minutes
-setInterval(() => {
-    profiler.takeMemorySnapshot('auto');
-}, 5 * 60 * 1000);
+setInterval(
+    () => {
+        profiler.takeMemorySnapshot('auto');
+    },
+    5 * 60 * 1000
+);
 
 export default profiler;

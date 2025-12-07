@@ -34,24 +34,24 @@ class FallbackChain {
 
     async execute(...args) {
         const errors = [];
-        
+
         for (let i = 0; i < this.strategies.length; i++) {
             const { strategy } = this.strategies[i];
-            
+
             try {
                 const result = await strategy(...args);
-                
+
                 // Reset to first strategy on success
                 if (i > 0) {
                     logger.info(`${this.name}: Fallback strategy ${i} succeeded, resetting to primary`);
                     this.currentIndex = 0;
                 }
-                
+
                 return result;
             } catch (error) {
                 errors.push({ strategy: i, error });
                 logger.warn(`${this.name}: Strategy ${i} failed, trying next`, { error: error.message });
-                
+
                 // If last strategy, throw
                 if (i === this.strategies.length - 1) {
                     const allErrors = errors.map(e => e.error.message).join(', ');
@@ -59,7 +59,7 @@ class FallbackChain {
                 }
             }
         }
-        
+
         throw new Error(`${this.name}: No strategies available`);
     }
 
@@ -114,7 +114,7 @@ export class DegradationManager extends EventEmitter {
         });
 
         this.circuitBreakers.set(name, breaker);
-        
+
         logger.info(`Registered service: ${name}`);
     }
 
@@ -123,11 +123,11 @@ export class DegradationManager extends EventEmitter {
      */
     registerFallback(serviceName, strategies) {
         const chain = new FallbackChain(serviceName);
-        
+
         strategies.forEach((strategy, index) => {
             chain.addStrategy(strategy.fn, strategy.priority || strategies.length - index);
         });
-        
+
         this.fallbackChains.set(serviceName, chain);
         logger.info(`Registered fallback chain for: ${serviceName}`);
     }
@@ -145,7 +145,7 @@ export class DegradationManager extends EventEmitter {
 
         // Check circuit breaker
         const breaker = this.circuitBreakers.get(serviceName);
-        
+
         try {
             // Execute through circuit breaker
             const result = await breaker.execute(async () => {
@@ -154,9 +154,8 @@ export class DegradationManager extends EventEmitter {
 
             service.stats.successfulRequests++;
             this.updateServiceStatus(serviceName, ServiceStatus.HEALTHY);
-            
+
             return result;
-            
         } catch (error) {
             service.stats.failedRequests++;
             service.stats.lastError = error.message;
@@ -167,10 +166,9 @@ export class DegradationManager extends EventEmitter {
                 try {
                     logger.warn(`${serviceName} failed, trying fallback`, { error: error.message });
                     const fallbackResult = await fallbackChain.execute(...args);
-                    
+
                     this.updateServiceStatus(serviceName, ServiceStatus.DEGRADED);
                     return fallbackResult;
-                    
                 } catch (fallbackError) {
                     this.updateServiceStatus(serviceName, ServiceStatus.UNAVAILABLE);
                     throw fallbackError;
@@ -188,9 +186,7 @@ export class DegradationManager extends EventEmitter {
     async executeWithTimeout(fn, timeout, ...args) {
         return Promise.race([
             fn(...args),
-            new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Operation timeout')), timeout)
-            )
+            new Promise((_, reject) => setTimeout(() => reject(new Error('Operation timeout')), timeout))
         ]);
     }
 
@@ -205,7 +201,7 @@ export class DegradationManager extends EventEmitter {
         if (oldStatus !== newStatus) {
             service.status = newStatus;
             service.lastCheck = Date.now();
-            
+
             this.emit('statusChange', {
                 service: serviceName,
                 oldStatus,
@@ -247,7 +243,7 @@ export class DegradationManager extends EventEmitter {
         if (!service) return null;
 
         const breaker = this.circuitBreakers.get(serviceName);
-        
+
         return {
             name: service.name,
             status: service.status,
@@ -262,11 +258,11 @@ export class DegradationManager extends EventEmitter {
      */
     getAllStatus() {
         const status = {};
-        
+
         for (const [name] of this.services) {
             status[name] = this.getServiceStatus(name);
         }
-        
+
         return status;
     }
 
@@ -319,7 +315,7 @@ export class DegradationManager extends EventEmitter {
      */
     async runHealthChecks() {
         const results = {};
-        
+
         for (const [name, service] of this.services) {
             if (service.config.healthCheck) {
                 try {
@@ -332,7 +328,7 @@ export class DegradationManager extends EventEmitter {
                 }
             }
         }
-        
+
         return results;
     }
 }
@@ -346,7 +342,7 @@ export class DegradationManager extends EventEmitter {
  */
 export function createLavalinkDegradation(musicManager) {
     const degradation = new DegradationManager();
-    
+
     // Register Lavalink service
     degradation.registerService('lavalink', {
         healthCheckInterval: 30000,
@@ -358,26 +354,27 @@ export function createLavalinkDegradation(musicManager) {
             if (!musicManager.shoukaku || musicManager.shoukaku.nodes.size === 0) {
                 throw new Error('No Lavalink nodes available');
             }
-            
+
             let connectedNodes = 0;
             for (const [, node] of musicManager.shoukaku.nodes) {
-                if (node.state === 2) { // CONNECTED
+                if (node.state === 2) {
+                    // CONNECTED
                     connectedNodes++;
                 }
             }
-            
+
             if (connectedNodes === 0) {
                 throw new Error('No Lavalink nodes connected');
             }
         }
     });
-    
+
     // Register fallback strategies for search
     degradation.registerFallback('lavalink-search', [
         {
             name: 'primary-node',
             priority: 3,
-            fn: async (query) => {
+            fn: async query => {
                 // Try primary node
                 return await musicManager.search(query);
             }
@@ -385,7 +382,7 @@ export function createLavalinkDegradation(musicManager) {
         {
             name: 'cached-results',
             priority: 2,
-            fn: async (query) => {
+            fn: async query => {
                 // Try cache
                 const cached = musicManager.searchCache.get(query);
                 if (cached) {
@@ -405,7 +402,7 @@ export function createLavalinkDegradation(musicManager) {
             }
         }
     ]);
-    
+
     return degradation;
 }
 
@@ -414,7 +411,7 @@ export function createLavalinkDegradation(musicManager) {
  */
 export function createDatabaseDegradation(database) {
     const degradation = new DegradationManager();
-    
+
     degradation.registerService('database', {
         healthCheckInterval: 30000,
         timeout: 5000,
@@ -425,22 +422,22 @@ export function createDatabaseDegradation(database) {
             await database.db.prepare('SELECT 1').get();
         }
     });
-    
+
     // Fallback to in-memory cache
     const memoryCache = new Map();
-    
+
     degradation.registerFallback('database-read', [
         {
             name: 'database-primary',
             priority: 2,
-            fn: async (query) => {
+            fn: async query => {
                 return await database.query(query);
             }
         },
         {
             name: 'memory-cache',
             priority: 1,
-            fn: async (key) => {
+            fn: async key => {
                 if (memoryCache.has(key)) {
                     logger.info('Using memory cache (degraded mode)');
                     return memoryCache.get(key);
@@ -449,7 +446,7 @@ export function createDatabaseDegradation(database) {
             }
         }
     ]);
-    
+
     return degradation;
 }
 

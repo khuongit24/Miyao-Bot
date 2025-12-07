@@ -8,77 +8,78 @@ import { shortenButtonLabel } from '../../utils/mobile-optimization.js';
  * @returns {ActionRowBuilder} Action row with buttons
  */
 export function createMusicButtons(queue, disabled = false) {
+    // Check if previous is available (has history)
+    const hasPrevious = queue && queue.history && queue.history.length > 0;
+
     // Row 1: Main controls
-    const row1 = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('music_previous')
-                .setEmoji('⏮️')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(true), // Previous not implemented yet
-            
-            new ButtonBuilder()
-                .setCustomId(queue?.paused ? 'music_resume' : 'music_pause')
-                .setEmoji(queue?.paused ? '▶️' : '⏸️')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(disabled || !queue?.current),
-            
-            new ButtonBuilder()
-                .setCustomId('music_stop')
-                .setEmoji('⏹️')
-                .setStyle(ButtonStyle.Danger)
-                .setDisabled(disabled || !queue?.current),
-            
-            new ButtonBuilder()
-                .setCustomId('music_skip')
-                .setEmoji('⏭️')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(disabled || !queue?.current),
-            
-            new ButtonBuilder()
-                .setCustomId('music_queue')
-                .setEmoji('📋')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue)
-        );
-    
+    const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('music_previous')
+            .setEmoji('⏮️')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !hasPrevious),
+
+        new ButtonBuilder()
+            .setCustomId(queue?.paused ? 'music_resume' : 'music_pause')
+            .setEmoji(queue?.paused ? '▶️' : '⏸️')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(disabled || !queue?.current),
+
+        new ButtonBuilder()
+            .setCustomId('music_stop')
+            .setEmoji('⏹️')
+            .setStyle(ButtonStyle.Danger)
+            .setDisabled(disabled || !queue?.current),
+
+        new ButtonBuilder()
+            .setCustomId('music_skip')
+            .setEmoji('⏭️')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(disabled || !queue?.current),
+
+        new ButtonBuilder()
+            .setCustomId('music_queue')
+            .setEmoji('📋')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue)
+    );
+
     // Row 2: Additional controls
-    const row2 = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('music_loop')
-                .setEmoji(getLoopEmoji(queue?.loop || 'off'))
-                .setLabel(shortenButtonLabel(getLoopLabel(queue?.loop || 'off'), 12))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue),
-            
-            new ButtonBuilder()
-                .setCustomId('music_shuffle')
-                .setEmoji('🔀')
-                .setLabel(shortenButtonLabel('Shuffle', 12))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue || queue?.tracks?.length < 2),
-            
-            new ButtonBuilder()
-                .setCustomId('music_volume_down')
-                .setEmoji('🔉')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue || queue?.volume <= 0),
-            
-            new ButtonBuilder()
-                .setCustomId('music_volume_up')
-                .setEmoji('🔊')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue || queue?.volume >= 100),
-            
-            new ButtonBuilder()
-                .setCustomId('music_lyrics')
-                .setEmoji('📝')
-                .setLabel(shortenButtonLabel('Lyrics', 12))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(true) // Not implemented yet
-        );
-    
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('music_loop')
+            .setEmoji(getLoopEmoji(queue?.loop || 'off'))
+            .setLabel(shortenButtonLabel(getLoopLabel(queue?.loop || 'off'), 12))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue),
+
+        new ButtonBuilder()
+            .setCustomId('music_shuffle')
+            .setEmoji('🔀')
+            .setLabel(shortenButtonLabel('Xáo trộn', 12))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue || queue?.tracks?.length < 2),
+
+        new ButtonBuilder()
+            .setCustomId('music_volume_down')
+            .setEmoji('🔉')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue || queue?.volume <= 0),
+
+        new ButtonBuilder()
+            .setCustomId('music_volume_up')
+            .setEmoji('🔊')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue || queue?.volume >= 100),
+
+        new ButtonBuilder()
+            .setCustomId('music_lyrics')
+            .setEmoji('📝')
+            .setLabel(shortenButtonLabel('Lời nhạc', 12))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue?.current)
+    );
+
     return [row1, row2];
 }
 
@@ -94,124 +95,122 @@ export function createNowPlayingButtons(queue, disabled = false) {
     const isPaused = queue?.paused;
     const hasQueue = queue && queue.tracks && queue.tracks.length > 0;
     const loopMode = queue?.loop || 'off';
-    
-    const row1 = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId(isPaused ? 'music_resume' : 'music_pause')
-                .setEmoji(isPaused ? '▶️' : '⏸️')
-                .setLabel(shortenButtonLabel(isPaused ? 'Tiếp tục' : 'Tạm dừng', 12))
-                .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary)
-                .setDisabled(disabled || !queue?.current),
-            
-            new ButtonBuilder()
-                .setCustomId('music_skip')
-                .setEmoji('⏭️')
-                .setLabel(shortenButtonLabel('Bỏ qua', 10))
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(disabled || !queue?.current),
-            
-            new ButtonBuilder()
-                .setCustomId('music_stop')
-                .setEmoji('⏹️')
-                .setLabel(shortenButtonLabel('Dừng', 10))
-                .setStyle(ButtonStyle.Danger)
-                .setDisabled(disabled || !queue?.current),
-            
-            new ButtonBuilder()
-                .setCustomId('music_loop')
-                .setEmoji(getLoopEmoji(loopMode))
-                .setLabel(shortenButtonLabel(getLoopLabelVi(loopMode), 12))
-                .setStyle(loopMode !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue),
-            
-            new ButtonBuilder()
-                .setCustomId('music_shuffle')
-                .setEmoji('🔀')
-                .setLabel(shortenButtonLabel('Xáo trộn', 12))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue || queue?.tracks?.length < 2)
-        );
-    
-    // Row 2: Interactive seek controls (only for non-stream tracks)
+    const hasPrevious = queue && queue.history && queue.history.length > 0;
+
+    const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('music_previous')
+            .setEmoji('⏮️')
+            .setLabel(shortenButtonLabel('Trước', 10))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !hasPrevious),
+
+        new ButtonBuilder()
+            .setCustomId(isPaused ? 'music_resume' : 'music_pause')
+            .setEmoji(isPaused ? '▶️' : '⏸️')
+            .setLabel(shortenButtonLabel(isPaused ? 'Tiếp tục' : 'Tạm dừng', 12))
+            .setStyle(isPaused ? ButtonStyle.Success : ButtonStyle.Primary)
+            .setDisabled(disabled || !queue?.current),
+
+        new ButtonBuilder()
+            .setCustomId('music_skip')
+            .setEmoji('⏭️')
+            .setLabel(shortenButtonLabel('Bỏ qua', 10))
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(disabled || !queue?.current),
+
+        new ButtonBuilder()
+            .setCustomId('music_stop')
+            .setEmoji('⏹️')
+            .setLabel(shortenButtonLabel('Dừng', 10))
+            .setStyle(ButtonStyle.Danger)
+            .setDisabled(disabled || !queue?.current),
+
+        new ButtonBuilder()
+            .setCustomId('music_loop')
+            .setEmoji(getLoopEmoji(loopMode))
+            .setLabel(shortenButtonLabel(getLoopLabelVi(loopMode), 12))
+            .setStyle(loopMode !== 'off' ? ButtonStyle.Success : ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue)
+    );
+
+    // Row 2: Shuffle + Interactive seek controls (only for non-stream tracks) + Lyrics
     const isSeekable = queue?.current && !queue.current.info?.isStream;
-    const row2 = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('music_seek_backward_30')
-                .setEmoji('⏪')
-                .setLabel(shortenButtonLabel('-30s', 8))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !isSeekable),
-            
-            new ButtonBuilder()
-                .setCustomId('music_seek_backward_10')
-                .setEmoji('◀️')
-                .setLabel(shortenButtonLabel('-10s', 8))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !isSeekable),
-            
-            new ButtonBuilder()
-                .setCustomId('music_seek_start')
-                .setEmoji('🔄')
-                .setLabel(shortenButtonLabel('Restart', 8))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !isSeekable),
-            
-            new ButtonBuilder()
-                .setCustomId('music_seek_forward_10')
-                .setEmoji('▶️')
-                .setLabel(shortenButtonLabel('+10s', 8))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !isSeekable),
-            
-            new ButtonBuilder()
-                .setCustomId('music_seek_forward_30')
-                .setEmoji('⏩')
-                .setLabel(shortenButtonLabel('+30s', 8))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !isSeekable)
-        );
-    
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('music_shuffle')
+            .setEmoji('🔀')
+            .setLabel(shortenButtonLabel('Xáo trộn', 10))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue || queue?.tracks?.length < 2),
+
+        new ButtonBuilder()
+            .setCustomId('music_seek_backward_10')
+            .setEmoji('⏪')
+            .setLabel(shortenButtonLabel('-10s', 8))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !isSeekable),
+
+        new ButtonBuilder()
+            .setCustomId('music_seek_start')
+            .setEmoji('🔄')
+            .setLabel(shortenButtonLabel('Nghe lại', 8))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !isSeekable),
+
+        new ButtonBuilder()
+            .setCustomId('music_seek_forward_10')
+            .setEmoji('⏩')
+            .setLabel(shortenButtonLabel('+10s', 8))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !isSeekable),
+
+        new ButtonBuilder()
+            .setCustomId('music_lyrics')
+            .setEmoji('📝')
+            .setLabel(shortenButtonLabel('Lời nhạc', 8))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue?.current)
+    );
+
     // Row 3: Volume and queue controls + Add to Playlist + Like button
-    const row3 = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('music_volume_down')
-                .setEmoji('🔉')
-                .setLabel(shortenButtonLabel('Vol -10%', 10))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue || queue?.volume <= 0),
-            
-            new ButtonBuilder()
-                .setCustomId('music_volume_up')
-                .setEmoji('🔊')
-                .setLabel(shortenButtonLabel('Vol +10%', 10))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue || queue?.volume >= 100),
-            
-            new ButtonBuilder()
-                .setCustomId('music_like')
-                .setEmoji('❤️')
-                .setLabel(shortenButtonLabel('Yêu thích', 10))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue?.current),
-            
-            new ButtonBuilder()
-                .setCustomId('music_queue')
-                .setEmoji('📋')
-                .setLabel(shortenButtonLabel('Hàng đợi', 10))
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(disabled || !queue),
-            
-            new ButtonBuilder()
-                .setCustomId('music_add_to_playlist')
-                .setEmoji('➕')
-                .setLabel(shortenButtonLabel('Playlist', 10))
-                .setStyle(ButtonStyle.Success)
-                .setDisabled(disabled || !queue?.current)
-        );
-    
+    const row3 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('music_volume_down')
+            .setEmoji('🔉')
+            .setLabel(shortenButtonLabel('Vol -10%', 10))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue || queue?.volume <= 0),
+
+        new ButtonBuilder()
+            .setCustomId('music_volume_up')
+            .setEmoji('🔊')
+            .setLabel(shortenButtonLabel('Vol +10%', 10))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue || queue?.volume >= 100),
+
+        new ButtonBuilder()
+            .setCustomId('music_like')
+            .setEmoji('❤️')
+            .setLabel(shortenButtonLabel('Yêu thích', 10))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue?.current),
+
+        new ButtonBuilder()
+            .setCustomId('music_queue')
+            .setEmoji('📋')
+            .setLabel(shortenButtonLabel('Hàng đợi', 10))
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(disabled || !queue),
+
+        new ButtonBuilder()
+            .setCustomId('music_add_to_playlist')
+            .setEmoji('➕')
+            .setLabel(shortenButtonLabel('Playlist', 10))
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(disabled || !queue?.current)
+    );
+
     return [row1, row2, row3];
 }
 
@@ -223,57 +222,55 @@ export function createNowPlayingButtons(queue, disabled = false) {
  * @returns {ActionRowBuilder[]} Array of action rows with buttons
  */
 export function createQueueButtons(page, totalPages, queue = null) {
-    const row1 = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('queue_first')
-                .setEmoji('⏮️')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page <= 1),
-            
-            new ButtonBuilder()
-                .setCustomId('queue_previous')
-                .setEmoji('◀️')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(page <= 1),
-            
-            new ButtonBuilder()
-                .setCustomId('queue_refresh')
-                .setEmoji('🔄')
-                .setLabel(`${page}/${totalPages}`)
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(false),
-            
-            new ButtonBuilder()
-                .setCustomId('queue_next')
-                .setEmoji('▶️')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(page >= totalPages),
-            
-            new ButtonBuilder()
-                .setCustomId('queue_last')
-                .setEmoji('⏭️')
-                .setStyle(ButtonStyle.Secondary)
-                .setDisabled(page >= totalPages)
-        );
-    
+    const row1 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('queue_first')
+            .setEmoji('⏮️')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page <= 1),
+
+        new ButtonBuilder()
+            .setCustomId('queue_previous')
+            .setEmoji('◀️')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(page <= 1),
+
+        new ButtonBuilder()
+            .setCustomId('queue_refresh')
+            .setEmoji('🔄')
+            .setLabel(`${page}/${totalPages}`)
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(false),
+
+        new ButtonBuilder()
+            .setCustomId('queue_next')
+            .setEmoji('▶️')
+            .setStyle(ButtonStyle.Primary)
+            .setDisabled(page >= totalPages),
+
+        new ButtonBuilder()
+            .setCustomId('queue_last')
+            .setEmoji('⏭️')
+            .setStyle(ButtonStyle.Secondary)
+            .setDisabled(page >= totalPages)
+    );
+
     // Row 2: Add entire queue to playlist and remove track
-    const row2 = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('queue_add_to_playlist')
-                .setEmoji('➕')
-                .setLabel(shortenButtonLabel('Thêm Toàn Bộ Vào Playlist', 40))
-                .setStyle(ButtonStyle.Success)
-                .setDisabled(!queue || (!queue.current && (!queue.tracks || queue.tracks.length === 0))),
-            new ButtonBuilder()
-                .setCustomId('queue_remove_track')
-                .setEmoji('🗑️')
-                .setLabel(shortenButtonLabel('Xóa Bài Nhạc', 40))
-                .setStyle(ButtonStyle.Danger)
-                .setDisabled(!queue || (!queue.current && (!queue.tracks || queue.tracks.length === 0)))
-        );
-    
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('queue_add_to_playlist')
+            .setEmoji('➕')
+            .setLabel(shortenButtonLabel('Thêm tất cả vào Playlist', 40))
+            .setStyle(ButtonStyle.Success)
+            .setDisabled(!queue || (!queue.current && (!queue.tracks || queue.tracks.length === 0))),
+        new ButtonBuilder()
+            .setCustomId('queue_remove_track')
+            .setEmoji('🗑️')
+            .setLabel(shortenButtonLabel('Xóa bài nhạc', 40))
+            .setStyle(ButtonStyle.Danger)
+            .setDisabled(!queue || (!queue.current && (!queue.tracks || queue.tracks.length === 0)))
+    );
+
     return [row1, row2];
 }
 
@@ -331,26 +328,22 @@ function getLoopLabelVi(mode) {
  * @returns {ActionRowBuilder[]} rows of buttons
  */
 export function createSearchConfirmButtons(track) {
-    const row = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('search_confirm_play')
-                .setEmoji('✅')
-                .setLabel(shortenButtonLabel('Phát ngay', 12))
-                .setStyle(ButtonStyle.Success),
-            
-            new ButtonBuilder()
-                .setCustomId('search_show_detailed')
-                .setEmoji('🔍')
-                .setLabel(shortenButtonLabel('Tìm kiếm', 12))
-                .setStyle(ButtonStyle.Primary),
-            
-            new ButtonBuilder()
-                .setCustomId('search_cancel')
-                .setEmoji('❌')
-                .setStyle(ButtonStyle.Danger)
-        );
-    
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('search_confirm_play')
+            .setEmoji('✅')
+            .setLabel(shortenButtonLabel('Phát ngay', 12))
+            .setStyle(ButtonStyle.Success),
+
+        new ButtonBuilder()
+            .setCustomId('search_show_detailed')
+            .setEmoji('🔍')
+            .setLabel(shortenButtonLabel('Tìm kiếm', 12))
+            .setStyle(ButtonStyle.Primary),
+
+        new ButtonBuilder().setCustomId('search_cancel').setEmoji('❌').setStyle(ButtonStyle.Danger)
+    );
+
     return [row];
 }
 
@@ -367,17 +360,17 @@ export function createSearchResultButtons(tracks) {
         .setPlaceholder('🎵 Chọn bài hát bạn muốn phát')
         .setMinValues(1)
         .setMaxValues(1);
-    
+
     // Add options (max 5 tracks)
     const max = Math.min(5, tracks.length);
     for (let i = 0; i < max; i++) {
         const track = tracks[i];
         const title = truncateTitle(track.info?.title || 'Unknown', 100);
         const author = truncateTitle(track.info?.author || 'Unknown', 50);
-        const duration = track.info?.length 
-            ? `${Math.floor(track.info.length/1000/60)}:${String(Math.floor((track.info.length/1000)%60)).padStart(2, '0')}` 
+        const duration = track.info?.length
+            ? `${Math.floor(track.info.length / 1000 / 60)}:${String(Math.floor((track.info.length / 1000) % 60)).padStart(2, '0')}`
             : 'Live';
-        
+
         selectMenu.addOptions({
             label: title,
             description: `${author} • ${duration}`,
@@ -385,19 +378,18 @@ export function createSearchResultButtons(tracks) {
             emoji: '🎵'
         });
     }
-    
+
     const row1 = new ActionRowBuilder().addComponents(selectMenu);
-    
+
     // Add cancel button
-    const row2 = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('search_cancel')
-                .setEmoji('❌')
-                .setLabel(shortenButtonLabel('Hủy', 8))
-                .setStyle(ButtonStyle.Danger)
-        );
-    
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('search_cancel')
+            .setEmoji('❌')
+            .setLabel(shortenButtonLabel('Hủy', 8))
+            .setStyle(ButtonStyle.Danger)
+    );
+
     return [row1, row2];
 }
 
@@ -416,59 +408,71 @@ export function createHistoryReplayButtons(history) {
     if (!Array.isArray(history) || history.length === 0) {
         throw new Error('History must be a non-empty array');
     }
-    
+
     // Create dropdown menu for history selection
     const selectMenu = new StringSelectMenuBuilder()
         .setCustomId('history_replay_select')
         .setPlaceholder('🔄 Chọn bài hát từ lịch sử để phát lại')
         .setMinValues(1)
         .setMaxValues(1);
-    
+
     // Add options (max 10 tracks from history)
     const max = Math.min(10, history.length);
+    let validOptionsCount = 0;
+
     for (let i = 0; i < max; i++) {
         const entry = history[i];
-        
+
         // Defensive check for entry structure
         if (!entry?.track?.info) {
             continue;
         }
-        
+
         const track = entry.track;
         const title = truncateTitle(track.info.title || 'Unknown', 80);
         const author = truncateTitle(track.info.author || 'Unknown', 40);
-        const duration = track.info.length && !track.info.isStream
-            ? `${Math.floor(track.info.length/1000/60)}:${String(Math.floor((track.info.length/1000)%60)).padStart(2, '0')}` 
-            : 'Live';
-        
+        const duration =
+            track.info.length && !track.info.isStream
+                ? `${Math.floor(track.info.length / 1000 / 60)}:${String(Math.floor((track.info.length / 1000) % 60)).padStart(2, '0')}`
+                : 'Live';
+
         // Format played time with validation
         const timeSince = entry.playedAt ? Date.now() - entry.playedAt : 0;
         const minutesAgo = Math.floor(timeSince / 60000);
-        const timeText = minutesAgo < 1 ? 'Vừa xong' : 
-                        minutesAgo < 60 ? `${minutesAgo} phút trước` :
-                        minutesAgo < 1440 ? `${Math.floor(minutesAgo / 60)} giờ trước` :
-                        `${Math.floor(minutesAgo / 1440)} ngày trước`;
-        
+        const timeText =
+            minutesAgo < 1
+                ? 'Vừa xong'
+                : minutesAgo < 60
+                  ? `${minutesAgo} phút trước`
+                  : minutesAgo < 1440
+                    ? `${Math.floor(minutesAgo / 60)} giờ trước`
+                    : `${Math.floor(minutesAgo / 1440)} ngày trước`;
+
         selectMenu.addOptions({
             label: title,
             description: `${author} • ${duration} • ${timeText}`,
             value: `${i}`,
             emoji: '🎵'
         });
+        validOptionsCount++;
     }
-    
+
+    // If no valid options after filtering, throw error to prevent Discord API error
+    if (validOptionsCount === 0) {
+        throw new Error('No valid history entries found');
+    }
+
     const row1 = new ActionRowBuilder().addComponents(selectMenu);
-    
+
     // Add cancel button
-    const row2 = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('history_replay_cancel')
-                .setEmoji('❌')
-                .setLabel(shortenButtonLabel('Hủy', 8))
-                .setStyle(ButtonStyle.Danger)
-        );
-    
+    const row2 = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('history_replay_cancel')
+            .setEmoji('❌')
+            .setLabel(shortenButtonLabel('Hủy', 8))
+            .setStyle(ButtonStyle.Danger)
+    );
+
     return [row1, row2];
 }
 

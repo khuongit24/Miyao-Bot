@@ -1,12 +1,12 @@
 /**
  * Circuit Breaker Pattern Implementation
  * Protects against cascading failures by preventing calls to failing services
- * 
+ *
  * States:
  * - CLOSED: Normal operation, requests pass through
  * - OPEN: Failure threshold exceeded, requests fail fast
  * - HALF_OPEN: Testing if service recovered
- * 
+ *
  * @since v1.5.1
  */
 
@@ -17,9 +17,9 @@ import logger from './logger.js';
  * @enum {string}
  */
 export const CircuitState = {
-    CLOSED: 'CLOSED',       // Normal operation
-    OPEN: 'OPEN',           // Failing, reject requests
-    HALF_OPEN: 'HALF_OPEN'  // Testing recovery
+    CLOSED: 'CLOSED', // Normal operation
+    OPEN: 'OPEN', // Failing, reject requests
+    HALF_OPEN: 'HALF_OPEN' // Testing recovery
 };
 
 /**
@@ -124,7 +124,7 @@ export class CircuitBreaker {
 
         if (this.state === CircuitState.HALF_OPEN) {
             this.successes++;
-            
+
             if (this.successes >= this.successThreshold) {
                 // Enough successes, close the circuit
                 this.transitionTo(CircuitState.CLOSED);
@@ -156,7 +156,7 @@ export class CircuitBreaker {
         if (this.failures >= this.failureThreshold) {
             this.transitionTo(CircuitState.OPEN);
             this.nextAttempt = Date.now() + this.timeout;
-            
+
             logger.error(`CircuitBreaker [${this.name}] opened due to repeated failures`, {
                 failures: this.failures,
                 nextAttempt: new Date(this.nextAttempt).toISOString()
@@ -171,14 +171,14 @@ export class CircuitBreaker {
      */
     transitionTo(newState) {
         const oldState = this.state;
-        
+
         if (oldState !== newState) {
             this.state = newState;
             this.stats.lastStateChange = Date.now();
             this.stats.stateChanges++;
-            
+
             logger.info(`CircuitBreaker [${this.name}] state change: ${oldState} → ${newState}`);
-            
+
             // Call the state change callback
             this.onStateChange(oldState, newState, this.stats);
         }
@@ -208,12 +208,14 @@ export class CircuitBreaker {
             nextAttempt: this.state === CircuitState.OPEN ? new Date(this.nextAttempt).toISOString() : null,
             stats: {
                 ...this.stats,
-                successRate: this.stats.totalCalls > 0 
-                    ? (this.stats.successfulCalls / this.stats.totalCalls * 100).toFixed(2) + '%'
-                    : 'N/A',
-                rejectionRate: this.stats.totalCalls > 0
-                    ? (this.stats.rejectedCalls / this.stats.totalCalls * 100).toFixed(2) + '%'
-                    : 'N/A'
+                successRate:
+                    this.stats.totalCalls > 0
+                        ? ((this.stats.successfulCalls / this.stats.totalCalls) * 100).toFixed(2) + '%'
+                        : 'N/A',
+                rejectionRate:
+                    this.stats.totalCalls > 0
+                        ? ((this.stats.rejectedCalls / this.stats.totalCalls) * 100).toFixed(2) + '%'
+                        : 'N/A'
             }
         };
     }
@@ -226,15 +228,15 @@ export class CircuitBreaker {
         if (this.state === CircuitState.CLOSED) {
             return true;
         }
-        
+
         if (this.state === CircuitState.HALF_OPEN) {
             return true;
         }
-        
+
         if (this.state === CircuitState.OPEN && Date.now() >= this.nextAttempt) {
             return true; // Will transition to half-open on next call
         }
-        
+
         return false;
     }
 }
@@ -247,8 +249,8 @@ export class CircuitBreaker {
  */
 export function withCircuitBreaker(fn, options = {}) {
     const breaker = new CircuitBreaker(options);
-    
-    return async function(...args) {
+
+    return async function (...args) {
         return breaker.execute(() => fn(...args));
     };
 }

@@ -23,21 +23,29 @@ export const ContentCategory = {
 const BLACKLISTED_KEYWORDS = {
     [ContentCategory.NSFW]: [
         // Common NSFW terms (basic filtering)
-        'porn', 'xxx', 'sex', 'nude', 'naked', 'nsfw', 'hentai', 'adult',
-        'erotic', '18+', 'mature content'
+        'porn',
+        'xxx',
+        'sex',
+        'nude',
+        'naked',
+        'nsfw',
+        'hentai',
+        'adult',
+        'erotic',
+        '18+',
+        'mature content'
     ],
-    [ContentCategory.VIOLENCE]: [
-        'gore', 'violent', 'killing', 'murder', 'torture', 'blood', 'brutal'
-    ],
-    [ContentCategory.HATE_SPEECH]: [
-        'hate', 'racist', 'nazi', 'kkk', 'supremacist'
-    ],
-    [ContentCategory.PROFANITY]: [
-        'fuck', 'shit', 'damn', 'ass', 'bitch', 'bastard', 'crap'
-    ],
+    [ContentCategory.VIOLENCE]: ['gore', 'violent', 'killing', 'murder', 'torture', 'blood', 'brutal'],
+    [ContentCategory.HATE_SPEECH]: ['hate', 'racist', 'nazi', 'kkk', 'supremacist'],
+    [ContentCategory.PROFANITY]: ['fuck', 'shit', 'damn', 'ass', 'bitch', 'bastard', 'crap'],
     [ContentCategory.SPAM]: [
-        'free money', 'click here', 'buy now', 'limited offer', 'act now',
-        'congratulations you won', 'claim your prize'
+        'free money',
+        'click here',
+        'buy now',
+        'limited offer',
+        'act now',
+        'congratulations you won',
+        'claim your prize'
     ]
 };
 
@@ -50,7 +58,7 @@ class ContentFilterConfig {
         // guildId -> { enabled: boolean, categories: Set, blacklist: Set, whitelist: Set }
         this.guildConfigs = new Map();
     }
-    
+
     /**
      * Get configuration for a guild
      * @param {string} guildId - Guild ID
@@ -68,7 +76,7 @@ class ContentFilterConfig {
         }
         return this.guildConfigs.get(guildId);
     }
-    
+
     /**
      * Enable content filtering for guild
      * @param {string} guildId - Guild ID
@@ -80,7 +88,7 @@ class ContentFilterConfig {
         config.categories = new Set(categories);
         logger.info(`Content filter enabled for guild ${guildId}`, { categories });
     }
-    
+
     /**
      * Disable content filtering for guild
      * @param {string} guildId - Guild ID
@@ -90,7 +98,7 @@ class ContentFilterConfig {
         config.enabled = false;
         logger.info(`Content filter disabled for guild ${guildId}`);
     }
-    
+
     /**
      * Add term to blacklist
      * @param {string} guildId - Guild ID
@@ -101,7 +109,7 @@ class ContentFilterConfig {
         config.blacklist.add(term.toLowerCase());
         logger.info(`Added to blacklist for guild ${guildId}`, { term });
     }
-    
+
     /**
      * Remove term from blacklist
      * @param {string} guildId - Guild ID
@@ -112,7 +120,7 @@ class ContentFilterConfig {
         config.blacklist.delete(term.toLowerCase());
         logger.info(`Removed from blacklist for guild ${guildId}`, { term });
     }
-    
+
     /**
      * Add term to whitelist (bypasses all filters)
      * @param {string} guildId - Guild ID
@@ -123,7 +131,7 @@ class ContentFilterConfig {
         config.whitelist.add(term.toLowerCase());
         logger.info(`Added to whitelist for guild ${guildId}`, { term });
     }
-    
+
     /**
      * Remove term from whitelist
      * @param {string} guildId - Guild ID
@@ -134,7 +142,7 @@ class ContentFilterConfig {
         config.whitelist.delete(term.toLowerCase());
         logger.info(`Removed from whitelist for guild ${guildId}`, { term });
     }
-    
+
     /**
      * Get blacklist for guild
      * @param {string} guildId - Guild ID
@@ -144,7 +152,7 @@ class ContentFilterConfig {
         const config = this.getConfig(guildId);
         return Array.from(config.blacklist);
     }
-    
+
     /**
      * Get whitelist for guild
      * @param {string} guildId - Guild ID
@@ -169,18 +177,15 @@ const filterConfig = new ContentFilterConfig();
  */
 export function checkContent(query, title, author, guildId) {
     const config = filterConfig.getConfig(guildId);
-    
+
     // If filtering is disabled, allow everything
     if (!config.enabled) {
         return { safe: true };
     }
-    
+
     // Combine all text to check
-    const textToCheck = [query, title, author]
-        .filter(Boolean)
-        .join(' ')
-        .toLowerCase();
-    
+    const textToCheck = [query, title, author].filter(Boolean).join(' ').toLowerCase();
+
     // Check whitelist first (bypasses all filters)
     for (const whitelisted of config.whitelist) {
         if (textToCheck.includes(whitelisted)) {
@@ -188,7 +193,7 @@ export function checkContent(query, title, author, guildId) {
             return { safe: true };
         }
     }
-    
+
     // Check guild-specific blacklist
     for (const blacklisted of config.blacklist) {
         if (textToCheck.includes(blacklisted)) {
@@ -200,20 +205,20 @@ export function checkContent(query, title, author, guildId) {
             };
         }
     }
-    
+
     // Check category-specific blacklists
     for (const category of config.categories) {
         const keywords = BLACKLISTED_KEYWORDS[category];
         if (!keywords) continue;
-        
+
         for (const keyword of keywords) {
             // Use word boundaries to avoid false positives
             const pattern = new RegExp(`\\b${keyword}\\b`, 'i');
             if (pattern.test(textToCheck)) {
-                logger.warn('Content blocked by category filter', { 
-                    guildId, 
-                    category, 
-                    keyword 
+                logger.warn('Content blocked by category filter', {
+                    guildId,
+                    category,
+                    keyword
                 });
                 return {
                     safe: false,
@@ -223,7 +228,7 @@ export function checkContent(query, title, author, guildId) {
             }
         }
     }
-    
+
     return { safe: true };
 }
 
@@ -257,15 +262,15 @@ export function analyzeContent(text) {
             flagged: []
         };
     }
-    
+
     const lowerText = text.toLowerCase();
     const flagged = [];
     const categoryScores = {};
-    
+
     // Check each category
     for (const [category, keywords] of Object.entries(BLACKLISTED_KEYWORDS)) {
         const matches = [];
-        
+
         for (const keyword of keywords) {
             const pattern = new RegExp(`\\b${keyword}\\b`, 'gi');
             const found = lowerText.match(pattern);
@@ -273,7 +278,7 @@ export function analyzeContent(text) {
                 matches.push(...found);
             }
         }
-        
+
         if (matches.length > 0) {
             categoryScores[category] = matches.length;
             flagged.push({
@@ -283,11 +288,11 @@ export function analyzeContent(text) {
             });
         }
     }
-    
+
     // Calculate overall safety score (0-1, higher is safer)
     const totalFlags = Object.values(categoryScores).reduce((a, b) => a + b, 0);
-    const score = Math.max(0, 1 - (totalFlags * 0.2)); // Each flag reduces score by 0.2
-    
+    const score = Math.max(0, 1 - totalFlags * 0.2); // Each flag reduces score by 0.2
+
     return {
         analyzed: true,
         categories: Object.keys(categoryScores),
@@ -304,9 +309,9 @@ export function analyzeContent(text) {
  */
 export function checkURL(url) {
     if (!url) return { safe: true };
-    
+
     const lowerURL = url.toLowerCase();
-    
+
     // Check for known malicious patterns
     const maliciousPatterns = [
         /phishing/i,
@@ -317,7 +322,7 @@ export function checkURL(url) {
         /tinyurl/i,
         /goo\.gl/i
     ];
-    
+
     for (const pattern of maliciousPatterns) {
         if (pattern.test(lowerURL)) {
             logger.warn('Suspicious URL detected', { url });
@@ -327,7 +332,7 @@ export function checkURL(url) {
             };
         }
     }
-    
+
     return { safe: true };
 }
 

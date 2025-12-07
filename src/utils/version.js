@@ -7,37 +7,37 @@ export const VERSION = {
     // Main version
     major: 1,
     minor: 8,
-    patch: 0,
-    
+    patch: 5,
+
     // Build info
-    build: '2025.11.26',
+    build: '2025.12.04',
     codename: 'Seraphina',
-    
+
     // Full version string
     get full() {
         return `${this.major}.${this.minor}.${this.patch}`;
     },
-    
+
     // Version with build
     get withBuild() {
         return `${this.full}-${this.build}`;
     },
-    
+
     // Display version (for embeds, UI, etc.)
     get display() {
         return `v${this.full}`;
     },
-    
+
     // Full display with codename
     get fullDisplay() {
         return `v${this.full} "${this.codename}"`;
     },
-    
+
     // Footer text for embeds
     get footer() {
         return `Miyao Music Bot ${this.display}`;
     },
-    
+
     // Detailed version info
     get detailed() {
         return {
@@ -55,19 +55,19 @@ export const ENVIRONMENT = {
     get nodeVersion() {
         return process.version;
     },
-    
+
     get platform() {
         return process.platform;
     },
-    
+
     get env() {
         return process.env.NODE_ENV || 'development';
     },
-    
+
     get isDevelopment() {
         return this.env === 'development';
     },
-    
+
     get isProduction() {
         return this.env === 'production';
     }
@@ -76,28 +76,15 @@ export const ENVIRONMENT = {
 // Release notes for this version
 export const RELEASE_NOTES = {
     version: VERSION.full,
-    date: '2025-10-07',
+    date: '2025-12-02',
     changes: [
-        {
-            type: 'fixed',
-            description: 'Playlist "Phát Playlist" button now works correctly in search results'
-        },
-        {
-            type: 'added',
-            description: 'Playlist track removal - "Xóa Bài Hát" button in playlist detail view'
-        },
-        {
-            type: 'added',
-            description: 'Queue track removal - "Xóa Bài Nhạc" button in queue view'
-        },
-        {
-            type: 'improved',
-            description: 'Track removal supports both position numbers and song name search'
-        },
-        {
-            type: 'improved',
-            description: 'Enhanced playlist playback with parallel track resolution and progress logging'
-        }
+        { type: 'fixed', description: 'Seek command now allows seeking to 0:00 (start of track)' },
+        { type: 'fixed', description: 'History replay menu validates entries before creating SelectMenu' },
+        { type: 'fixed', description: 'Queue commands now handle undefined track info gracefully' },
+        { type: 'fixed', description: 'Playlist play command handles connection failures gracefully' },
+        { type: 'fixed', description: 'NodeHealthMonitor memory leak prevention' },
+        { type: 'fixed', description: 'EventQueue infinite loop prevention' },
+        { type: 'improved', description: 'Autoplay error logging shows all strategy errors' }
     ]
 };
 
@@ -108,16 +95,17 @@ export const FEATURES = {
     HISTORY_TRACKING: true,
     ADVANCED_FILTERS: true,
     AUTO_PROGRESS_UPDATE: true,
-    
+    CONTEXT_MENU_PLAYLIST: true, // New: Add to Playlist from context menu
+
     // UI/UX features
     INTERACTIVE_CONTROLS: true,
     SEARCH_RESULTS: true,
     QUEUE_PAGINATION: true,
-    
+
     // Performance features
     MEMORY_OPTIMIZATION: true,
     CACHE_MANAGEMENT: true,
-    
+
     // Debug features
     DEBUG_LOGGING: ENVIRONMENT.isDevelopment,
     VERBOSE_ERRORS: ENVIRONMENT.isDevelopment

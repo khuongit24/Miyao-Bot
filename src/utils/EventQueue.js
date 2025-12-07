@@ -1,6 +1,6 @@
 /**
  * EventQueue with Backpressure
- * 
+ *
  * Handles high-traffic scenarios by queuing events with:
  * - Configurable concurrency limit
  * - Priority support (high/normal/low)
@@ -14,13 +14,13 @@ import { EventEmitter } from 'events';
 
 // Default configuration
 const DEFAULT_CONFIG = {
-    concurrencyLimit: 10,      // Max concurrent executions
-    maxQueueSize: 1000,        // Max queued items before rejection
-    highPriorityWeight: 3,     // High priority processes 3x faster
-    normalPriorityWeight: 2,   // Normal priority processes 2x faster
-    lowPriorityWeight: 1,      // Low priority base rate
-    warningThreshold: 0.7,     // Warn at 70% queue capacity
-    criticalThreshold: 0.9     // Critical at 90% queue capacity
+    concurrencyLimit: 10, // Max concurrent executions
+    maxQueueSize: 1000, // Max queued items before rejection
+    highPriorityWeight: 3, // High priority processes 3x faster
+    normalPriorityWeight: 2, // Normal priority processes 2x faster
+    lowPriorityWeight: 1, // Low priority base rate
+    warningThreshold: 0.7, // Warn at 70% queue capacity
+    criticalThreshold: 0.9 // Critical at 90% queue capacity
 };
 
 // Priority levels
@@ -43,21 +43,21 @@ class EventQueue extends EventEmitter {
      */
     constructor(options = {}) {
         super();
-        
+
         this.config = { ...DEFAULT_CONFIG, ...options };
-        
+
         // Three priority queues
         this.queues = {
             [Priority.HIGH]: [],
             [Priority.NORMAL]: [],
             [Priority.LOW]: []
         };
-        
+
         // State tracking
         this.activeCount = 0;
         this.isProcessing = false;
         this.isPaused = false;
-        
+
         // Metrics
         this.metrics = {
             totalEnqueued: 0,
@@ -68,23 +68,23 @@ class EventQueue extends EventEmitter {
             processingTimes: [],
             lastBackpressureEvent: null
         };
-        
+
         logger.info('EventQueue initialized', {
             concurrencyLimit: this.config.concurrencyLimit,
             maxQueueSize: this.config.maxQueueSize
         });
     }
-    
+
     /**
      * Get total queue size across all priorities
      * @returns {number}
      */
     get queueSize() {
-        return this.queues[Priority.HIGH].length +
-               this.queues[Priority.NORMAL].length +
-               this.queues[Priority.LOW].length;
+        return (
+            this.queues[Priority.HIGH].length + this.queues[Priority.NORMAL].length + this.queues[Priority.LOW].length
+        );
     }
-    
+
     /**
      * Check if queue is experiencing backpressure
      * @returns {boolean}
@@ -92,7 +92,7 @@ class EventQueue extends EventEmitter {
     get isBackpressured() {
         return this.queueSize >= this.config.maxQueueSize * this.config.warningThreshold;
     }
-    
+
     /**
      * Check if queue is at critical capacity
      * @returns {boolean}
@@ -100,7 +100,7 @@ class EventQueue extends EventEmitter {
     get isCritical() {
         return this.queueSize >= this.config.maxQueueSize * this.config.criticalThreshold;
     }
-    
+
     /**
      * Enqueue an event for processing
      * @param {Function} handler - Async function to execute
@@ -113,7 +113,7 @@ class EventQueue extends EventEmitter {
         if (!Object.values(Priority).includes(priority)) {
             priority = Priority.NORMAL;
         }
-        
+
         // Check queue capacity
         if (this.queueSize >= this.config.maxQueueSize) {
             this.metrics.totalRejected++;
@@ -122,11 +122,11 @@ class EventQueue extends EventEmitter {
                 maxSize: this.config.maxQueueSize,
                 priority
             });
-            
+
             this.emit('rejected', { reason: 'queue_full', context });
             return false;
         }
-        
+
         // Emit backpressure events
         if (this.isCritical && this.metrics.lastBackpressureEvent !== 'critical') {
             this.metrics.lastBackpressureEvent = 'critical';
@@ -143,7 +143,7 @@ class EventQueue extends EventEmitter {
             this.metrics.lastBackpressureEvent = null;
             this.emit('backpressure', { level: 'normal', queueSize: this.queueSize });
         }
-        
+
         // Create queue item
         const item = {
             id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -152,23 +152,23 @@ class EventQueue extends EventEmitter {
             priority,
             enqueuedAt: Date.now()
         };
-        
+
         // Add to appropriate queue
         this.queues[priority].push(item);
         this.metrics.totalEnqueued++;
-        
-        logger.debug(`EventQueue: Enqueued event`, {
+
+        logger.debug('EventQueue: Enqueued event', {
             id: item.id,
             priority,
             queueSize: this.queueSize
         });
-        
+
         // Start processing if not already running
         this.processQueue();
-        
+
         return true;
     }
-    
+
     /**
      * Process queued events with weighted priority
      * @private
@@ -176,31 +176,50 @@ class EventQueue extends EventEmitter {
     async processQueue() {
         // Prevent multiple processing loops
         if (this.isProcessing || this.isPaused) return;
-        
+
         this.isProcessing = true;
-        
+
+        // Safety counter to prevent infinite loops
+        let waitIterations = 0;
+        const maxWaitIterations = 1000; // Max 10 seconds of waiting (1000 * 10ms)
+
         while (this.queueSize > 0 && !this.isPaused) {
             // Check concurrency limit
             if (this.activeCount >= this.config.concurrencyLimit) {
+                waitIterations++;
+
+                // Safety check: if we've been waiting too long, something is wrong
+                if (waitIterations >= maxWaitIterations) {
+                    logger.warn('EventQueue: Exceeded max wait iterations, breaking processing loop', {
+                        activeCount: this.activeCount,
+                        concurrencyLimit: this.config.concurrencyLimit,
+                        queueSize: this.queueSize
+                    });
+                    break;
+                }
+
                 // Wait a bit before checking again
                 await new Promise(resolve => setTimeout(resolve, 10));
                 continue;
             }
-            
+
+            // Reset wait counter when we can process
+            waitIterations = 0;
+
             // Get next item based on weighted priority
             const item = this.getNextItem();
             if (!item) break;
-            
+
             // Process the item
             this.activeCount++;
             this.processItem(item).finally(() => {
                 this.activeCount--;
             });
         }
-        
+
         this.isProcessing = false;
     }
-    
+
     /**
      * Get next item based on weighted priority
      * Uses weighted round-robin: high priority gets more slots
@@ -214,31 +233,31 @@ class EventQueue extends EventEmitter {
             [Priority.NORMAL]: this.queues[Priority.NORMAL].length > 0 ? this.config.normalPriorityWeight : 0,
             [Priority.LOW]: this.queues[Priority.LOW].length > 0 ? this.config.lowPriorityWeight : 0
         };
-        
+
         const totalWeight = weights[Priority.HIGH] + weights[Priority.NORMAL] + weights[Priority.LOW];
         if (totalWeight === 0) return null;
-        
+
         // Random selection based on weights
         const random = Math.random() * totalWeight;
         let cumulative = 0;
-        
+
         for (const priority of [Priority.HIGH, Priority.NORMAL, Priority.LOW]) {
             cumulative += weights[priority];
             if (random < cumulative && this.queues[priority].length > 0) {
                 return this.queues[priority].shift();
             }
         }
-        
+
         // Fallback: return from any non-empty queue
         for (const priority of [Priority.HIGH, Priority.NORMAL, Priority.LOW]) {
             if (this.queues[priority].length > 0) {
                 return this.queues[priority].shift();
             }
         }
-        
+
         return null;
     }
-    
+
     /**
      * Process a single queue item
      * @private
@@ -246,38 +265,37 @@ class EventQueue extends EventEmitter {
      */
     async processItem(item) {
         const startTime = Date.now();
-        
+
         try {
             await item.handler(item.context);
-            
+
             // Update metrics
             const processingTime = Date.now() - startTime;
             this.metrics.totalProcessed++;
             this.updateAvgProcessingTime(processingTime);
-            
-            logger.debug(`EventQueue: Processed event`, {
+
+            logger.debug('EventQueue: Processed event', {
                 id: item.id,
                 priority: item.priority,
                 processingTime,
                 waitTime: startTime - item.enqueuedAt
             });
-            
+
             this.emit('processed', {
                 id: item.id,
                 priority: item.priority,
                 processingTime,
                 waitTime: startTime - item.enqueuedAt
             });
-            
         } catch (error) {
             this.metrics.totalErrors++;
-            
+
             logger.error('EventQueue: Error processing event', {
                 id: item.id,
                 priority: item.priority,
                 error: error.message
             });
-            
+
             this.emit('error', {
                 id: item.id,
                 context: item.context,
@@ -285,7 +303,7 @@ class EventQueue extends EventEmitter {
             });
         }
     }
-    
+
     /**
      * Update rolling average processing time
      * @private
@@ -293,17 +311,17 @@ class EventQueue extends EventEmitter {
      */
     updateAvgProcessingTime(time) {
         this.metrics.processingTimes.push(time);
-        
+
         // Keep only last 100 samples
         if (this.metrics.processingTimes.length > 100) {
             this.metrics.processingTimes.shift();
         }
-        
+
         // Calculate average
         const sum = this.metrics.processingTimes.reduce((a, b) => a + b, 0);
         this.metrics.avgProcessingTime = Math.round(sum / this.metrics.processingTimes.length);
     }
-    
+
     /**
      * Pause queue processing
      */
@@ -312,7 +330,7 @@ class EventQueue extends EventEmitter {
         logger.info('EventQueue: Processing paused');
         this.emit('paused');
     }
-    
+
     /**
      * Resume queue processing
      */
@@ -322,7 +340,7 @@ class EventQueue extends EventEmitter {
         this.emit('resumed');
         this.processQueue();
     }
-    
+
     /**
      * Clear all queued items
      * @param {string} priority - Optional: only clear specific priority
@@ -330,7 +348,7 @@ class EventQueue extends EventEmitter {
      */
     clear(priority = null) {
         let cleared = 0;
-        
+
         if (priority && this.queues[priority]) {
             cleared = this.queues[priority].length;
             this.queues[priority] = [];
@@ -340,13 +358,13 @@ class EventQueue extends EventEmitter {
             this.queues[Priority.NORMAL] = [];
             this.queues[Priority.LOW] = [];
         }
-        
+
         logger.info(`EventQueue: Cleared ${cleared} items`, { priority });
         this.emit('cleared', { count: cleared, priority });
-        
+
         return cleared;
     }
-    
+
     /**
      * Get current queue statistics
      * @returns {Object}
@@ -370,13 +388,14 @@ class EventQueue extends EventEmitter {
                 totalRejected: this.metrics.totalRejected,
                 totalErrors: this.metrics.totalErrors,
                 avgProcessingTime: this.metrics.avgProcessingTime,
-                successRate: this.metrics.totalProcessed > 0 
-                    ? ((this.metrics.totalProcessed / this.metrics.totalEnqueued) * 100).toFixed(2) + '%'
-                    : '100%'
+                successRate:
+                    this.metrics.totalProcessed > 0
+                        ? ((this.metrics.totalProcessed / this.metrics.totalEnqueued) * 100).toFixed(2) + '%'
+                        : '100%'
             }
         };
     }
-    
+
     /**
      * Graceful shutdown - wait for active items to complete
      * @param {number} timeout - Max wait time in ms
@@ -384,26 +403,26 @@ class EventQueue extends EventEmitter {
      */
     async shutdown(timeout = 5000) {
         logger.info('EventQueue: Shutting down...');
-        
+
         // Pause to prevent new processing
         this.pause();
-        
+
         // Clear pending items
         const pendingCount = this.queueSize;
         this.clear();
-        
+
         // Wait for active items to complete
         const startTime = Date.now();
-        while (this.activeCount > 0 && (Date.now() - startTime) < timeout) {
+        while (this.activeCount > 0 && Date.now() - startTime < timeout) {
             await new Promise(resolve => setTimeout(resolve, 100));
         }
-        
+
         if (this.activeCount > 0) {
             logger.warn(`EventQueue: Shutdown timeout, ${this.activeCount} items still active`);
         } else {
             logger.info(`EventQueue: Shutdown complete, cleared ${pendingCount} pending items`);
         }
-        
+
         this.emit('shutdown', { pendingCleared: pendingCount, activeAtShutdown: this.activeCount });
     }
 }

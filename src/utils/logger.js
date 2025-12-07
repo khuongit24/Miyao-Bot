@@ -7,12 +7,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Sanitize format - removes sensitive data
-const sanitizeFormat = winston.format((info) => {
+const sanitizeFormat = winston.format(info => {
     // Sanitize message
     if (typeof info.message === 'string') {
         info.message = sanitizeForLog(info.message);
     }
-    
+
     // Sanitize metadata
     if (info.error && typeof info.error === 'object') {
         if (info.error.message) {
@@ -22,14 +22,14 @@ const sanitizeFormat = winston.format((info) => {
             info.error.stack = sanitizeForLog(info.error.stack);
         }
     }
-    
+
     // Sanitize other metadata
     for (const key in info) {
         if (typeof info[key] === 'string' && key !== 'level' && key !== 'timestamp') {
             info[key] = sanitizeForLog(info[key]);
         }
     }
-    
+
     return info;
 })();
 

@@ -1,37 +1,42 @@
 /**
  * Unified Cache Manager
- * 
+ *
  * Problem: Multiple disconnected caches with no shared memory budget:
  * - client._lastSearchResults
- * - client._historyCache  
+ * - client._historyCache
  * - client._discoveryCache
  * - client._similarCache
  * - client._trendingCache
  * - musicManager.searchCache
- * 
+ *
  * Solution: A unified cache manager that:
  * 1. Maintains a total memory budget (default: 200MB)
  * 2. Allocates budgets to individual caches
  * 3. Performs global eviction when total exceeds budget
  * 4. Provides consistent TTL and LRU behavior across all caches
- * 
+ * 5. Supports configuration via config.json
+ * 6. Supports runtime budget adjustment
+ *
  * @module CacheManager
  */
 
 import { EventEmitter } from 'events';
 import logger from '../../utils/logger.js';
+import { readFileSync, existsSync } from 'fs';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 /**
  * Default cache budgets as percentages of total budget
  */
 const DEFAULT_CACHE_BUDGETS = {
-    searchCache: 0.40,      // 40% for search results cache (hot)
-    searchResults: 0.20,    // 20% for ephemeral search selections
-    discovery: 0.10,        // 10% for discovery cache
-    similar: 0.10,          // 10% for similar tracks cache
-    trending: 0.10,         // 10% for trending cache
-    history: 0.05,          // 5% for history replay cache
-    other: 0.05             // 5% for miscellaneous
+    searchCache: 0.4, // 40% for search results cache (hot)
+    searchResults: 0.2, // 20% for ephemeral search selections
+    discovery: 0.1, // 10% for discovery cache
+    similar: 0.1, // 10% for similar tracks cache
+    trending: 0.1, // 10% for trending cache
+    history: 0.05, // 5% for history replay cache
+    other: 0.05 // 5% for miscellaneous
 };
 
 /**
@@ -51,6 +56,89 @@ const DEFAULT_CONFIG = {
     /** Cache budget allocations */
     budgets: DEFAULT_CACHE_BUDGETS
 };
+
+/**
+ * Load cache configuration from config.json
+ * @returns {Object|null} Cache configuration or null if not found
+ */
+function loadConfigFromFile() {
+    try {
+        // Get directory of current module
+        const __filename = fileURLToPath(import.meta.url);
+        const __dirname = dirname(__filename);
+
+        // Try to load config.json from src/config/
+        const configPath = join(__dirname, '../../config/config.json');
+
+        if (!existsSync(configPath)) {
+            logger.debug('Config file not found, using default cache configuration');
+            return null;
+        }
+
+        const configContent = readFileSync(configPath, 'utf-8');
+        const config = JSON.parse(configContent);
+
+        if (!config.cache) {
+            logger.debug('No cache configuration in config.json, using defaults');
+            return null;
+        }
+
+        // Convert MB to bytes for totalBudget
+        const cacheConfig = {
+            totalBudgetBytes: (config.cache.totalBudgetMB || 200) * 1024 * 1024,
+            defaultTTLMs: config.cache.defaultTTLMs || DEFAULT_CONFIG.defaultTTLMs,
+            cleanupIntervalMs: config.cache.cleanupIntervalMs || DEFAULT_CONFIG.cleanupIntervalMs,
+            enableGlobalEviction: config.cache.enableGlobalEviction ?? DEFAULT_CONFIG.enableGlobalEviction,
+            evictionPercentage: config.cache.evictionPercentage || DEFAULT_CONFIG.evictionPercentage,
+            budgets: config.cache.budgets || DEFAULT_CACHE_BUDGETS
+        };
+
+        logger.info('Loaded cache configuration from config.json', {
+            totalBudgetMB: config.cache.totalBudgetMB || 200,
+            budgets: Object.keys(cacheConfig.budgets)
+        });
+
+        return cacheConfig;
+    } catch (error) {
+        logger.warn('Failed to load cache configuration from file, using defaults', {
+            error: error.message
+        });
+        return null;
+    }
+}
+
+/**
+ * Validate cache budget configuration
+ * @param {Object} budgets - Budget allocations
+ * @returns {{valid: boolean, errors: string[]}}
+ */
+function validateBudgets(budgets) {
+    const errors = [];
+    let total = 0;
+
+    for (const [name, percentage] of Object.entries(budgets)) {
+        if (typeof percentage !== 'number') {
+            errors.push(`Budget "${name}" must be a number`);
+            continue;
+        }
+
+        if (percentage < 0 || percentage > 1) {
+            errors.push(`Budget "${name}" must be between 0 and 1 (got ${percentage})`);
+        }
+
+        total += percentage;
+    }
+
+    // Allow small floating point error (0.99 to 1.01)
+    if (total < 0.99 || total > 1.01) {
+        errors.push(`Budget percentages must sum to 1.0 (got ${total.toFixed(4)})`);
+    }
+
+    return {
+        valid: errors.length === 0,
+        errors
+    };
+}
 
 /**
  * Individual cache namespace with LRU eviction
@@ -92,7 +180,7 @@ class CacheNamespace {
         }
 
         const size = this._estimateSize(value);
-        
+
         // Evict entries if over budget
         while (this.currentSizeBytes + size > this.budgetBytes && this.cache.size > 0) {
             this._evictLRU();
@@ -119,7 +207,7 @@ class CacheNamespace {
      */
     get(key) {
         const entry = this.cache.get(key);
-        
+
         if (!entry) {
             this.stats.misses++;
             return null;
@@ -136,7 +224,7 @@ class CacheNamespace {
         // Move to end (most recently used)
         this.cache.delete(key);
         this.cache.set(key, entry);
-        
+
         this.stats.hits++;
         return entry.value;
     }
@@ -149,14 +237,14 @@ class CacheNamespace {
     has(key) {
         const entry = this.cache.get(key);
         if (!entry) return false;
-        
+
         // Check if expired
         if (Date.now() - entry.timestamp > entry.ttl) {
             this.cache.delete(key);
             this.currentSizeBytes -= entry.size;
             return false;
         }
-        
+
         return true;
     }
 
@@ -187,9 +275,10 @@ class CacheNamespace {
      * @returns {Object}
      */
     getStats() {
-        const hitRate = this.stats.hits + this.stats.misses > 0
-            ? (this.stats.hits / (this.stats.hits + this.stats.misses) * 100).toFixed(2)
-            : 0;
+        const hitRate =
+            this.stats.hits + this.stats.misses > 0
+                ? ((this.stats.hits / (this.stats.hits + this.stats.misses)) * 100).toFixed(2)
+                : 0;
 
         return {
             name: this.name,
@@ -225,7 +314,7 @@ class CacheNamespace {
     pruneExpired() {
         const now = Date.now();
         let pruned = 0;
-        
+
         for (const [key, entry] of this.cache.entries()) {
             if (now - entry.timestamp > entry.ttl) {
                 this.currentSizeBytes -= entry.size;
@@ -233,7 +322,7 @@ class CacheNamespace {
                 pruned++;
             }
         }
-        
+
         return pruned;
     }
 
@@ -257,12 +346,12 @@ class CacheNamespace {
     forceEvict(percentage) {
         const targetCount = Math.ceil(this.cache.size * percentage);
         let evicted = 0;
-        
+
         while (evicted < targetCount && this.cache.size > 0) {
             this._evictLRU();
             evicted++;
         }
-        
+
         return evicted;
     }
 }
@@ -275,26 +364,51 @@ class CacheNamespace {
 class CacheManager extends EventEmitter {
     /**
      * Create a new CacheManager
-     * @param {Object} config - Configuration options
+     * @param {Object} config - Configuration options (overrides config.json and defaults)
      */
     constructor(config = {}) {
         super();
-        
-        this.config = { ...DEFAULT_CONFIG, ...config };
-        this.config.budgets = { ...DEFAULT_CACHE_BUDGETS, ...config.budgets };
-        
+
+        // Load configuration: config.json > passed config > defaults
+        const fileConfig = loadConfigFromFile();
+        this.config = {
+            ...DEFAULT_CONFIG,
+            ...fileConfig,
+            ...config
+        };
+
+        // Budget priority: passed config > fileConfig > defaults
+        // If config.budgets is provided directly, use it exclusively (don't merge with defaults)
+        // This allows tests to provide custom budgets without merging with defaults
+        if (config.budgets && Object.keys(config.budgets).length > 0) {
+            this.config.budgets = config.budgets;
+        } else if (fileConfig?.budgets && Object.keys(fileConfig.budgets).length > 0) {
+            this.config.budgets = { ...DEFAULT_CACHE_BUDGETS, ...fileConfig.budgets };
+        } else {
+            this.config.budgets = DEFAULT_CACHE_BUDGETS;
+        }
+
+        // Validate budgets
+        const validation = validateBudgets(this.config.budgets);
+        if (!validation.valid) {
+            logger.warn('Invalid cache budgets detected', { errors: validation.errors });
+            // Use defaults if invalid
+            this.config.budgets = DEFAULT_CACHE_BUDGETS;
+        }
+
         this.namespaces = new Map();
         this.cleanupInterval = null;
-        
+
         // Create default namespaces based on budget allocations
         for (const [name, percentage] of Object.entries(this.config.budgets)) {
             const budgetBytes = Math.floor(this.config.totalBudgetBytes * percentage);
             this.createNamespace(name, budgetBytes, this.config.defaultTTLMs);
         }
-        
+
         logger.info('CacheManager initialized', {
             totalBudgetMB: (this.config.totalBudgetBytes / 1024 / 1024).toFixed(0),
-            namespaces: [...this.namespaces.keys()]
+            namespaces: [...this.namespaces.keys()],
+            configSource: fileConfig ? 'config.json' : 'defaults'
         });
     }
 
@@ -305,11 +419,11 @@ class CacheManager extends EventEmitter {
         if (this.cleanupInterval) {
             return;
         }
-        
+
         this.cleanupInterval = setInterval(() => {
             this._periodicCleanup();
         }, this.config.cleanupIntervalMs);
-        
+
         logger.info('CacheManager started');
     }
 
@@ -321,7 +435,7 @@ class CacheManager extends EventEmitter {
             clearInterval(this.cleanupInterval);
             this.cleanupInterval = null;
         }
-        
+
         logger.info('CacheManager stopped');
     }
 
@@ -336,19 +450,15 @@ class CacheManager extends EventEmitter {
         if (this.namespaces.has(name)) {
             return this.namespaces.get(name);
         }
-        
-        const namespace = new CacheNamespace(
-            name,
-            budgetBytes,
-            ttlMs || this.config.defaultTTLMs
-        );
-        
+
+        const namespace = new CacheNamespace(name, budgetBytes, ttlMs || this.config.defaultTTLMs);
+
         this.namespaces.set(name, namespace);
-        
+
         logger.debug(`Cache namespace created: ${name}`, {
             budgetMB: (budgetBytes / 1024 / 1024).toFixed(2)
         });
-        
+
         return namespace;
     }
 
@@ -375,14 +485,14 @@ class CacheManager extends EventEmitter {
             logger.warn(`Cache namespace not found: ${namespace}`);
             return false;
         }
-        
+
         const result = ns.set(key, value, ttlMs);
-        
+
         // Check global memory after set
         if (this.config.enableGlobalEviction) {
             this._checkGlobalMemory();
         }
-        
+
         return result;
     }
 
@@ -472,7 +582,7 @@ class CacheManager extends EventEmitter {
         let totalMisses = 0;
         let totalEvictions = 0;
         let totalEntries = 0;
-        
+
         for (const [name, ns] of this.namespaces.entries()) {
             const stats = ns.getStats();
             namespaceStats[name] = stats;
@@ -481,11 +591,10 @@ class CacheManager extends EventEmitter {
             totalEvictions += stats.evictions;
             totalEntries += stats.size;
         }
-        
+
         const totalMemory = this.getTotalMemoryUsage();
-        const totalHitRate = totalHits + totalMisses > 0
-            ? (totalHits / (totalHits + totalMisses) * 100).toFixed(2)
-            : 0;
+        const totalHitRate =
+            totalHits + totalMisses > 0 ? ((totalHits / (totalHits + totalMisses)) * 100).toFixed(2) : 0;
 
         return {
             totalMemoryBytes: totalMemory,
@@ -508,15 +617,15 @@ class CacheManager extends EventEmitter {
      */
     _checkGlobalMemory() {
         const totalUsage = this.getTotalMemoryUsage();
-        
+
         if (totalUsage > this.config.totalBudgetBytes) {
             logger.warn('Global cache budget exceeded, performing eviction', {
                 usageMB: (totalUsage / 1024 / 1024).toFixed(2),
                 budgetMB: (this.config.totalBudgetBytes / 1024 / 1024).toFixed(0)
             });
-            
+
             this._globalEviction();
-            
+
             this.emit('overBudget', {
                 usageBefore: totalUsage,
                 usageAfter: this.getTotalMemoryUsage(),
@@ -536,23 +645,23 @@ class CacheManager extends EventEmitter {
             const bUsage = b.currentSizeBytes / b.budgetBytes;
             return bUsage - aUsage;
         });
-        
+
         // Evict from namespaces that are over their budget first
         let totalEvicted = 0;
         for (const ns of sortedNamespaces) {
             if (ns.currentSizeBytes > 0) {
                 const evicted = ns.forceEvict(this.config.evictionPercentage);
                 totalEvicted += evicted;
-                
+
                 logger.debug(`Global eviction from ${ns.name}: ${evicted} entries`);
             }
-            
+
             // Check if we're back under budget
             if (this.getTotalMemoryUsage() <= this.config.totalBudgetBytes * 0.9) {
                 break;
             }
         }
-        
+
         logger.info(`Global eviction complete: ${totalEvicted} total entries evicted`);
     }
 
@@ -562,15 +671,15 @@ class CacheManager extends EventEmitter {
      */
     _periodicCleanup() {
         let totalPruned = 0;
-        
+
         for (const ns of this.namespaces.values()) {
             totalPruned += ns.pruneExpired();
         }
-        
+
         if (totalPruned > 0) {
             logger.debug(`Periodic cache cleanup: ${totalPruned} expired entries removed`);
         }
-        
+
         // Also check global memory
         this._checkGlobalMemory();
     }
@@ -582,6 +691,104 @@ class CacheManager extends EventEmitter {
         this.stop();
         this.clearAll();
         logger.info('CacheManager shutdown complete');
+    }
+
+    /**
+     * Update cache budgets at runtime
+     * @param {Object} newBudgets - New budget allocations (partial or full)
+     * @returns {{success: boolean, errors?: string[]}}
+     */
+    updateBudgets(newBudgets) {
+        // Merge with current budgets
+        const mergedBudgets = { ...this.config.budgets, ...newBudgets };
+
+        // Validate
+        const validation = validateBudgets(mergedBudgets);
+        if (!validation.valid) {
+            logger.warn('Invalid budget update rejected', { errors: validation.errors });
+            return { success: false, errors: validation.errors };
+        }
+
+        // Apply new budgets
+        this.config.budgets = mergedBudgets;
+
+        // Update namespace budgets
+        for (const [name, percentage] of Object.entries(mergedBudgets)) {
+            const newBudgetBytes = Math.floor(this.config.totalBudgetBytes * percentage);
+            const namespace = this.namespaces.get(name);
+
+            if (namespace) {
+                const oldBudget = namespace.budgetBytes;
+                namespace.budgetBytes = newBudgetBytes;
+
+                logger.debug(`Updated budget for ${name}`, {
+                    oldMB: (oldBudget / 1024 / 1024).toFixed(2),
+                    newMB: (newBudgetBytes / 1024 / 1024).toFixed(2)
+                });
+            } else {
+                // Create new namespace if doesn't exist
+                this.createNamespace(name, newBudgetBytes, this.config.defaultTTLMs);
+            }
+        }
+
+        logger.info('Cache budgets updated', { budgets: mergedBudgets });
+        this.emit('budgetsUpdated', mergedBudgets);
+
+        // Trigger global memory check after budget change
+        this._checkGlobalMemory();
+
+        return { success: true };
+    }
+
+    /**
+     * Update total memory budget at runtime
+     * @param {number} newBudgetMB - New total budget in megabytes
+     * @returns {boolean} Success
+     */
+    updateTotalBudget(newBudgetMB) {
+        if (typeof newBudgetMB !== 'number' || newBudgetMB < 10) {
+            logger.warn('Invalid total budget update', { value: newBudgetMB });
+            return false;
+        }
+
+        const oldBudget = this.config.totalBudgetBytes;
+        this.config.totalBudgetBytes = newBudgetMB * 1024 * 1024;
+
+        // Recalculate namespace budgets
+        for (const [name, percentage] of Object.entries(this.config.budgets)) {
+            const namespace = this.namespaces.get(name);
+            if (namespace) {
+                namespace.budgetBytes = Math.floor(this.config.totalBudgetBytes * percentage);
+            }
+        }
+
+        logger.info('Total cache budget updated', {
+            oldMB: (oldBudget / 1024 / 1024).toFixed(0),
+            newMB: newBudgetMB
+        });
+
+        this.emit('totalBudgetUpdated', { oldBytes: oldBudget, newBytes: this.config.totalBudgetBytes });
+
+        // Trigger global memory check
+        this._checkGlobalMemory();
+
+        return true;
+    }
+
+    /**
+     * Get current configuration (read-only copy)
+     * @returns {Object}
+     */
+    getConfig() {
+        return {
+            totalBudgetMB: (this.config.totalBudgetBytes / 1024 / 1024).toFixed(0),
+            totalBudgetBytes: this.config.totalBudgetBytes,
+            defaultTTLMs: this.config.defaultTTLMs,
+            cleanupIntervalMs: this.config.cleanupIntervalMs,
+            enableGlobalEviction: this.config.enableGlobalEviction,
+            evictionPercentage: this.config.evictionPercentage,
+            budgets: { ...this.config.budgets }
+        };
     }
 }
 

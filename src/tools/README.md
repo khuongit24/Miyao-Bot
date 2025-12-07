@@ -9,6 +9,7 @@ This directory contains tools for profiling, load testing, and performance analy
 Comprehensive performance profiling tool that tracks hot paths, memory usage, and latency metrics.
 
 **Features:**
+
 - Hot path detection (most frequently called or slowest operations)
 - Memory leak analysis
 - Latency percentiles (p50, p95, p99)
@@ -40,6 +41,7 @@ await profiler.exportReport('./profile-report.json');
 ```
 
 **Metrics Provided:**
+
 - Total operations and measurements
 - Hot paths (top functions by total time)
 - Slow operations (p50/p95/p99 latency)
@@ -52,6 +54,7 @@ await profiler.exportReport('./profile-report.json');
 Production-ready load testing tool for simulating concurrent guilds and operations.
 
 **Features:**
+
 - Simulate multiple concurrent guilds
 - Configurable track queue sizes
 - Search cache performance testing
@@ -72,10 +75,10 @@ const database = getDatabaseManager();
 
 // Configure load test
 const tester = new LoadTester({
-    numGuilds: 50,              // Number of guilds to simulate
-    tracksPerQueue: 100,        // Tracks per queue
-    searchesPerMinute: 100,     // Search operations per minute
-    duration: 60 * 60 * 1000    // Test duration (1 hour)
+    numGuilds: 50, // Number of guilds to simulate
+    tracksPerQueue: 100, // Tracks per queue
+    searchesPerMinute: 100, // Search operations per minute
+    duration: 60 * 60 * 1000 // Test duration (1 hour)
 });
 
 // Run stress test
@@ -90,6 +93,7 @@ const cacheReport = await tester.testCachePerformance(musicManager);
 ```
 
 **Metrics Provided:**
+
 - Total searches (successful/failed)
 - Success rate percentage
 - Average searches per second
@@ -113,10 +117,10 @@ import profiler from './tools/profiler.js';
 // 3. After some time, generate report
 setTimeout(() => {
     const report = profiler.generateReport();
-    
+
     // Print to console
     profiler.printReport();
-    
+
     // Or export to file
     await profiler.exportReport('./reports/profile-' + Date.now() + '.json');
 }, 60000); // After 1 minute
@@ -143,16 +147,19 @@ tester.printReport(report);
 import profiler from './tools/profiler.js';
 
 // Take snapshots periodically
-setInterval(() => {
-    profiler.takeMemorySnapshot('periodic-check');
-    
-    // Analyze for leaks
-    const leakAnalysis = profiler.analyzeMemoryLeaks();
-    
-    if (leakAnalysis.hasLeak) {
-        console.error('Memory leak detected!', leakAnalysis);
-    }
-}, 10 * 60 * 1000); // Every 10 minutes
+setInterval(
+    () => {
+        profiler.takeMemorySnapshot('periodic-check');
+
+        // Analyze for leaks
+        const leakAnalysis = profiler.analyzeMemoryLeaks();
+
+        if (leakAnalysis.hasLeak) {
+            console.error('Memory leak detected!', leakAnalysis);
+        }
+    },
+    10 * 60 * 1000
+); // Every 10 minutes
 ```
 
 ### Cache Performance Testing
@@ -171,21 +178,25 @@ console.log('Improvement:', cacheReport.improvement, '%');
 ## 🎯 Best Practices
 
 ### 1. Regular Profiling
+
 - Run profiler during development to catch performance regressions early
 - Take snapshots before and after major changes
 - Keep historical profiles for comparison
 
 ### 2. Continuous Load Testing
+
 - Run load tests before each release
 - Test with realistic data (actual track counts, search patterns)
 - Monitor long-term stability (24-hour tests)
 
 ### 3. Memory Monitoring
+
 - Check for leaks after major features
 - Monitor production memory usage trends
 - Take action if growth rate exceeds 1MB/minute
 
 ### 4. Baseline Comparison
+
 - Always compare against established baselines
 - Document performance improvements/regressions
 - Update baselines after significant optimizations
@@ -200,33 +211,33 @@ console.log('Improvement:', cacheReport.improvement, '%');
 name: Performance Tests
 
 on:
-  pull_request:
-    branches: [ main, development ]
+    pull_request:
+        branches: [main, development]
 
 jobs:
-  performance:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: '20'
-      
-      - name: Install dependencies
-        run: npm ci
-      
-      - name: Run load tests
-        run: node tools/load-test.js --duration 60000 --guilds 10
-      
-      - name: Check memory leaks
-        run: node -e "import('./tools/profiler.js').then(p => p.default.analyzeMemoryLeaks())"
-      
-      - name: Upload reports
-        uses: actions/upload-artifact@v3
-        with:
-          name: performance-reports
-          path: ./profile-*.json
+    performance:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v3
+            - name: Setup Node.js
+              uses: actions/setup-node@v3
+              with:
+                  node-version: '20'
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Run load tests
+              run: node tools/load-test.js --duration 60000 --guilds 10
+
+            - name: Check memory leaks
+              run: node -e "import('./tools/profiler.js').then(p => p.default.analyzeMemoryLeaks())"
+
+            - name: Upload reports
+              uses: actions/upload-artifact@v3
+              with:
+                  name: performance-reports
+                  path: ./profile-*.json
 ```
 
 ---
@@ -234,18 +245,21 @@ jobs:
 ## 🔍 Troubleshooting
 
 ### High Memory Usage
+
 1. Check profiler for hot paths consuming memory
 2. Review memory allocation report
 3. Look for objects that aren't being cleaned up
 4. Use WeakRefManager for temporary objects
 
 ### Slow Operations
+
 1. Check profiler's slow operations report
 2. Look at p95/p99 latencies
 3. Identify bottlenecks in hot paths
 4. Consider caching or optimization
 
 ### Memory Leaks
+
 1. Run profiler for extended period
 2. Check leak analysis (growth rate)
 3. Review event listeners and timers
@@ -264,6 +278,7 @@ jobs:
 ## 🤝 Contributing
 
 When adding new tools:
+
 1. Follow existing code style
 2. Add comprehensive documentation
 3. Include usage examples

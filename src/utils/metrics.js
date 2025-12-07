@@ -9,7 +9,7 @@ import logger from './logger.js';
 class MetricsTracker {
     constructor() {
         this.startTime = Date.now();
-        
+
         // Command metrics
         this.commands = {
             total: 0,
@@ -18,7 +18,7 @@ class MetricsTracker {
             byCommand: new Map(),
             lastCommand: null
         };
-        
+
         // Music metrics
         this.music = {
             totalTracks: 0,
@@ -30,7 +30,7 @@ class MetricsTracker {
             cacheHits: 0,
             cacheMisses: 0
         };
-        
+
         // Error metrics
         this.errors = {
             total: 0,
@@ -38,7 +38,7 @@ class MetricsTracker {
             lastError: null,
             lastErrorTime: null
         };
-        
+
         // Performance metrics
         this.performance = {
             avgResponseTime: 0,
@@ -46,7 +46,7 @@ class MetricsTracker {
             maxResponseTime: 0,
             minResponseTime: Infinity
         };
-        
+
         // System metrics (updated periodically)
         this.system = {
             memory: {
@@ -60,11 +60,11 @@ class MetricsTracker {
                 system: 0
             }
         };
-        
+
         // Start periodic system metrics collection
         this.startSystemMetrics();
     }
-    
+
     /**
      * Track command execution
      */
@@ -75,7 +75,7 @@ class MetricsTracker {
         } else {
             this.commands.failed++;
         }
-        
+
         // Track by command
         const stats = this.commands.byCommand.get(commandName) || { total: 0, success: 0, failed: 0 };
         stats.total++;
@@ -85,20 +85,20 @@ class MetricsTracker {
             stats.failed++;
         }
         this.commands.byCommand.set(commandName, stats);
-        
+
         this.commands.lastCommand = {
             name: commandName,
             success,
             time: Date.now(),
             responseTime
         };
-        
+
         // Track response time
         if (responseTime > 0) {
             this.trackResponseTime(responseTime);
         }
     }
-    
+
     /**
      * Track music action
      */
@@ -130,16 +130,16 @@ class MetricsTracker {
                 break;
         }
     }
-    
+
     /**
      * Track error
      */
     trackError(error, type = 'general') {
         this.errors.total++;
-        
+
         const count = this.errors.byType.get(type) || 0;
         this.errors.byType.set(type, count + 1);
-        
+
         this.errors.lastError = {
             message: error.message || String(error),
             type,
@@ -147,27 +147,26 @@ class MetricsTracker {
         };
         this.errors.lastErrorTime = Date.now();
     }
-    
+
     /**
      * Track response time
      */
     trackResponseTime(time) {
         this.performance.responseTimes.push(time);
-        
+
         // Keep only last 100 response times
         if (this.performance.responseTimes.length > 100) {
             this.performance.responseTimes.shift();
         }
-        
+
         // Update stats
-        this.performance.avgResponseTime = 
-            this.performance.responseTimes.reduce((a, b) => a + b, 0) / 
-            this.performance.responseTimes.length;
-        
+        this.performance.avgResponseTime =
+            this.performance.responseTimes.reduce((a, b) => a + b, 0) / this.performance.responseTimes.length;
+
         this.performance.maxResponseTime = Math.max(this.performance.maxResponseTime, time);
         this.performance.minResponseTime = Math.min(this.performance.minResponseTime, time);
     }
-    
+
     /**
      * Start collecting system metrics
      */
@@ -180,13 +179,13 @@ class MetricsTracker {
                 external: Math.round(mem.external / 1024 / 1024), // MB
                 rss: Math.round(mem.rss / 1024 / 1024) // MB
             };
-            
+
             const cpu = process.cpuUsage();
             this.system.cpu = {
                 user: Math.round(cpu.user / 1000), // milliseconds
                 system: Math.round(cpu.system / 1000) // milliseconds
             };
-            
+
             // Log if memory usage is high
             if (this.system.memory.heapUsed > 500) {
                 logger.warn('High memory usage detected', {
@@ -197,7 +196,7 @@ class MetricsTracker {
             }
         }, 60000); // Every minute
     }
-    
+
     /**
      * Stop system metrics collection
      */
@@ -206,14 +205,14 @@ class MetricsTracker {
             clearInterval(this.systemMetricsInterval);
         }
     }
-    
+
     /**
      * Get uptime
      */
     getUptime() {
         return Date.now() - this.startTime;
     }
-    
+
     /**
      * Get cache hit rate
      */
@@ -222,7 +221,7 @@ class MetricsTracker {
         if (total === 0) return 0;
         return Math.round((this.music.cacheHits / total) * 100);
     }
-    
+
     /**
      * Get success rate
      */
@@ -230,7 +229,7 @@ class MetricsTracker {
         if (this.commands.total === 0) return 100;
         return Math.round((this.commands.successful / this.commands.total) * 100);
     }
-    
+
     /**
      * Get full metrics summary
      */
@@ -270,7 +269,7 @@ class MetricsTracker {
             system: this.system
         };
     }
-    
+
     /**
      * Reset all metrics
      */
@@ -279,7 +278,7 @@ class MetricsTracker {
         this.commands.successful = 0;
         this.commands.failed = 0;
         this.commands.byCommand.clear();
-        
+
         this.music.totalTracks = 0;
         this.music.totalPlaylists = 0;
         this.music.totalPlaytime = 0;
@@ -288,18 +287,18 @@ class MetricsTracker {
         this.music.searchQueries = 0;
         this.music.cacheHits = 0;
         this.music.cacheMisses = 0;
-        
+
         this.errors.total = 0;
         this.errors.byType.clear();
-        
+
         this.performance.avgResponseTime = 0;
         this.performance.responseTimes = [];
         this.performance.maxResponseTime = 0;
         this.performance.minResponseTime = Infinity;
-        
+
         logger.info('Metrics reset');
     }
-    
+
     /**
      * Log metrics summary
      */

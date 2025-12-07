@@ -10,7 +10,7 @@ import logger from '../../utils/logger.js';
  */
 export function createErrorEmbed(message, config) {
     const errorMessage = message ? String(message) : 'Đã xảy ra lỗi không xác định';
-    
+
     return new EmbedBuilder()
         .setColor('#FF0000')
         .setTitle('❌ Lỗi')
@@ -101,14 +101,14 @@ export async function sendErrorResponse(interaction, error, config, ephemeral = 
     try {
         // Format the error for user
         const errorInfo = formatErrorForUser(error);
-        
+
         const embed = new EmbedBuilder()
             .setColor(errorInfo.color || '#FF0000')
             .setTitle(errorInfo.title || '❌ Lỗi')
             .setDescription(errorInfo.description || 'Đã xảy ra lỗi không xác định')
             .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
             .setTimestamp();
-        
+
         // Add suggestions if available
         if (errorInfo.suggestions && errorInfo.suggestions.length > 0) {
             const suggestionsText = errorInfo.suggestions.map(s => `• ${s}`).join('\n');
@@ -118,10 +118,10 @@ export async function sendErrorResponse(interaction, error, config, ephemeral = 
                 inline: false
             });
         }
-        
+
         // Determine how to respond based on interaction state
         const replyOptions = { embeds: [embed], ephemeral };
-        
+
         if (interaction.replied) {
             await interaction.followUp(replyOptions);
         } else if (interaction.deferred) {
@@ -129,7 +129,7 @@ export async function sendErrorResponse(interaction, error, config, ephemeral = 
         } else {
             await interaction.reply(replyOptions);
         }
-        
+
         // Log the error
         logger.warn('Error response sent', {
             errorCode: errorInfo.title,
@@ -137,7 +137,6 @@ export async function sendErrorResponse(interaction, error, config, ephemeral = 
             userId: interaction.user?.id,
             guildId: interaction.guildId
         });
-        
     } catch (responseError) {
         logger.error('Failed to send error response', {
             originalError: error?.message,

@@ -14,7 +14,7 @@ export function loadConfig() {
     try {
         // Config is now inside src/config
         const configPath = path.join(__dirname, '..', 'config', 'config.json');
-        
+
         let config;
         if (!fs.existsSync(configPath)) {
             logger.warn('config.json not found, using example config');
@@ -23,12 +23,12 @@ export function loadConfig() {
         } else {
             config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
         }
-        
+
         // Inject version info from centralized version system
         config.bot.version = VERSION.full;
         config.bot.footer = VERSION.footer;
         config.bot.versionDetailed = VERSION.detailed;
-        
+
         logger.info('Configuration loaded successfully');
         return config;
     } catch (error) {
@@ -65,16 +65,16 @@ export function formatNumber(num) {
  */
 export function getProgressBar(current, total, length = 30) {
     if (total === 0 || isNaN(total)) return '▬'.repeat(length);
-    
+
     const progress = Math.min(Math.max(current / total, 0), 1);
     const filled = Math.round(length * progress);
     const empty = length - filled;
-    
+
     // Use better characters for enhanced visual experience
-    const filledChar = '━';  // Thick horizontal line
-    const emptyChar = '─';   // Thin horizontal line
-    const pointer = '🔘';    // Position indicator
-    
+    const filledChar = '━'; // Thick horizontal line
+    const emptyChar = '─'; // Thin horizontal line
+    const pointer = '🔘'; // Position indicator
+
     if (filled === 0) {
         return pointer + emptyChar.repeat(Math.max(0, length));
     } else if (filled >= length) {
@@ -89,7 +89,7 @@ export function getProgressBar(current, total, length = 30) {
  */
 export function parseTime(timeString) {
     const parts = timeString.split(':').map(Number);
-    
+
     if (parts.length === 2) {
         // MM:SS
         return (parts[0] * 60 + parts[1]) * 1000;
@@ -97,7 +97,7 @@ export function parseTime(timeString) {
         // HH:MM:SS
         return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
     }
-    
+
     return 0;
 }
 
@@ -109,23 +109,19 @@ export function hasPermission(member, config) {
     if (member.permissions.has('Administrator')) {
         return true;
     }
-    
+
     // Check admin roles
     if (config.permissions.adminRoles?.length > 0) {
-        const hasAdminRole = member.roles.cache.some(role => 
-            config.permissions.adminRoles.includes(role.id)
-        );
+        const hasAdminRole = member.roles.cache.some(role => config.permissions.adminRoles.includes(role.id));
         if (hasAdminRole) return true;
     }
-    
+
     // Check DJ roles
     if (config.permissions.djRoles?.length > 0) {
-        const hasDJRole = member.roles.cache.some(role => 
-            config.permissions.djRoles.includes(role.id)
-        );
+        const hasDJRole = member.roles.cache.some(role => config.permissions.djRoles.includes(role.id));
         if (hasDJRole) return true;
     }
-    
+
     // Allow everyone if configured
     return config.permissions.allowEveryone || false;
 }
@@ -141,27 +137,27 @@ export async function checkDJPermission(member, guildId) {
     if (member.permissions.has('Administrator')) {
         return { allowed: true, reason: 'admin' };
     }
-    
+
     // Get guild settings for DJ role
     try {
         const GuildSettings = (await import('../database/models/GuildSettings.js')).default;
         const settings = GuildSettings.get(guildId);
-        
+
         // If no DJ role is set, everyone is allowed
         if (!settings.djRoleId) {
             return { allowed: true, reason: 'no_dj_role_set' };
         }
-        
+
         // Check if user has DJ role
         if (member.roles.cache.has(settings.djRoleId)) {
             return { allowed: true, reason: 'has_dj_role' };
         }
-        
+
         // User doesn't have DJ role
-        return { 
-            allowed: false, 
+        return {
+            allowed: false,
             reason: 'missing_dj_role',
-            roleId: settings.djRoleId 
+            roleId: settings.djRoleId
         };
     } catch (error) {
         // If error checking, allow by default
@@ -178,31 +174,31 @@ export async function checkDJPermission(member, guildId) {
  */
 export async function checkDJCommandPermission(interaction, djCommands = []) {
     const { EmbedBuilder } = await import('discord.js');
-    
+
     const commandName = interaction.commandName;
-    
+
     // If command is not in DJ commands list, allow
     if (!djCommands.includes(commandName)) {
         return { allowed: true };
     }
-    
+
     const permission = await checkDJPermission(interaction.member, interaction.guildId);
-    
+
     if (permission.allowed) {
         return { allowed: true };
     }
-    
+
     // User doesn't have permission
     const embed = new EmbedBuilder()
         .setColor('#FF0000')
         .setTitle('❌ Không có quyền')
         .setDescription(
             `Lệnh \`/${commandName}\` yêu cầu vai trò DJ!\n\n` +
-            `• Liên hệ admin để được cấp vai trò DJ\n` +
-            `• Hoặc admin có thể tắt yêu cầu DJ role trong \`/settings server dj-role\``
+                '• Liên hệ admin để được cấp vai trò DJ\n' +
+                '• Hoặc admin có thể tắt yêu cầu DJ role trong `/settings server dj-role`'
         )
         .setTimestamp();
-    
+
     return { allowed: false, embed };
 }
 
@@ -230,17 +226,17 @@ export function getPlatformIcon(sourceName) {
         yandexmusic: '🔵',
         http: '🌐'
     };
-    
+
     // Handle source name variations
     const normalizedSource = (sourceName || '').toLowerCase();
-    
+
     // Check for spotify variants
     if (normalizedSource.includes('spotify')) return '🎵';
     if (normalizedSource.includes('youtube')) return '🎥';
     if (normalizedSource.includes('soundcloud')) return '🔊';
     if (normalizedSource.includes('deezer')) return '🎶';
     if (normalizedSource.includes('apple')) return '🍎';
-    
+
     return icons[normalizedSource] || '🎵';
 }
 

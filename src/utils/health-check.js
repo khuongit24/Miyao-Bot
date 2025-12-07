@@ -210,7 +210,7 @@ export class HealthCheckManager {
 
                 // Try a simple query
                 const result = db.queryOne('SELECT 1 as test');
-                
+
                 if (result && result.test === 1) {
                     return {
                         status: HealthStatus.HEALTHY,
@@ -286,7 +286,8 @@ export class HealthCheckManager {
 
                 // Degraded if high error rate
                 const errorRate = stats.metrics.totalErrors / (stats.metrics.totalProcessed || 1);
-                if (errorRate > 0.1) { // >10% error rate
+                if (errorRate > 0.1) {
+                    // >10% error rate
                     return {
                         status: HealthStatus.DEGRADED,
                         message: `High event queue error rate: ${(errorRate * 100).toFixed(1)}%`,
@@ -421,7 +422,7 @@ export class HealthCheckManager {
      */
     async getOverallHealth() {
         const results = await this.runAllChecks();
-        
+
         // Determine overall status (worst status wins)
         let overallStatus = HealthStatus.HEALTHY;
         const statusPriority = {
@@ -477,17 +478,19 @@ export class HealthCheckManager {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         content: `🚨 **Alert: ${checkName}**\n**Status:** ${result.status}\n**Message:** ${result.message}`,
-                        embeds: [{
-                            title: `Health Check Alert: ${checkName}`,
-                            description: result.message,
-                            color: this.getAlertColor(result.status),
-                            fields: Object.entries(result.details || {}).map(([key, value]) => ({
-                                name: key,
-                                value: String(value),
-                                inline: true
-                            })),
-                            timestamp: new Date().toISOString()
-                        }]
+                        embeds: [
+                            {
+                                title: `Health Check Alert: ${checkName}`,
+                                description: result.message,
+                                color: this.getAlertColor(result.status),
+                                fields: Object.entries(result.details || {}).map(([key, value]) => ({
+                                    name: key,
+                                    value: String(value),
+                                    inline: true
+                                })),
+                                timestamp: new Date().toISOString()
+                            }
+                        ]
                     })
                 });
             } catch (error) {
@@ -503,10 +506,10 @@ export class HealthCheckManager {
      */
     getAlertColor(status) {
         const colors = {
-            [HealthStatus.HEALTHY]: 0x2ecc71,    // Green
-            [HealthStatus.DEGRADED]: 0xf39c12,   // Orange
-            [HealthStatus.UNHEALTHY]: 0xe74c3c,  // Red
-            [HealthStatus.CRITICAL]: 0xc0392b    // Dark red
+            [HealthStatus.HEALTHY]: 0x2ecc71, // Green
+            [HealthStatus.DEGRADED]: 0xf39c12, // Orange
+            [HealthStatus.UNHEALTHY]: 0xe74c3c, // Red
+            [HealthStatus.CRITICAL]: 0xc0392b // Dark red
         };
         return colors[status] || 0x95a5a6;
     }

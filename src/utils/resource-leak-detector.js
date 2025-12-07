@@ -21,11 +21,11 @@ export class EventListenerTracker {
      */
     track(emitter, event, listener, context = {}) {
         const key = this.getKey(emitter, event);
-        
+
         if (!this.listeners.has(key)) {
             this.listeners.set(key, []);
         }
-        
+
         this.listeners.get(key).push({
             listener,
             context,
@@ -42,7 +42,7 @@ export class EventListenerTracker {
                 timestamp: Date.now(),
                 message: `Potential leak: ${count} listeners for ${event}`
             };
-            
+
             this.warnings.push(warning);
             logger.warn(warning.message, { event, count });
         }
@@ -54,12 +54,12 @@ export class EventListenerTracker {
     untrack(emitter, event, listener) {
         const key = this.getKey(emitter, event);
         const listeners = this.listeners.get(key);
-        
+
         if (listeners) {
             const index = listeners.findIndex(l => l.listener === listener);
             if (index !== -1) {
                 listeners.splice(index, 1);
-                
+
                 if (listeners.length === 0) {
                     this.listeners.delete(key);
                 }
@@ -89,7 +89,7 @@ export class EventListenerTracker {
      */
     getAllListeners() {
         const result = {};
-        
+
         for (const [key, listeners] of this.listeners.entries()) {
             result[key] = {
                 count: listeners.length,
@@ -100,7 +100,7 @@ export class EventListenerTracker {
                 }))
             };
         }
-        
+
         return result;
     }
 
@@ -109,7 +109,7 @@ export class EventListenerTracker {
      */
     findLeaks(threshold = 10) {
         const leaks = [];
-        
+
         for (const [key, listeners] of this.listeners.entries()) {
             if (listeners.length > threshold) {
                 leaks.push({
@@ -120,7 +120,7 @@ export class EventListenerTracker {
                 });
             }
         }
-        
+
         return leaks;
     }
 
@@ -160,14 +160,14 @@ export class TimerTracker {
      */
     trackTimeout(callback, delay, context = {}) {
         const id = this.nextId++;
-        
+
         const wrappedCallback = () => {
             this.timers.delete(id);
             callback();
         };
-        
+
         const timerId = setTimeout(wrappedCallback, delay);
-        
+
         this.timers.set(id, {
             type: 'timeout',
             timerId,
@@ -177,7 +177,7 @@ export class TimerTracker {
             createdAt: Date.now(),
             stack: new Error().stack
         });
-        
+
         return { id, timerId };
     }
 
@@ -186,9 +186,9 @@ export class TimerTracker {
      */
     trackInterval(callback, interval, context = {}) {
         const id = this.nextId++;
-        
+
         const intervalId = setInterval(callback, interval);
-        
+
         this.intervals.set(id, {
             type: 'interval',
             intervalId,
@@ -198,7 +198,7 @@ export class TimerTracker {
             createdAt: Date.now(),
             stack: new Error().stack
         });
-        
+
         return { id, intervalId };
     }
 
@@ -234,7 +234,7 @@ export class TimerTracker {
     findLongRunning(ageThreshold = 60 * 60 * 1000) {
         const now = Date.now();
         const longRunning = [];
-        
+
         for (const [id, interval] of this.intervals.entries()) {
             const age = now - interval.createdAt;
             if (age > ageThreshold) {
@@ -246,7 +246,7 @@ export class TimerTracker {
                 });
             }
         }
-        
+
         return longRunning;
     }
 
@@ -281,11 +281,11 @@ export class TimerTracker {
         for (const [id, timer] of this.timers.entries()) {
             clearTimeout(timer.timerId);
         }
-        
+
         for (const [id, interval] of this.intervals.entries()) {
             clearInterval(interval.intervalId);
         }
-        
+
         this.timers.clear();
         this.intervals.clear();
     }
@@ -315,28 +315,31 @@ export class CollectorTracker {
      */
     track(collector, context = {}) {
         const id = this.nextId++;
-        
+
         this.collectors.set(id, {
             collector,
             context,
             createdAt: Date.now(),
             ended: false
         });
-        
+
         // Auto-remove on end
         collector.once('end', () => {
             const entry = this.collectors.get(id);
             if (entry) {
                 entry.ended = true;
                 entry.endedAt = Date.now();
-                
+
                 // Remove after 5 minutes
-                setTimeout(() => {
-                    this.collectors.delete(id);
-                }, 5 * 60 * 1000);
+                setTimeout(
+                    () => {
+                        this.collectors.delete(id);
+                    },
+                    5 * 60 * 1000
+                );
             }
         });
-        
+
         return id;
     }
 
@@ -358,7 +361,7 @@ export class CollectorTracker {
     findOrphaned(ageThreshold = 10 * 60 * 1000) {
         const now = Date.now();
         const orphaned = [];
-        
+
         for (const [id, entry] of this.collectors.entries()) {
             if (!entry.ended) {
                 const age = now - entry.createdAt;
@@ -371,7 +374,7 @@ export class CollectorTracker {
                 }
             }
         }
-        
+
         return orphaned;
     }
 
@@ -381,17 +384,17 @@ export class CollectorTracker {
     stopOrphaned(ageThreshold = 10 * 60 * 1000) {
         const orphaned = this.findOrphaned(ageThreshold);
         let stopped = 0;
-        
+
         for (const { id } of orphaned) {
             if (this.stop(id)) {
                 stopped++;
             }
         }
-        
+
         if (stopped > 0) {
             logger.info(`Stopped ${stopped} orphaned collectors`);
         }
-        
+
         return stopped;
     }
 
@@ -427,7 +430,7 @@ export class ResourceLeakMonitor extends EventEmitter {
         this.monitorInterval = setInterval(() => {
             this.runChecks();
         }, intervalMs);
-        
+
         logger.info('Resource leak monitoring started');
     }
 
@@ -439,7 +442,7 @@ export class ResourceLeakMonitor extends EventEmitter {
             clearInterval(this.monitorInterval);
             this.monitorInterval = null;
         }
-        
+
         logger.info('Resource leak monitoring stopped');
     }
 
@@ -471,10 +474,10 @@ export class ResourceLeakMonitor extends EventEmitter {
             logger.warn(`Found ${orphaned.length} orphaned collectors`, {
                 collectors: orphaned
             });
-            
+
             // Auto-stop orphaned collectors
             this.collectorTracker.stopOrphaned();
-            
+
             this.emit('leak', { type: 'collector', leaks: orphaned });
         }
     }
@@ -496,10 +499,10 @@ export class ResourceLeakMonitor extends EventEmitter {
      */
     cleanupAll() {
         logger.info('Cleaning up all tracked resources...');
-        
+
         this.timerTracker.clearAll();
         const orphaned = this.collectorTracker.stopOrphaned(0); // Stop all
-        
+
         logger.info(`Cleanup complete: stopped ${orphaned} collectors`);
     }
 }

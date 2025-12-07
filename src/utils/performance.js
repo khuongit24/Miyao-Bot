@@ -23,12 +23,12 @@ export class PerformanceTimer {
     end() {
         this.endTime = performance.now();
         const duration = this.duration();
-        
+
         // Log if execution takes too long
         if (duration > 500) {
             logger.warn(`Slow operation detected: ${this.name}`, { duration: `${duration.toFixed(2)}ms` });
         }
-        
+
         return duration;
     }
 
@@ -58,7 +58,7 @@ export function createTimer(name) {
 export async function measureAsync(fn, name = 'Operation') {
     const timer = createTimer(name);
     timer.start();
-    
+
     try {
         const result = await fn();
         const duration = timer.end();
@@ -79,7 +79,7 @@ export async function measureAsync(fn, name = 'Operation') {
 export function measureSync(fn, name = 'Operation') {
     const timer = createTimer(name);
     timer.start();
-    
+
     try {
         const result = fn();
         const duration = timer.end();
@@ -118,7 +118,7 @@ export class SimpleCache {
 
     get(key) {
         const entry = this.cache.get(key);
-        
+
         if (!entry) {
             this.misses++;
             return null;
@@ -156,7 +156,7 @@ export class SimpleCache {
     getStats() {
         const total = this.hits + this.misses;
         const hitRate = total > 0 ? ((this.hits / total) * 100).toFixed(2) : '0.00';
-        
+
         return {
             size: this.cache.size,
             maxSize: this.maxSize,
@@ -170,14 +170,14 @@ export class SimpleCache {
     cleanup() {
         const now = Date.now();
         let cleaned = 0;
-        
+
         for (const [key, entry] of this.cache.entries()) {
             if (now > entry.expires) {
                 this.cache.delete(key);
                 cleaned++;
             }
         }
-        
+
         return cleaned;
     }
 }
@@ -190,7 +190,7 @@ export class SimpleCache {
  */
 export function debounce(fn, delay = 300) {
     let timeoutId;
-    
+
     return function (...args) {
         clearTimeout(timeoutId);
         timeoutId = setTimeout(() => fn.apply(this, args), delay);
@@ -205,7 +205,7 @@ export function debounce(fn, delay = 300) {
  */
 export function throttle(fn, limit = 1000) {
     let inThrottle;
-    
+
     return function (...args) {
         if (!inThrottle) {
             fn.apply(this, args);
@@ -224,13 +224,13 @@ export function throttle(fn, limit = 1000) {
  */
 export async function batchProcess(items, processor, batchSize = 10) {
     const results = [];
-    
+
     for (let i = 0; i < items.length; i += batchSize) {
         const batch = items.slice(i, i + batchSize);
         const batchResults = await Promise.all(batch.map(processor));
         results.push(...batchResults);
     }
-    
+
     return results;
 }
 
@@ -240,7 +240,7 @@ export async function batchProcess(items, processor, batchSize = 10) {
  */
 export function getMemoryUsage() {
     const usage = process.memoryUsage();
-    
+
     return {
         heapUsed: (usage.heapUsed / 1024 / 1024).toFixed(2) + ' MB',
         heapTotal: (usage.heapTotal / 1024 / 1024).toFixed(2) + ' MB',
@@ -275,7 +275,7 @@ export class MetricsCollector {
         metric.total += value;
         metric.min = Math.min(metric.min, value);
         metric.max = Math.max(metric.max, value);
-        
+
         // Keep last 100 values for percentile calculations
         metric.values.push(value);
         if (metric.values.length > 100) {
@@ -288,12 +288,12 @@ export class MetricsCollector {
         if (!metric) return null;
 
         const avg = metric.total / metric.count;
-        
+
         // Calculate p95 and p99
         const sorted = [...metric.values].sort((a, b) => a - b);
         const p95Index = Math.floor(sorted.length * 0.95);
         const p99Index = Math.floor(sorted.length * 0.99);
-        
+
         return {
             count: metric.count,
             avg: avg.toFixed(2),
@@ -334,21 +334,21 @@ export function measureCommand(commandFn) {
         const commandName = interaction.commandName || 'unknown';
         const timer = createTimer(`Command: ${commandName}`);
         timer.start();
-        
+
         try {
             const result = await commandFn.call(this, interaction, ...args);
             const duration = timer.end();
             globalMetrics.record(`command.${commandName}`, duration);
-            
+
             // Log slow commands
             if (duration > 1000) {
-                logger.warn(`Slow command execution: ${commandName}`, { 
+                logger.warn(`Slow command execution: ${commandName}`, {
                     duration: `${duration.toFixed(2)}ms`,
                     user: interaction.user.tag,
                     guild: interaction.guild?.name
                 });
             }
-            
+
             return result;
         } catch (error) {
             timer.end();
