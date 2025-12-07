@@ -4,14 +4,12 @@ import { createNowPlayingButtons } from '../../UI/components/MusicControls.js';
 import logger from '../../utils/logger.js';
 
 export default {
-    data: new SlashCommandBuilder()
-        .setName('nowplaying')
-        .setDescription('Xem thông tin bài hát đang phát'),
-    
+    data: new SlashCommandBuilder().setName('nowplaying').setDescription('Xem thông tin bài hát đang phát'),
+
     async execute(interaction, client) {
         try {
             const queue = client.musicManager.getQueue(interaction.guildId);
-            
+
             // Check if there's a queue
             if (!queue || !queue.current) {
                 return interaction.reply({
@@ -19,20 +17,19 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             const currentPosition = queue.player?.position || 0;
-            
+
             const reply = await interaction.reply({
                 embeds: [createNowPlayingEmbed(queue.current, queue, client.config, currentPosition)],
                 components: createNowPlayingButtons(queue, false),
                 fetchReply: true
             });
-            
+
             // Update stored message for auto-updates
             queue.setNowPlayingMessage(reply);
-            
+
             logger.command('nowplaying', interaction.user.id, interaction.guildId);
-            
         } catch (error) {
             logger.error('Nowplaying command error', error);
             await interaction.reply({

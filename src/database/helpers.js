@@ -9,11 +9,11 @@
  */
 export const DatabaseConstants = {
     // Data retention periods (days)
-    HISTORY_HOT_DATA_DAYS: 30,      // Keep in main history table
-    HISTORY_WARM_DATA_DAYS: 365,    // Keep in archive table
-    AUDIT_LOG_TTL_DAYS: 90,         // Audit log retention
+    HISTORY_HOT_DATA_DAYS: 30, // Keep in main history table
+    HISTORY_WARM_DATA_DAYS: 365, // Keep in archive table
+    AUDIT_LOG_TTL_DAYS: 90, // Audit log retention
     CACHE_DEFAULT_TTL_SECONDS: 3600, // 1 hour
-    
+
     // Query limits
     QUERY_LIMITS: {
         HISTORY: 50,
@@ -22,40 +22,40 @@ export const DatabaseConstants = {
         PLAYLIST_TRACKS: 100,
         LEADERBOARD: 20,
         MOST_PLAYED: 10,
-        SEARCH_RESULTS: 25,
+        SEARCH_RESULTS: 25
     },
-    
+
     // Performance thresholds
     SLOW_QUERY_THRESHOLD_MS: 100,
     VERY_SLOW_QUERY_THRESHOLD_MS: 500,
-    
+
     // Backup retention
     BACKUP_RETENTION: {
-        HOURLY: 24,  // Keep 24 hourly backups
-        DAILY: 7,    // Keep 7 daily backups
-        WEEKLY: 4,   // Keep 4 weekly backups
+        HOURLY: 24, // Keep 24 hourly backups
+        DAILY: 7, // Keep 7 daily backups
+        WEEKLY: 4 // Keep 4 weekly backups
     },
-    
+
     // Maintenance schedules (milliseconds)
     MAINTENANCE_INTERVALS: {
-        HISTORY_ARCHIVE: 24 * 60 * 60 * 1000,      // 1 day
-        AUDIT_LOG_CLEANUP: 24 * 60 * 60 * 1000,    // 1 day
-        CACHE_CLEANUP: 60 * 60 * 1000,              // 1 hour
-        BACKUP_HOURLY: 60 * 60 * 1000,              // 1 hour
-        ANALYZE: 7 * 24 * 60 * 60 * 1000,           // 1 week
-        VACUUM: 30 * 24 * 60 * 60 * 1000,           // 1 month
-    },
+        HISTORY_ARCHIVE: 24 * 60 * 60 * 1000, // 1 day
+        AUDIT_LOG_CLEANUP: 24 * 60 * 60 * 1000, // 1 day
+        CACHE_CLEANUP: 60 * 60 * 1000, // 1 hour
+        BACKUP_HOURLY: 60 * 60 * 1000, // 1 hour
+        ANALYZE: 7 * 24 * 60 * 60 * 1000, // 1 week
+        VACUUM: 30 * 24 * 60 * 60 * 1000 // 1 month
+    }
 };
 
 /**
  * SQL date filter templates
  */
 export const DateFilters = {
-    HOUR:  "AND played_at > datetime('now', '-1 hour')",
-    DAY:   "AND played_at > datetime('now', '-1 day')",
-    WEEK:  "AND played_at > datetime('now', '-7 days')",
+    HOUR: "AND played_at > datetime('now', '-1 hour')",
+    DAY: "AND played_at > datetime('now', '-1 day')",
+    WEEK: "AND played_at > datetime('now', '-7 days')",
     MONTH: "AND played_at > datetime('now', '-30 days')",
-    YEAR:  "AND played_at > datetime('now', '-365 days')",
+    YEAR: "AND played_at > datetime('now', '-365 days')"
 };
 
 /**
@@ -84,9 +84,9 @@ export function getArchiveDateRange(daysAgo) {
  */
 export function escapeLikePattern(pattern) {
     return pattern
-        .replace(/\\/g, '\\\\')  // Escape backslash
-        .replace(/%/g, '\\%')    // Escape %
-        .replace(/_/g, '\\_');   // Escape _
+        .replace(/\\/g, '\\\\') // Escape backslash
+        .replace(/%/g, '\\%') // Escape %
+        .replace(/_/g, '\\_'); // Escape _
 }
 
 /**
@@ -113,7 +113,7 @@ export function buildOrderBy(column, direction = 'DESC', allowedColumns = []) {
     if (allowedColumns.length > 0 && !allowedColumns.includes(column)) {
         throw new Error(`Invalid ORDER BY column: ${column}`);
     }
-    
+
     const safeDirection = direction.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
     return `ORDER BY ${column} ${safeDirection}`;
 }
@@ -131,9 +131,9 @@ export const StatisticsQueries = {
             FROM history
             WHERE guild_id = ? ${getDateFilter(period)}
         `,
-        params: [guildId],
+        params: [guildId]
     }),
-    
+
     /**
      * Get unique users count
      */
@@ -143,9 +143,9 @@ export const StatisticsQueries = {
             FROM history
             WHERE guild_id = ? ${getDateFilter(period)}
         `,
-        params: [guildId],
+        params: [guildId]
     }),
-    
+
     /**
      * Get unique tracks count
      */
@@ -155,9 +155,9 @@ export const StatisticsQueries = {
             FROM history
             WHERE guild_id = ? ${getDateFilter(period)}
         `,
-        params: [guildId],
+        params: [guildId]
     }),
-    
+
     /**
      * Get total listening time
      */
@@ -167,8 +167,8 @@ export const StatisticsQueries = {
             FROM history
             WHERE guild_id = ? ${getDateFilter(period)}
         `,
-        params: [guildId],
-    }),
+        params: [guildId]
+    })
 };
 
 /**
@@ -179,7 +179,7 @@ export const StatisticsQueries = {
  */
 export function executeTransaction(db, queries) {
     const results = [];
-    
+
     db.transaction(() => {
         for (const { sql, params } of queries) {
             const stmt = db.prepare(sql);
@@ -187,7 +187,7 @@ export function executeTransaction(db, queries) {
             results.push(result);
         }
     })();
-    
+
     return results;
 }
 
@@ -202,14 +202,14 @@ export function buildUpsert(table, data, primaryKeys = ['id']) {
     const columns = Object.keys(data);
     const values = Object.values(data);
     const placeholders = columns.map(() => '?').join(', ');
-    
+
     const sql = `
         INSERT INTO ${table} (${columns.join(', ')})
         VALUES (${placeholders})
         ON CONFLICT(${primaryKeys.join(', ')}) 
         DO UPDATE SET ${columns.map(col => `${col} = excluded.${col}`).join(', ')}
     `;
-    
+
     return { sql, params: values };
 }
 
@@ -222,13 +222,13 @@ export function buildUpsert(table, data, primaryKeys = ['id']) {
  */
 export function bulkInsert(db, table, rows) {
     if (!rows || rows.length === 0) return 0;
-    
+
     const columns = Object.keys(rows[0]);
     const placeholders = columns.map(() => '?').join(', ');
     const sql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`;
-    
+
     let insertedCount = 0;
-    
+
     db.transaction(() => {
         const stmt = db.prepare(sql);
         for (const row of rows) {
@@ -237,7 +237,7 @@ export function bulkInsert(db, table, rows) {
             insertedCount++;
         }
     })();
-    
+
     return insertedCount;
 }
 
@@ -252,10 +252,10 @@ export function getDatabaseHealth(db) {
         const pragmaPageCount = db.pragma('page_count', { simple: true });
         const pragmaPageSize = db.pragma('page_size', { simple: true });
         const pragmaFreelistCount = db.pragma('freelist_count', { simple: true });
-        
+
         const sizeBytes = pragmaPageCount * pragmaPageSize;
         const freeSizeBytes = pragmaFreelistCount * pragmaPageSize;
-        
+
         return {
             journalMode: pragmaJournalMode,
             totalSizeBytes: sizeBytes,
@@ -265,12 +265,12 @@ export function getDatabaseHealth(db) {
             pageCount: pragmaPageCount,
             pageSize: pragmaPageSize,
             fragmentationRatio: ((freeSizeBytes / sizeBytes) * 100).toFixed(2),
-            healthy: freeSizeBytes / sizeBytes < 0.3, // < 30% fragmentation
+            healthy: freeSizeBytes / sizeBytes < 0.3 // < 30% fragmentation
         };
     } catch (error) {
         return {
             healthy: false,
-            error: error.message,
+            error: error.message
         };
     }
 }
@@ -283,12 +283,12 @@ export function getDatabaseHealth(db) {
  */
 export function formatDurationHuman(ms) {
     if (!ms || ms < 0) return '0s';
-    
+
     const seconds = Math.floor(ms / 1000);
     const minutes = Math.floor(seconds / 60);
     const hours = Math.floor(minutes / 60);
     const days = Math.floor(hours / 24);
-    
+
     if (days > 0) return `${days}d ${hours % 24}h`;
     if (hours > 0) return `${hours}h ${minutes % 60}m`;
     if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
@@ -302,11 +302,11 @@ export function formatDurationHuman(ms) {
  */
 export function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
-    
+
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    
+
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
 }
 
@@ -322,12 +322,12 @@ export function validateTableName(tableName, allowedTables = []) {
     if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
         throw new Error(`Invalid table name: ${tableName}`);
     }
-    
+
     // Check against whitelist if provided
     if (allowedTables.length > 0 && !allowedTables.includes(tableName)) {
         throw new Error(`Table not allowed: ${tableName}`);
     }
-    
+
     return true;
 }
 
@@ -340,13 +340,13 @@ export class QueryBuilder {
         this.params = [];
         this.conditions = [];
     }
-    
+
     where(column, operator, value) {
         this.conditions.push(`${column} ${operator} ?`);
         this.params.push(value);
         return this;
     }
-    
+
     whereIn(column, values) {
         if (!values || values.length === 0) return this;
         const placeholders = values.map(() => '?').join(', ');
@@ -354,18 +354,18 @@ export class QueryBuilder {
         this.params.push(...values);
         return this;
     }
-    
+
     whereLike(column, pattern) {
         this.conditions.push(`${column} LIKE ?`);
         this.params.push(`%${escapeLikePattern(pattern)}%`);
         return this;
     }
-    
+
     orderBy(column, direction = 'DESC') {
         this.query += ` ORDER BY ${column} ${direction}`;
         return this;
     }
-    
+
     limit(limit, offset = 0) {
         this.query += ` LIMIT ${limit}`;
         if (offset > 0) {
@@ -373,14 +373,14 @@ export class QueryBuilder {
         }
         return this;
     }
-    
+
     build() {
         if (this.conditions.length > 0) {
             this.query += ' WHERE ' + this.conditions.join(' AND ');
         }
         return {
             sql: this.query,
-            params: this.params,
+            params: this.params
         };
     }
 }
@@ -401,5 +401,5 @@ export default {
     formatDurationHuman,
     formatBytes,
     validateTableName,
-    QueryBuilder,
+    QueryBuilder
 };

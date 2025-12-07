@@ -2,15 +2,12 @@
  * @file queueCheck.js
  * @description Middleware for queue related checks
  * @version 1.8.0 - New middleware system
- * 
+ *
  * This middleware provides reusable queue validation functions
  * that can be applied to commands that require an active queue or current track.
  */
 
-import { 
-    NothingPlayingError,
-    EmptyQueueError
-} from '../utils/errors.js';
+import { NothingPlayingError, EmptyQueueError } from '../utils/errors.js';
 
 /**
  * Check if there's an active queue for the guild
@@ -21,11 +18,11 @@ import {
  */
 export function requireQueue(musicManager, guildId) {
     const queue = musicManager.getQueue(guildId);
-    
+
     if (!queue) {
         throw new NothingPlayingError();
     }
-    
+
     return queue;
 }
 
@@ -38,11 +35,11 @@ export function requireQueue(musicManager, guildId) {
  */
 export function requireCurrentTrack(musicManager, guildId) {
     const queue = requireQueue(musicManager, guildId);
-    
+
     if (!queue.current) {
         throw new NothingPlayingError();
     }
-    
+
     return { queue, current: queue.current };
 }
 
@@ -55,11 +52,11 @@ export function requireCurrentTrack(musicManager, guildId) {
  */
 export function requireQueueTracks(musicManager, guildId) {
     const queue = requireQueue(musicManager, guildId);
-    
+
     if (!queue.tracks || queue.tracks.length === 0) {
         throw new EmptyQueueError();
     }
-    
+
     return { queue, tracks: queue.tracks };
 }
 
@@ -72,14 +69,14 @@ export function requireQueueTracks(musicManager, guildId) {
  */
 export function requireAnyTrack(musicManager, guildId) {
     const queue = requireQueue(musicManager, guildId);
-    
+
     const hasCurrentTrack = !!queue.current;
     const hasUpcomingTracks = queue.tracks && queue.tracks.length > 0;
-    
+
     if (!hasCurrentTrack && !hasUpcomingTracks) {
         throw new NothingPlayingError();
     }
-    
+
     return { queue, hasCurrentTrack, hasUpcomingTracks };
 }
 
@@ -104,13 +101,13 @@ export function getQueueOrNull(musicManager, guildId) {
  */
 export function validateQueuePosition(queue, position, action = 'perform action') {
     if (!Number.isInteger(position) || position < 1) {
-        throw new Error(`Invalid position: must be a positive integer`);
+        throw new Error('Invalid position: must be a positive integer');
     }
-    
+
     if (position > queue.tracks.length) {
         throw new Error(`Position ${position} is out of range (max: ${queue.tracks.length})`);
     }
-    
+
     return position - 1; // Convert to 0-based index
 }
 

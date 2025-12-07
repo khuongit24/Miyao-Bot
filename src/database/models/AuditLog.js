@@ -25,33 +25,41 @@ export class AuditLog {
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         `;
-        
+
         db.prepare(createTableSQL).run();
-        
+
         // Create indexes for faster queries
-        db.prepare(`
+        db.prepare(
+            `
             CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id 
             ON audit_logs(user_id)
-        `).run();
-        
-        db.prepare(`
+        `
+        ).run();
+
+        db.prepare(
+            `
             CREATE INDEX IF NOT EXISTS idx_audit_logs_guild_id 
             ON audit_logs(guild_id)
-        `).run();
-        
-        db.prepare(`
+        `
+        ).run();
+
+        db.prepare(
+            `
             CREATE INDEX IF NOT EXISTS idx_audit_logs_action 
             ON audit_logs(action)
-        `).run();
-        
-        db.prepare(`
+        `
+        ).run();
+
+        db.prepare(
+            `
             CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at 
             ON audit_logs(created_at)
-        `).run();
-        
+        `
+        ).run();
+
         logger.info('Audit log table initialized');
     }
-    
+
     /**
      * Log an action
      * @param {string} action - Action type (e.g., 'config_change', 'user_kick', 'filter_update')
@@ -68,47 +76,32 @@ export class AuditLog {
     static log(action, userId, guildId, options = {}) {
         try {
             const db = getDatabaseManager().getDatabase();
-            
-            const {
-                targetId = null,
-                details = null,
-                ipAddress = null,
-                userAgent = null,
-                status = 'success'
-            } = options;
-            
+
+            const { targetId = null, details = null, ipAddress = null, userAgent = null, status = 'success' } = options;
+
             const detailsJSON = details ? JSON.stringify(details) : null;
-            
+
             const stmt = db.prepare(`
                 INSERT INTO audit_logs (action, user_id, guild_id, target_id, details, ip_address, user_agent, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             `);
-            
-            const result = stmt.run(
-                action,
-                userId,
-                guildId,
-                targetId,
-                detailsJSON,
-                ipAddress,
-                userAgent,
-                status
-            );
-            
+
+            const result = stmt.run(action, userId, guildId, targetId, detailsJSON, ipAddress, userAgent, status);
+
             logger.info(`Audit log created: ${action}`, {
                 userId,
                 guildId,
                 targetId,
                 status
             });
-            
+
             return result.lastInsertRowid;
         } catch (error) {
             logger.error('Failed to create audit log', error);
             return null;
         }
     }
-    
+
     /**
      * Get audit logs with filters
      * @param {Object} filters - Filter options
@@ -123,45 +116,38 @@ export class AuditLog {
     static getLogs(filters = {}) {
         try {
             const db = getDatabaseManager().getDatabase();
-            
-            const {
-                userId = null,
-                guildId = null,
-                action = null,
-                limit = 100,
-                offset = 0,
-                since = null
-            } = filters;
-            
+
+            const { userId = null, guildId = null, action = null, limit = 100, offset = 0, since = null } = filters;
+
             let query = 'SELECT * FROM audit_logs WHERE 1=1';
             const params = [];
-            
+
             if (userId) {
                 query += ' AND user_id = ?';
                 params.push(userId);
             }
-            
+
             if (guildId) {
                 query += ' AND guild_id = ?';
                 params.push(guildId);
             }
-            
+
             if (action) {
                 query += ' AND action = ?';
                 params.push(action);
             }
-            
+
             if (since) {
                 query += ' AND created_at >= ?';
                 params.push(since);
             }
-            
+
             query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
             params.push(limit, offset);
-            
+
             const stmt = db.prepare(query);
             const logs = stmt.all(...params);
-            
+
             // Parse JSON details
             return logs.map(log => ({
                 ...log,
@@ -172,7 +158,7 @@ export class AuditLog {
             return [];
         }
     }
-    
+
     /**
      * Get audit log by ID
      * @param {number} id - Log ID
@@ -181,12 +167,12 @@ export class AuditLog {
     static getById(id) {
         try {
             const db = getDatabaseManager().getDatabase();
-            
+
             const stmt = db.prepare('SELECT * FROM audit_logs WHERE id = ?');
             const log = stmt.get(id);
-            
+
             if (!log) return null;
-            
+
             return {
                 ...log,
                 details: log.details ? JSON.parse(log.details) : null
@@ -196,7 +182,7 @@ export class AuditLog {
             return null;
         }
     }
-    
+
     /**
      * Get audit logs for a specific user
      * @param {string} userId - User ID
@@ -206,7 +192,7 @@ export class AuditLog {
     static getUserLogs(userId, limit = 50) {
         return this.getLogs({ userId, limit });
     }
-    
+
     /**
      * Get audit logs for a specific guild
      * @param {string} guildId - Guild ID
@@ -216,7 +202,7 @@ export class AuditLog {
     static getGuildLogs(guildId, limit = 100) {
         return this.getLogs({ guildId, limit });
     }
-    
+
     /**
      * Get recent logs (last 24 hours)
      * @param {string} guildId - Optional guild ID filter
@@ -227,7 +213,7 @@ export class AuditLog {
         const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         return this.getLogs({ guildId, since, limit });
     }
-    
+
     /**
      * Get logs by action type
      * @param {string} action - Action type
@@ -238,7 +224,7 @@ export class AuditLog {
     static getLogsByAction(action, guildId = null, limit = 50) {
         return this.getLogs({ action, guildId, limit });
     }
-    
+
     /**
      * Count logs with filters
      * @param {Object} filters - Same filters as getLogs
@@ -247,47 +233,42 @@ export class AuditLog {
     static count(filters = {}) {
         try {
             const db = getDatabaseManager().getDatabase();
-            
-            const {
-                userId = null,
-                guildId = null,
-                action = null,
-                since = null
-            } = filters;
-            
+
+            const { userId = null, guildId = null, action = null, since = null } = filters;
+
             let query = 'SELECT COUNT(*) as count FROM audit_logs WHERE 1=1';
             const params = [];
-            
+
             if (userId) {
                 query += ' AND user_id = ?';
                 params.push(userId);
             }
-            
+
             if (guildId) {
                 query += ' AND guild_id = ?';
                 params.push(guildId);
             }
-            
+
             if (action) {
                 query += ' AND action = ?';
                 params.push(action);
             }
-            
+
             if (since) {
                 query += ' AND created_at >= ?';
                 params.push(since);
             }
-            
+
             const stmt = db.prepare(query);
             const result = stmt.get(...params);
-            
+
             return result?.count || 0;
         } catch (error) {
             logger.error('Failed to count audit logs', error);
             return 0;
         }
     }
-    
+
     /**
      * Clean up old logs (older than retention period)
      * @param {number} retentionDays - Number of days to retain logs (default: 90)
@@ -296,23 +277,23 @@ export class AuditLog {
     static cleanup(retentionDays = 90) {
         try {
             const db = getDatabaseManager().getDatabase();
-            
+
             const cutoffDate = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
-            
+
             const stmt = db.prepare('DELETE FROM audit_logs WHERE created_at < ?');
             const result = stmt.run(cutoffDate);
-            
+
             if (result.changes > 0) {
                 logger.info(`Cleaned up ${result.changes} old audit logs (older than ${retentionDays} days)`);
             }
-            
+
             return result.changes;
         } catch (error) {
             logger.error('Failed to cleanup audit logs', error);
             return 0;
         }
     }
-    
+
     /**
      * Get audit log statistics
      * @param {string} guildId - Optional guild ID filter
@@ -321,7 +302,7 @@ export class AuditLog {
     static getStats(guildId = null) {
         try {
             const db = getDatabaseManager().getDatabase();
-            
+
             let query = `
                 SELECT 
                     COUNT(*) as total,
@@ -334,17 +315,17 @@ export class AuditLog {
                 FROM audit_logs
                 WHERE 1=1
             `;
-            
+
             const params = [];
-            
+
             if (guildId) {
                 query += ' AND guild_id = ?';
                 params.push(guildId);
             }
-            
+
             const stmt = db.prepare(query);
             const stats = stmt.get(...params);
-            
+
             return stats;
         } catch (error) {
             logger.error('Failed to get audit log stats', error);

@@ -44,10 +44,10 @@ export default {
             const guildId = interaction.guildId;
 
             const periodNames = {
-                'day': 'Today',
-                'week': 'This Week',
-                'month': 'This Month',
-                'all': 'All Time'
+                day: 'Today',
+                week: 'This Week',
+                month: 'This Month',
+                all: 'All Time'
             };
 
             if (type === 'users') {
@@ -69,7 +69,7 @@ export default {
                 const totalPages = Math.ceil(users.length / itemsPerPage);
                 let currentPage = 0;
 
-                const generateEmbed = async (page) => {
+                const generateEmbed = async page => {
                     const start = page * itemsPerPage;
                     const end = start + itemsPerPage;
                     const pageUsers = users.slice(start, end);
@@ -79,8 +79,8 @@ export default {
                         .setTitle('🏆 Server Music Leaderboard')
                         .setDescription(`**${periodNames[period]}** • Top Listeners`)
                         .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
-                        .setFooter({ 
-                            text: `Page ${page + 1}/${totalPages} • ${users.length} total users` 
+                        .setFooter({
+                            text: `Page ${page + 1}/${totalPages} • ${users.length} total users`
                         })
                         .setTimestamp();
 
@@ -93,11 +93,12 @@ export default {
                             try {
                                 const discordUser = await client.users.fetch(user.user_id);
                                 const time = formatDuration(user.total_listening_time);
-                                
+
                                 // Calculate average track duration
-                                const avgDuration = user.play_count > 0 
-                                    ? Math.round(user.total_listening_time / user.play_count / 1000)
-                                    : 0;
+                                const avgDuration =
+                                    user.play_count > 0
+                                        ? Math.round(user.total_listening_time / user.play_count / 1000)
+                                        : 0;
 
                                 return [
                                     `${rankDisplay} **${discordUser.username}**`,
@@ -121,29 +122,28 @@ export default {
                 const embed = await generateEmbed(currentPage);
 
                 // Create navigation buttons
-                const row = new ActionRowBuilder()
-                    .addComponents(
-                        new ButtonBuilder()
-                            .setCustomId('leaderboard_first')
-                            .setLabel('⏮️')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPage === 0),
-                        new ButtonBuilder()
-                            .setCustomId('leaderboard_prev')
-                            .setLabel('◀️')
-                            .setStyle(ButtonStyle.Primary)
-                            .setDisabled(currentPage === 0),
-                        new ButtonBuilder()
-                            .setCustomId('leaderboard_next')
-                            .setLabel('▶️')
-                            .setStyle(ButtonStyle.Primary)
-                            .setDisabled(currentPage === totalPages - 1),
-                        new ButtonBuilder()
-                            .setCustomId('leaderboard_last')
-                            .setLabel('⏭️')
-                            .setStyle(ButtonStyle.Secondary)
-                            .setDisabled(currentPage === totalPages - 1)
-                    );
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('leaderboard_first')
+                        .setLabel('⏮️')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(currentPage === 0),
+                    new ButtonBuilder()
+                        .setCustomId('leaderboard_prev')
+                        .setLabel('◀️')
+                        .setStyle(ButtonStyle.Primary)
+                        .setDisabled(currentPage === 0),
+                    new ButtonBuilder()
+                        .setCustomId('leaderboard_next')
+                        .setLabel('▶️')
+                        .setStyle(ButtonStyle.Primary)
+                        .setDisabled(currentPage === totalPages - 1),
+                    new ButtonBuilder()
+                        .setCustomId('leaderboard_last')
+                        .setLabel('⏭️')
+                        .setStyle(ButtonStyle.Secondary)
+                        .setDisabled(currentPage === totalPages - 1)
+                );
 
                 const message = await interaction.editReply({
                     embeds: [embed],
@@ -156,7 +156,7 @@ export default {
                         time: 300000 // 5 minutes
                     });
 
-                    collector.on('collect', async (i) => {
+                    collector.on('collect', async i => {
                         if (i.user.id !== interaction.user.id) {
                             return await i.reply({
                                 content: '❌ Only the command user can navigate!',
@@ -180,29 +180,28 @@ export default {
                         }
 
                         const newEmbed = await generateEmbed(currentPage);
-                        const newRow = new ActionRowBuilder()
-                            .addComponents(
-                                new ButtonBuilder()
-                                    .setCustomId('leaderboard_first')
-                                    .setLabel('⏮️')
-                                    .setStyle(ButtonStyle.Secondary)
-                                    .setDisabled(currentPage === 0),
-                                new ButtonBuilder()
-                                    .setCustomId('leaderboard_prev')
-                                    .setLabel('◀️')
-                                    .setStyle(ButtonStyle.Primary)
-                                    .setDisabled(currentPage === 0),
-                                new ButtonBuilder()
-                                    .setCustomId('leaderboard_next')
-                                    .setLabel('▶️')
-                                    .setStyle(ButtonStyle.Primary)
-                                    .setDisabled(currentPage === totalPages - 1),
-                                new ButtonBuilder()
-                                    .setCustomId('leaderboard_last')
-                                    .setLabel('⏭️')
-                                    .setStyle(ButtonStyle.Secondary)
-                                    .setDisabled(currentPage === totalPages - 1)
-                            );
+                        const newRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder()
+                                .setCustomId('leaderboard_first')
+                                .setLabel('⏮️')
+                                .setStyle(ButtonStyle.Secondary)
+                                .setDisabled(currentPage === 0),
+                            new ButtonBuilder()
+                                .setCustomId('leaderboard_prev')
+                                .setLabel('◀️')
+                                .setStyle(ButtonStyle.Primary)
+                                .setDisabled(currentPage === 0),
+                            new ButtonBuilder()
+                                .setCustomId('leaderboard_next')
+                                .setLabel('▶️')
+                                .setStyle(ButtonStyle.Primary)
+                                .setDisabled(currentPage === totalPages - 1),
+                            new ButtonBuilder()
+                                .setCustomId('leaderboard_last')
+                                .setLabel('⏭️')
+                                .setStyle(ButtonStyle.Secondary)
+                                .setDisabled(currentPage === totalPages - 1)
+                        );
 
                         await i.update({
                             embeds: [newEmbed],
@@ -212,17 +211,13 @@ export default {
 
                     collector.on('end', () => {
                         // Disable all buttons after timeout
-                        const disabledRow = new ActionRowBuilder()
-                            .addComponents(
-                                row.components.map(button => 
-                                    ButtonBuilder.from(button).setDisabled(true)
-                                )
-                            );
-                        
+                        const disabledRow = new ActionRowBuilder().addComponents(
+                            row.components.map(button => ButtonBuilder.from(button).setDisabled(true))
+                        );
+
                         message.edit({ components: [disabledRow] }).catch(() => {});
                     });
                 }
-
             } else {
                 // Tracks leaderboard
                 const tracks = History.getMostPlayed(guildId, 20, period);
@@ -252,9 +247,10 @@ export default {
                         const medals = { 1: '🥇', 2: '🥈', 3: '🥉' };
                         const rankDisplay = medals[rank] || `**#${rank}**`;
 
-                        const title = track.track_title.length > 40
-                            ? track.track_title.substring(0, 37) + '...'
-                            : track.track_title;
+                        const title =
+                            track.track_title.length > 40
+                                ? track.track_title.substring(0, 37) + '...'
+                                : track.track_title;
 
                         return `${rankDisplay} **${title}**\n   by ${track.track_author} • ${track.play_count} plays`;
                     })
@@ -271,7 +267,6 @@ export default {
                 type,
                 period
             });
-
         } catch (error) {
             logger.error('Error in leaderboard command', { error });
 

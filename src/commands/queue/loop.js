@@ -7,7 +7,8 @@ export default {
         .setName('loop')
         .setDescription('Đặt chế độ lặp lại')
         .addStringOption(option =>
-            option.setName('mode')
+            option
+                .setName('mode')
                 .setDescription('Chế độ lặp lại')
                 .setRequired(true)
                 .addChoices(
@@ -16,11 +17,11 @@ export default {
                     { name: 'Toàn bộ hàng đợi', value: 'queue' }
                 )
         ),
-    
+
     async execute(interaction, client) {
         try {
             const queue = client.musicManager.getQueue(interaction.guildId);
-            
+
             // Check if there's a queue
             if (!queue) {
                 return interaction.reply({
@@ -28,7 +29,7 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             // Check if user is in the same voice channel
             const member = interaction.member;
             if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
@@ -37,24 +38,25 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             const mode = interaction.options.getString('mode');
-            
+
             // Set loop mode
             await queue.setLoop(mode);
-            
+
             const modeText = {
-                'off': 'Tắt',
-                'track': 'Bài hát hiện tại',
-                'queue': 'Toàn bộ hàng đợi'
+                off: 'Tắt',
+                track: 'Bài hát hiện tại',
+                queue: 'Toàn bộ hàng đợi'
             };
-            
+
             await interaction.reply({
-                embeds: [createSuccessEmbed('Chế độ lặp', `Đã đặt chế độ lặp thành **${modeText[mode]}**`, client.config)]
+                embeds: [
+                    createSuccessEmbed('Chế độ lặp', `Đã đặt chế độ lặp thành **${modeText[mode]}**`, client.config)
+                ]
             });
-            
+
             logger.command('loop', interaction.user.id, interaction.guildId);
-            
         } catch (error) {
             logger.error('Loop command error', error);
             await interaction.reply({

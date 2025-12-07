@@ -6,7 +6,7 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import Playlist from '../../database/models/Playlist.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
-import { 
+import {
     PlaylistNotFoundError,
     ValidationError,
     InternalError,
@@ -15,6 +15,7 @@ import {
     DifferentVoiceChannelError,
     NoSearchResultsError
 } from '../../utils/errors.js';
+import { PLAYLIST_RESOLUTION } from '../../utils/constants.js';
 import logger from '../../utils/logger.js';
 
 export default {
@@ -25,36 +26,21 @@ export default {
             subcommand
                 .setName('create')
                 .setDescription('Tạo playlist mới')
+                .addStringOption(option => option.setName('name').setDescription('Tên playlist').setRequired(true))
                 .addStringOption(option =>
-                    option.setName('name')
-                        .setDescription('Tên playlist')
-                        .setRequired(true)
-                )
-                .addStringOption(option =>
-                    option.setName('description')
-                        .setDescription('Mô tả playlist')
-                        .setRequired(false)
+                    option.setName('description').setDescription('Mô tả playlist').setRequired(false)
                 )
                 .addBooleanOption(option =>
-                    option.setName('public')
-                        .setDescription('Công khai playlist?')
-                        .setRequired(false)
+                    option.setName('public').setDescription('Công khai playlist?').setRequired(false)
                 )
         )
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('list')
-                .setDescription('Xem tất cả playlists của bạn')
-        )
+        .addSubcommand(subcommand => subcommand.setName('list').setDescription('Xem tất cả playlists của bạn'))
         .addSubcommand(subcommand =>
             subcommand
                 .setName('show')
                 .setDescription('Xem chi tiết một playlist')
                 .addStringOption(option =>
-                    option.setName('name')
-                        .setDescription('Tên playlist')
-                        .setAutocomplete(true)
-                        .setRequired(true)
+                    option.setName('name').setDescription('Tên playlist').setAutocomplete(true).setRequired(true)
                 )
         )
         .addSubcommand(subcommand =>
@@ -62,10 +48,7 @@ export default {
                 .setName('delete')
                 .setDescription('Xóa một playlist')
                 .addStringOption(option =>
-                    option.setName('name')
-                        .setDescription('Tên playlist')
-                        .setAutocomplete(true)
-                        .setRequired(true)
+                    option.setName('name').setDescription('Tên playlist').setAutocomplete(true).setRequired(true)
                 )
         )
         .addSubcommand(subcommand =>
@@ -73,15 +56,10 @@ export default {
                 .setName('add')
                 .setDescription('Thêm bài hát vào playlist')
                 .addStringOption(option =>
-                    option.setName('name')
-                        .setDescription('Tên playlist')
-                        .setAutocomplete(true)
-                        .setRequired(true)
+                    option.setName('name').setDescription('Tên playlist').setAutocomplete(true).setRequired(true)
                 )
                 .addStringOption(option =>
-                    option.setName('query')
-                        .setDescription('URL hoặc từ khóa tìm kiếm')
-                        .setRequired(true)
+                    option.setName('query').setDescription('URL hoặc từ khóa tìm kiếm').setRequired(true)
                 )
         )
         .addSubcommand(subcommand =>
@@ -89,13 +67,11 @@ export default {
                 .setName('remove')
                 .setDescription('Xóa bài hát khỏi playlist')
                 .addStringOption(option =>
-                    option.setName('name')
-                        .setDescription('Tên playlist')
-                        .setAutocomplete(true)
-                        .setRequired(true)
+                    option.setName('name').setDescription('Tên playlist').setAutocomplete(true).setRequired(true)
                 )
                 .addIntegerOption(option =>
-                    option.setName('position')
+                    option
+                        .setName('position')
                         .setDescription('Vị trí bài hát (1, 2, 3...)')
                         .setRequired(true)
                         .setMinValue(1)
@@ -106,13 +82,11 @@ export default {
                 .setName('save')
                 .setDescription('Lưu bài hát đang phát hoặc hàng đợi vào playlist')
                 .addStringOption(option =>
-                    option.setName('name')
-                        .setDescription('Tên playlist')
-                        .setAutocomplete(true)
-                        .setRequired(true)
+                    option.setName('name').setDescription('Tên playlist').setAutocomplete(true).setRequired(true)
                 )
                 .addStringOption(option =>
-                    option.setName('source')
+                    option
+                        .setName('source')
                         .setDescription('Nguồn lưu')
                         .setRequired(false)
                         .addChoices(
@@ -126,17 +100,10 @@ export default {
                 .setName('play')
                 .setDescription('Phát toàn bộ playlist')
                 .addStringOption(option =>
-                    option.setName('name')
-                        .setDescription('Tên playlist')
-                        .setAutocomplete(true)
-                        .setRequired(true)
+                    option.setName('name').setDescription('Tên playlist').setAutocomplete(true).setRequired(true)
                 )
         )
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('menu')
-                .setDescription('Hiển thị menu quản lý playlist')
-        ),
+        .addSubcommand(subcommand => subcommand.setName('menu').setDescription('Hiển thị menu quản lý playlist')),
 
     async execute(interaction, client) {
         try {
@@ -177,7 +144,6 @@ export default {
             }
 
             logger.command(`playlist-${subcommand}`, interaction.user.id, interaction.guildId);
-
         } catch (error) {
             logger.error('Playlist command error', error);
             await sendErrorResponse(interaction, error, client.config, true);
@@ -190,48 +156,47 @@ export default {
  */
 async function handleMenu(interaction, client) {
     const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = await import('discord.js');
-    
+
     const embed = new EmbedBuilder()
         .setColor(client.config.bot.color)
         .setTitle('🎵 Quản Lý Playlist')
         .setDescription(
             '**Chào mừng đến với hệ thống quản lý playlist!**\n\n' +
-            '📝 **Tạo playlist:** Tạo playlist mới với tên và mô tả\n' +
-            '🔍 **Tìm kiếm:** Xem chi tiết playlist của bạn\n' +
-            '➕ **Thêm nhạc:** Thêm bài hát vào playlist có sẵn\n' +
-            '🗑️ **Xóa playlist:** Xóa playlist không còn dùng\n\n' +
-            '💡 *Chọn một nút bên dưới để bắt đầu!*'
+                '📝 **Tạo playlist:** Tạo playlist mới với tên và mô tả\n' +
+                '🔍 **Tìm kiếm:** Xem chi tiết playlist của bạn\n' +
+                '➕ **Thêm nhạc:** Thêm bài hát vào playlist có sẵn\n' +
+                '🗑️ **Xóa playlist:** Xóa playlist không còn dùng\n\n' +
+                '💡 *Chọn một nút bên dưới để bắt đầu!*'
         )
         .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
-    
-    const row = new ActionRowBuilder()
-        .addComponents(
-            new ButtonBuilder()
-                .setCustomId('playlist_create_modal')
-                .setLabel('Thêm Playlist')
-                .setEmoji('📝')
-                .setStyle(ButtonStyle.Success),
-            
-            new ButtonBuilder()
-                .setCustomId('playlist_search_modal')
-                .setLabel('Tìm Kiếm')
-                .setEmoji('🔍')
-                .setStyle(ButtonStyle.Primary),
-            
-            new ButtonBuilder()
-                .setCustomId('playlist_add_track_modal')
-                .setLabel('Thêm Nhạc')
-                .setEmoji('➕')
-                .setStyle(ButtonStyle.Primary),
-            
-            new ButtonBuilder()
-                .setCustomId('playlist_delete_modal')
-                .setLabel('Xóa Playlist')
-                .setEmoji('🗑️')
-                .setStyle(ButtonStyle.Danger)
-        );
-    
+
+    const row = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId('playlist_create_modal')
+            .setLabel('Thêm Playlist')
+            .setEmoji('📝')
+            .setStyle(ButtonStyle.Success),
+
+        new ButtonBuilder()
+            .setCustomId('playlist_search_modal')
+            .setLabel('Tìm Kiếm')
+            .setEmoji('🔍')
+            .setStyle(ButtonStyle.Primary),
+
+        new ButtonBuilder()
+            .setCustomId('playlist_add_track_modal')
+            .setLabel('Thêm Nhạc')
+            .setEmoji('➕')
+            .setStyle(ButtonStyle.Primary),
+
+        new ButtonBuilder()
+            .setCustomId('playlist_delete_modal')
+            .setLabel('Xóa Playlist')
+            .setEmoji('🗑️')
+            .setStyle(ButtonStyle.Danger)
+    );
+
     await interaction.reply({ embeds: [embed], components: [row], ephemeral: true });
 }
 
@@ -258,7 +223,7 @@ async function handleCreate(interaction, client) {
 
     // Create playlist
     const playlist = Playlist.create(
-        name, 
+        name,
         interaction.user.id,
         interaction.user.username,
         interaction.guildId,
@@ -267,10 +232,10 @@ async function handleCreate(interaction, client) {
     );
 
     if (!playlist) {
-        logger.error('Playlist creation returned null', { 
-            userId: interaction.user.id, 
+        logger.error('Playlist creation returned null', {
+            userId: interaction.user.id,
             name,
-            username: interaction.user.username 
+            username: interaction.user.username
         });
         throw new InternalError('Không thể tạo playlist. Vui lòng thử lại sau.');
     }
@@ -314,11 +279,13 @@ async function handleList(interaction, client) {
         return await interaction.editReply({ embeds: [embed] });
     }
 
-    const description = playlists.map((pl, index) => {
-        const trackCount = pl.track_count || 0;
-        const publicIcon = pl.is_public ? '🌐' : '🔒';
-        return `**${index + 1}. ${publicIcon} ${pl.name}**\n   └ ${trackCount} bài hát${pl.description ? `\n   └ *${pl.description}*` : ''}`;
-    }).join('\n\n');
+    const description = playlists
+        .map((pl, index) => {
+            const trackCount = pl.track_count || 0;
+            const publicIcon = pl.is_public ? '🌐' : '🔒';
+            return `**${index + 1}. ${publicIcon} ${pl.name}**\n   └ ${trackCount} bài hát${pl.description ? `\n   └ *${pl.description}*` : ''}`;
+        })
+        .join('\n\n');
 
     const embed = new EmbedBuilder()
         .setColor(client.config.bot.color)
@@ -337,7 +304,7 @@ async function handleShow(interaction, client) {
     await interaction.deferReply({ ephemeral: true });
 
     const name = interaction.options.getString('name');
-    
+
     // Use findByNameInGuild to support both user's own and public playlists
     const playlist = Playlist.findByNameInGuild(name, interaction.user.id, interaction.guildId);
 
@@ -356,13 +323,17 @@ async function handleShow(interaction, client) {
     if (tracks.length === 0) {
         description += '*Playlist đang trống*';
     } else {
-        description += `**Danh sách bài hát:**\n`;
-        const trackList = tracks.slice(0, 10).map((track, index) => {
-            const title = track.track_title.length > 50 ? track.track_title.substring(0, 47) + '...' : track.track_title;
-            return `${index + 1}. ${title}`;
-        }).join('\n');
+        description += '**Danh sách bài hát:**\n';
+        const trackList = tracks
+            .slice(0, 10)
+            .map((track, index) => {
+                const title =
+                    track.track_title.length > 50 ? track.track_title.substring(0, 47) + '...' : track.track_title;
+                return `${index + 1}. ${title}`;
+            })
+            .join('\n');
         description += trackList;
-        
+
         if (tracks.length > 10) {
             description += `\n\n...và ${tracks.length - 10} bài khác`;
         }
@@ -479,7 +450,7 @@ async function handleRemove(interaction, client) {
 
     // Find track by position
     const trackToRemove = tracks.find(t => t.position === position);
-    
+
     if (!trackToRemove) {
         throw new ValidationError('Không tìm thấy bài hát ở vị trí này', 'position');
     }
@@ -553,16 +524,16 @@ async function handleSave(interaction, client) {
             };
 
             const added = Playlist.addTrack(playlist.id, simpleTrack, interaction.user.id);
-            
+
             if (added) {
                 savedCount++;
             } else {
                 skippedCount++;
             }
         } catch (error) {
-            logger.error('Failed to add track to playlist', { 
-                error: error.message, 
-                track: track.info?.title 
+            logger.error('Failed to add track to playlist', {
+                error: error.message,
+                track: track.info?.title
             });
             skippedCount++;
         }
@@ -575,8 +546,8 @@ async function handleSave(interaction, client) {
         .setTitle('✅ Đã Lưu Vào Playlist')
         .setDescription(
             `**${playlist.name}**\n` +
-            `└ Đã lưu ${savedCount}/${tracksToSave.length} bài hát` +
-            (skippedCount > 0 ? `\n⚠️ ${skippedCount} bài đã tồn tại hoặc lỗi` : '')
+                `└ Đã lưu ${savedCount}/${tracksToSave.length} bài hát` +
+                (skippedCount > 0 ? `\n⚠️ ${skippedCount} bài đã tồn tại hoặc lỗi` : '')
         )
         .setFooter({ text: `Tổng ${finalTracks.length} bài hát trong playlist` })
         .setTimestamp();
@@ -585,7 +556,12 @@ async function handleSave(interaction, client) {
 }
 
 /**
- * Play entire playlist
+ * Play entire playlist with improved parallel resolution
+ * Features:
+ * - Pipeline approach with configurable concurrency
+ * - Staggered delay between batches to avoid overwhelming Lavalink
+ * - Progress indicator for large playlists
+ * - Graceful partial failure handling
  */
 async function handlePlay(interaction, client) {
     await interaction.deferReply();
@@ -622,11 +598,7 @@ async function handlePlay(interaction, client) {
     let queue = client.musicManager.getQueue(interaction.guildId);
 
     if (!queue) {
-        queue = await client.musicManager.createQueue(
-            interaction.guildId,
-            voiceChannel.id,
-            interaction.channel
-        );
+        queue = await client.musicManager.createQueue(interaction.guildId, voiceChannel.id, interaction.channel);
     }
 
     // Check if bot is in different voice channel
@@ -634,56 +606,138 @@ async function handlePlay(interaction, client) {
         throw new DifferentVoiceChannelError();
     }
 
-    // Resolve all tracks from URIs to get encoded data (PARALLEL PROCESSING)
-    logger.info('Resolving playlist tracks (parallel)', { playlistId: playlist.id, trackCount: playlistTracks.length });
-    
+    // Configuration from constants
+    const CONCURRENCY = PLAYLIST_RESOLUTION.CONCURRENCY;
+    const STAGGER_DELAY = PLAYLIST_RESOLUTION.STAGGER_DELAY;
+    const PROGRESS_UPDATE_INTERVAL = PLAYLIST_RESOLUTION.PROGRESS_UPDATE_INTERVAL;
+    const TRACK_TIMEOUT = PLAYLIST_RESOLUTION.TRACK_RESOLUTION_TIMEOUT;
+
+    // Show initial loading message for large playlists
+    const totalTracks = playlistTracks.length;
+    const isLargePlaylist = totalTracks > 20;
+
+    if (isLargePlaylist) {
+        const loadingEmbed = new EmbedBuilder()
+            .setColor(client.config.bot.color)
+            .setTitle('📋 Đang tải playlist...')
+            .setDescription(`**${playlist.name}**\n\n⏳ Đang tải: 0/${totalTracks} bài hát...`)
+            .setFooter({ text: 'Vui lòng đợi trong giây lát' })
+            .setTimestamp();
+
+        await interaction.editReply({ embeds: [loadingEmbed] });
+    }
+
+    logger.info('Resolving playlist tracks (parallel pipeline)', {
+        playlistId: playlist.id,
+        trackCount: totalTracks,
+        concurrency: CONCURRENCY,
+        staggerDelay: STAGGER_DELAY
+    });
+
     const resolvedTracks = [];
     let failedCount = 0;
-    
-    // Batch processing to avoid overwhelming Lavalink
-    const BATCH_SIZE = 10; // Process 10 tracks concurrently
-    
-    for (let i = 0; i < playlistTracks.length; i += BATCH_SIZE) {
-        const batch = playlistTracks.slice(i, i + BATCH_SIZE);
-        
-        // Resolve batch in parallel using Promise.allSettled
-        const results = await Promise.allSettled(
-            batch.map(simpleTrack => 
-                client.musicManager.search(simpleTrack.track_url, interaction.user)
-                    .then(result => ({ success: true, result, track: simpleTrack }))
-                    .catch(error => ({ success: false, error, track: simpleTrack }))
-            )
-        );
-        
-        // Process results
-        for (const promise of results) {
-            if (promise.status === 'fulfilled') {
-                const { success, result, track } = promise.value;
-                
-                if (success && result?.tracks?.length > 0) {
-                    resolvedTracks.push(result.tracks[0]);
-                } else {
-                    logger.warn('Failed to resolve track from playlist', { 
-                        uri: track.track_url, 
-                        title: track.track_title 
-                    });
-                    failedCount++;
-                }
-            } else {
-                logger.error('Error resolving playlist track', { 
-                    error: promise.reason 
-                });
-                failedCount++;
+    let processedCount = 0;
+    let lastProgressUpdate = 0;
+
+    /**
+     * Resolve a single track with timeout
+     * @param {Object} simpleTrack - Track from playlist database
+     * @returns {Promise<{success: boolean, track?: Object, error?: string}>}
+     */
+    async function resolveTrackWithTimeout(simpleTrack) {
+        try {
+            const result = await Promise.race([
+                client.musicManager.search(simpleTrack.track_url, interaction.user),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Track resolution timeout')), TRACK_TIMEOUT)
+                )
+            ]);
+
+            if (result?.tracks?.length > 0) {
+                return { success: true, track: result.tracks[0] };
             }
-        }
-        
-        // Progress logging for large playlists
-        if (playlistTracks.length > BATCH_SIZE) {
-            const processed = Math.min(i + BATCH_SIZE, playlistTracks.length);
-            logger.debug(`Resolved ${processed}/${playlistTracks.length} tracks`);
+            return { success: false, error: 'No results found' };
+        } catch (error) {
+            return { success: false, error: error.message };
         }
     }
-    
+
+    /**
+     * Process a batch of tracks with staggered starts
+     * @param {Array} batch - Array of tracks to process
+     * @param {number} batchIndex - Index of this batch
+     * @returns {Promise<void>}
+     */
+    async function processBatchWithStagger(batch, batchIndex) {
+        // Stagger the batch start
+        if (batchIndex > 0) {
+            await new Promise(resolve => setTimeout(resolve, STAGGER_DELAY));
+        }
+
+        // Process all tracks in batch concurrently
+        const results = await Promise.allSettled(batch.map(track => resolveTrackWithTimeout(track)));
+
+        // Collect results
+        for (let i = 0; i < results.length; i++) {
+            processedCount++;
+            const promise = results[i];
+            const simpleTrack = batch[i];
+
+            if (promise.status === 'fulfilled' && promise.value.success) {
+                resolvedTracks.push(promise.value.track);
+            } else {
+                failedCount++;
+                const errorMsg =
+                    promise.status === 'fulfilled' ? promise.value.error : promise.reason?.message || 'Unknown error';
+
+                logger.warn('Failed to resolve playlist track', {
+                    uri: simpleTrack.track_url,
+                    title: simpleTrack.track_title,
+                    error: errorMsg
+                });
+            }
+        }
+    }
+
+    // Pipeline processing: Process batches sequentially, but tracks within batch are parallel
+    const batches = [];
+    for (let i = 0; i < totalTracks; i += CONCURRENCY) {
+        batches.push(playlistTracks.slice(i, i + CONCURRENCY));
+    }
+
+    // Process batches with progress updates
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+        await processBatchWithStagger(batches[batchIndex], batchIndex);
+
+        // Update progress for large playlists
+        if (isLargePlaylist && processedCount - lastProgressUpdate >= PROGRESS_UPDATE_INTERVAL) {
+            lastProgressUpdate = processedCount;
+
+            try {
+                const progressPercent = Math.round((processedCount / totalTracks) * 100);
+                const progressBar = createProgressBar(progressPercent, 20);
+
+                const progressEmbed = new EmbedBuilder()
+                    .setColor(client.config.bot.color)
+                    .setTitle('📋 Đang tải playlist...')
+                    .setDescription(
+                        `**${playlist.name}**\n\n` +
+                            `${progressBar} ${progressPercent}%\n\n` +
+                            `✅ Đã tải: ${resolvedTracks.length} bài\n` +
+                            `❌ Lỗi: ${failedCount} bài\n` +
+                            `⏳ Còn lại: ${totalTracks - processedCount} bài`
+                    )
+                    .setFooter({ text: 'Đang xử lý...' })
+                    .setTimestamp();
+
+                await interaction.editReply({ embeds: [progressEmbed] });
+            } catch (error) {
+                // Ignore progress update errors
+                logger.debug('Failed to update progress', { error: error.message });
+            }
+        }
+    }
+
     if (resolvedTracks.length === 0) {
         throw new ValidationError('Không thể tải bất kỳ bài hát nào từ playlist', 'tracks');
     }
@@ -696,38 +750,70 @@ async function handlePlay(interaction, client) {
     // Add all resolved tracks to queue
     queue.add(resolvedTracks);
 
+    // Final result embed
+    const successRate = Math.round((resolvedTracks.length / totalTracks) * 100);
     const embed = new EmbedBuilder()
-        .setColor(client.config.bot.color)
-        .setTitle('📋 Đang Phát Playlist')
+        .setColor(failedCount > 0 ? '#FFA500' : client.config.bot.color)
+        .setTitle('📋 Đã Tải Playlist')
         .setDescription(
-            `**${playlist.name}**\n` +
-            `└ Đã thêm ${resolvedTracks.length}/${playlistTracks.length} bài hát vào hàng đợi` +
-            (failedCount > 0 ? `\n⚠️ ${failedCount} bài không tải được` : '')
+            `**${playlist.name}**\n\n` +
+                `✅ Đã thêm **${resolvedTracks.length}**/${totalTracks} bài hát vào hàng đợi\n` +
+                (failedCount > 0 ? `⚠️ **${failedCount}** bài không tải được\n` : '') +
+                `📊 Tỷ lệ thành công: ${successRate}%`
         )
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
 
     // Start playing if not already
     if (!queue.current) {
-        await queue.play();
-        
-        // Send now playing with buttons after a short delay
-        setTimeout(async () => {
+        try {
+            await queue.play();
+
+            // Send now playing with buttons after a short delay
+            setTimeout(async () => {
+                try {
+                    const { createNowPlayingEmbed } = await import('../../UI/embeds/MusicEmbeds.js');
+                    const { createNowPlayingButtons } = await import('../../UI/components/MusicControls.js');
+
+                    const nowPlayingMessage = await interaction.channel.send({
+                        embeds: [createNowPlayingEmbed(queue.current, queue, client.config)],
+                        components: createNowPlayingButtons(queue, false)
+                    });
+
+                    // Store message for auto-updates
+                    queue.setNowPlayingMessage(nowPlayingMessage);
+                } catch (error) {
+                    logger.error('Failed to send now playing message from playlist', error);
+                }
+            }, 1000);
+        } catch (playError) {
+            logger.error('Failed to start playback from playlist', {
+                error: playError.message,
+                guildId: interaction.guildId
+            });
+            // Still keep the embed since tracks were added, just notify user
             try {
-                const { createNowPlayingEmbed } = await import('../../UI/embeds/MusicEmbeds.js');
-                const { createNowPlayingButtons } = await import('../../UI/components/MusicControls.js');
-                
-                const nowPlayingMessage = await interaction.channel.send({
-                    embeds: [createNowPlayingEmbed(queue.current, queue, client.config)],
-                    components: createNowPlayingButtons(queue, false)
+                await interaction.followUp({
+                    content: '⚠️ Đã thêm bài hát vào hàng đợi nhưng không thể bắt đầu phát ngay. Thử `/play` để phát.',
+                    ephemeral: true
                 });
-                
-                // Store message for auto-updates
-                queue.setNowPlayingMessage(nowPlayingMessage);
-            } catch (error) {
-                logger.error('Failed to send now playing message from playlist', error);
+            } catch (followUpError) {
+                // Ignore followUp errors
             }
-        }, 1000);
+        }
     }
+}
+
+/**
+ * Create a text-based progress bar
+ * @param {number} percent - Progress percentage (0-100)
+ * @param {number} length - Bar length in characters
+ * @returns {string} Progress bar string
+ */
+function createProgressBar(percent, length = 20) {
+    const filled = Math.round((percent / 100) * length);
+    const empty = length - filled;
+    return '▓'.repeat(filled) + '░'.repeat(empty);
 }

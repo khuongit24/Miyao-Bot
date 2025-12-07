@@ -1,36 +1,79 @@
 {
-  "bot": {
-    "name": "Miyao",
-    "version": "1.8.0",
-    "prefix": "!",
-    "color": "#FF69B4",
-    "footer": "Miyao Music Bot • v1.8.0"
-  },
-  "music": {
-    "defaultVolume": 50,
-    "maxVolume": 100,
-    "maxQueueSize": 100,
-    "leaveOnEmpty": true,
-    "leaveOnEmptyDelay": 300000,
-    "leaveOnEnd": true,
-    "leaveOnEndDelay": 60000
-  },
-  "lavalink": {
-    "nodes": [
-      {
-        "name": "Main Node",
-        "url": "127.0.0.1:2333",
-        "auth": "youshallnotpass",
-        "secure": false
-      }
-    ],
-    "reconnectTries": 5,
-    "reconnectDelay": 5000,
-    "resumeTimeout": 30
-  },
-  "permissions": {
-    "adminRoles": [],
-    "djRoles": [],
-    "allowEveryone": true
-  }
+    "bot": {
+        "name": "Miyao",
+        "version": "1.8.4",
+        "prefix": "!",
+        "color": "#FF69B4",
+        "footer": "Miyao Music Bot • v1.8.4"
+    },
+    "music": {
+        "defaultVolume": 50,
+        "maxVolume": 100,
+        "maxQueueSize": 100,
+        "leaveOnEmpty": true,
+        "leaveOnEmptyDelay": 300000,
+        "leaveOnEnd": true,
+        "leaveOnEndDelay": 60000
+    },
+    "lavalink": {
+        "nodes": [
+            {
+                "name": "Main Node",
+                "url": "127.0.0.1:2333",
+                "auth": "youshallnotpass",
+                "secure": false
+            }
+        ],
+        "reconnectTries": 5,
+        "reconnectDelay": 5000,
+        "resumeTimeout": 30
+    },
+    "cache": {
+        "totalBudgetMB": 200,
+        "defaultTTLMs": 300000,
+        "cleanupIntervalMs": 60000,
+        "enableGlobalEviction": true,
+        "evictionPercentage": 0.2,
+        "budgets": {
+            "searchCache": 0.4,
+            "searchResults": 0.2,
+            "discovery": 0.1,
+            "similar": 0.1,
+            "trending": 0.1,
+            "history": 0.05,
+            "other": 0.05
+        }
+    },
+    "rateLimits": {
+        "commands": {
+            "maxCommands": 5,
+            "windowMs": 10000,
+            "cleanupIntervalMs": 60000
+        },
+        "guild": {
+            "cleanupIntervalMs": 120000,
+            "operations": {
+                "queueOperations": { "max": 20, "windowMs": 60000 },
+                "searches": { "max": 10, "windowMs": 60000 },
+                "playlistOperations": { "max": 15, "windowMs": 60000 },
+                "filterChanges": { "max": 5, "windowMs": 30000 }
+            },
+            "premiumMultiplier": 2
+        }
+    },
+    "features": {
+        "database": true,
+        "cachePersistence": true,
+        "metrics": true,
+        "history": true,
+        "playlists": true,
+        "autoplay": true,
+        "lyrics": true,
+        "quizMode": false
+    },
+    "permissions": {
+        "adminRoles": [],
+        "djRoles": [],
+        "allowEveryone": true
+    }
 }

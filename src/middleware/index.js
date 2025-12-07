@@ -2,7 +2,7 @@
  * @file index.js
  * @description Central export for all middleware modules
  * @version 1.8.0 - New middleware system
- * 
+ *
  * Usage:
  * ```javascript
  * import { requireVoiceChannel, requireQueue } from '../../middleware/index.js';
@@ -11,8 +11,10 @@
  * ```
  */
 
+import { NothingPlayingError } from '../utils/errors.js';
+
 // Voice channel middleware
-export { 
+export {
     requireVoiceChannel,
     checkVoicePermissions,
     requireSameVoiceChannel,
@@ -42,42 +44,38 @@ export { voiceCheck, queueCheck };
 export const middleware = {
     /**
      * Full check for playback commands (voice + queue + current track)
-     * @param {CommandInteraction} interaction 
-     * @param {Client} client 
+     * @param {CommandInteraction} interaction
+     * @param {Client} client
      * @returns {{ voiceChannel, member, queue, current }}
      */
     playbackCommand(interaction, client) {
-        const { voiceChannel, member, queue } = voiceCheck.fullVoiceCheck(
-            interaction, 
-            client.musicManager
-        );
-        
+        const { voiceChannel, member, queue } = voiceCheck.fullVoiceCheck(interaction, client.musicManager);
+
         if (!queue || !queue.current) {
-            const { NothingPlayingError } = require('../utils/errors.js');
             throw new NothingPlayingError();
         }
-        
+
         return { voiceChannel, member, queue, current: queue.current };
     },
-    
+
     /**
      * Check for queue commands (voice + same channel + queue exists)
-     * @param {CommandInteraction} interaction 
-     * @param {Client} client 
+     * @param {CommandInteraction} interaction
+     * @param {Client} client
      * @returns {{ voiceChannel, member, queue }}
      */
     queueCommand(interaction, client) {
         const { voiceChannel, member } = voiceCheck.requireVoiceChannel(interaction);
         const queue = queueCheck.requireQueue(client.musicManager, interaction.guildId);
         voiceCheck.requireSameVoiceChannel(interaction, queue);
-        
+
         return { voiceChannel, member, queue };
     },
-    
+
     /**
      * Check for join/play commands (voice + permissions, queue optional)
-     * @param {CommandInteraction} interaction 
-     * @param {Client} client 
+     * @param {CommandInteraction} interaction
+     * @param {Client} client
      * @returns {{ voiceChannel, member, queue }}
      */
     joinCommand(interaction, client) {

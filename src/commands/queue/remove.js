@@ -7,7 +7,8 @@ export default {
         .setName('remove')
         .setDescription('Xóa một bài khỏi hàng đợi theo vị trí')
         .addIntegerOption(option =>
-            option.setName('position')
+            option
+                .setName('position')
                 .setDescription('Vị trí bài trong hàng đợi (bắt đầu từ 1)')
                 .setMinValue(1)
                 .setRequired(true)
@@ -37,12 +38,14 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             const position = interaction.options.getInteger('position');
 
             if (position < 1 || position > queue.tracks.length) {
                 return interaction.reply({
-                    embeds: [createErrorEmbed(`Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.`, client.config)],
+                    embeds: [
+                        createErrorEmbed(`Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.`, client.config)
+                    ],
                     ephemeral: true
                 });
             }
@@ -55,8 +58,15 @@ export default {
                 });
             }
 
+            const trackTitle = removed.info?.title || 'Unknown Track';
             await interaction.reply({
-                embeds: [createSuccessEmbed('Đã xóa bài', `Đã xóa **${removed.info.title}** khỏi hàng đợi (vị trí #${position}).`, client.config)]
+                embeds: [
+                    createSuccessEmbed(
+                        'Đã xóa bài',
+                        `Đã xóa **${trackTitle}** khỏi hàng đợi (vị trí #${position}).`,
+                        client.config
+                    )
+                ]
             });
 
             logger.command('remove', interaction.user.id, interaction.guildId);

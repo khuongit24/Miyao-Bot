@@ -26,7 +26,7 @@ class DatabaseManager {
     async initialize() {
         try {
             logger.info('Initializing database...');
-            
+
             // Create database connection
             this.db = new Database(this.dbPath, {
                 verbose: process.env.NODE_ENV === 'development' ? logger.debug : null
@@ -34,20 +34,20 @@ class DatabaseManager {
 
             // Enable WAL mode for better concurrency
             this.db.pragma('journal_mode = WAL');
-            
+
             // Enable foreign keys
             this.db.pragma('foreign_keys = ON');
-            
+
             // Run migrations
             await this.runMigrations();
-            
+
             // Initialize audit log table
             const { AuditLog } = await import('./models/AuditLog.js');
             AuditLog.initialize(this.db);
-            
+
             this.isReady = true;
             logger.info('Database initialized successfully');
-            
+
             return this;
         } catch (error) {
             logger.error('Failed to initialize database', error);
@@ -61,31 +61,33 @@ class DatabaseManager {
     async runMigrations() {
         try {
             logger.info('Running database migrations...');
-            
+
             const migrationsDir = join(__dirname, 'migrations');
-            
+
             // List of migrations in order
             // Naming convention: <version>_<descriptive_name>.sql
             const migrations = [
-                '001_initial_schema.sql',           // Core tables: history, users, playlists, statistics, migrations
-                '002_add_composite_indexes.sql',    // Composite indexes for query optimization
-                '003_statistics_indexes.sql',       // Statistics-specific indexes  
-                '004_playlists.sql',                // Playlist tracks table
+                '001_initial_schema.sql', // Core tables: history, users, playlists, statistics, migrations
+                '002_add_composite_indexes.sql', // Composite indexes for query optimization
+                '003_statistics_indexes.sql', // Statistics-specific indexes
+                '004_playlists.sql', // Playlist tracks table
                 '005_guild_settings_and_favorites.sql', // Guild settings (DJ, 24/7) and favorites
                 '006_statistics_tables_and_archiving.sql', // Specialized stats tables, history archiving
-                '007_playlist_track_indexes.sql'    // Additional playlist track indexes
+                '007_playlist_track_indexes.sql' // Additional playlist track indexes
             ];
-            
+
             // Check if migrations table exists
-            const tablesResult = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'").get();
+            const tablesResult = this.db
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='migrations'")
+                .get();
             const migrationsTableExists = !!tablesResult;
-            
+
             for (const migrationFile of migrations) {
                 const migrationPath = join(migrationsDir, migrationFile);
-                
+
                 if (existsSync(migrationPath)) {
                     const version = migrationFile.split('_')[0];
-                    
+
                     // Check if migration already applied (only if migrations table exists)
                     let existing = false;
                     if (migrationsTableExists) {
@@ -97,7 +99,7 @@ class DatabaseManager {
                             logger.debug('Could not check migration status (table might be new)', { version });
                         }
                     }
-                    
+
                     if (!existing) {
                         logger.info(`Applying migration: ${migrationFile}`);
                         const sql = readFileSync(migrationPath, 'utf8');
@@ -110,7 +112,7 @@ class DatabaseManager {
                     logger.warn(`Migration file not found: ${migrationFile}`);
                 }
             }
-            
+
             logger.info('All migrations completed');
         } catch (error) {
             logger.error('Migration failed', error);
@@ -230,11 +232,11 @@ class DatabaseManager {
             if (!this.db || !this.db.open) {
                 throw new Error('Database connection is not open');
             }
-            
+
             // Use better-sqlite3 backup method with string path
             // The backup() method expects a filename string, not a Database object
             this.db.backup(backupPath);
-            
+
             logger.info(`Database backed up to ${backupPath}`);
         } catch (error) {
             logger.error('Backup failed', error);
@@ -296,24 +298,24 @@ class DatabaseManager {
     checkIntegrity() {
         try {
             logger.info('Checking database integrity...');
-            
+
             const integrityResult = this.db.pragma('integrity_check');
             const foreignKeyResult = this.db.pragma('foreign_key_check');
-            
+
             const isHealthy = integrityResult[0]?.integrity_check === 'ok' && foreignKeyResult.length === 0;
-            
+
             const result = {
                 healthy: isHealthy,
                 integrityCheck: integrityResult,
                 foreignKeyIssues: foreignKeyResult
             };
-            
+
             if (isHealthy) {
                 logger.info('Database integrity check passed');
             } else {
                 logger.warn('Database integrity issues found', result);
             }
-            
+
             return result;
         } catch (error) {
             logger.error('Integrity check failed', error);
@@ -356,7 +358,7 @@ class DatabaseManager {
      */
     cleanupHistory() {
         try {
-            const result = this.execute(`DELETE FROM history WHERE played_at < datetime('now', '-30 days')`);
+            const result = this.execute("DELETE FROM history WHERE played_at < datetime('now', '-30 days')");
             if (result.changes > 0) {
                 logger.info(`Cleaned up ${result.changes} old history entries`);
             }

@@ -22,7 +22,7 @@ class Playlist {
     static create(name, ownerId, ownerUsername, guildId, description = null, isPublic = false) {
         try {
             const db = getDatabaseManager();
-            
+
             const stmt = db.db.prepare(`
                 INSERT INTO playlists (name, owner_id, owner_username, guild_id, description, is_public)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -34,7 +34,7 @@ class Playlist {
                 playlistId: info.lastInsertRowid,
                 name,
                 ownerId,
-                guildId,
+                guildId
             });
 
             return this.getById(info.lastInsertRowid);
@@ -55,7 +55,7 @@ class Playlist {
     static getById(playlistId) {
         try {
             const db = getDatabaseManager();
-            
+
             const stmt = db.db.prepare(`
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p
@@ -82,7 +82,7 @@ class Playlist {
     static getByOwner(ownerId, guildId, publicOnly = false) {
         try {
             const db = getDatabaseManager();
-            
+
             let query = `
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p
@@ -114,7 +114,7 @@ class Playlist {
     static getByName(name, ownerId, guildId) {
         try {
             const db = getDatabaseManager();
-            
+
             const stmt = db.db.prepare(`
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p
@@ -140,13 +140,13 @@ class Playlist {
     static findByNameInGuild(name, userId, guildId) {
         try {
             const db = getDatabaseManager();
-            
+
             // First, try to find user's own playlist
             const ownPlaylist = this.getByName(name, userId, guildId);
             if (ownPlaylist) {
                 return ownPlaylist;
             }
-            
+
             // If not found, search for public playlist with that name in the guild
             const stmt = db.db.prepare(`
                 SELECT p.*, COUNT(pt.id) as track_count
@@ -174,7 +174,7 @@ class Playlist {
     static update(playlistId, ownerId, changes) {
         try {
             const db = getDatabaseManager();
-            
+
             // Verify ownership
             const playlist = this.getById(playlistId);
             if (!playlist) {
@@ -227,7 +227,7 @@ class Playlist {
     static delete(playlistId, ownerId) {
         try {
             const db = getDatabaseManager();
-            
+
             // Verify ownership
             const playlist = this.getById(playlistId);
             if (!playlist) {
@@ -258,7 +258,7 @@ class Playlist {
     static addTrack(playlistId, track, addedBy) {
         try {
             const db = getDatabaseManager();
-            
+
             // Get next position
             const posStmt = db.db.prepare(`
                 SELECT COALESCE(MAX(position), 0) + 1 as next_position
@@ -285,7 +285,7 @@ class Playlist {
             logger.info('Track added to playlist', {
                 playlistId,
                 trackId: info.lastInsertRowid,
-                title: track.title,
+                title: track.title
             });
 
             return {
@@ -296,7 +296,7 @@ class Playlist {
                 track_author: track.author || track.artist,
                 track_duration: track.duration || track.length,
                 position: next_position,
-                added_by: addedBy,
+                added_by: addedBy
             };
         } catch (error) {
             logger.error('Failed to add track to playlist', { error: error.message, playlistId });
@@ -314,7 +314,7 @@ class Playlist {
     static removeTrack(playlistId, trackId, ownerId) {
         try {
             const db = getDatabaseManager();
-            
+
             // Verify ownership
             const playlist = this.getById(playlistId);
             if (!playlist) {
@@ -347,7 +347,7 @@ class Playlist {
     static getTracks(playlistId) {
         try {
             const db = getDatabaseManager();
-            
+
             const stmt = db.db.prepare(`
                 SELECT * FROM playlist_tracks
                 WHERE playlist_id = ?
@@ -372,7 +372,7 @@ class Playlist {
     static moveTrack(playlistId, fromPosition, toPosition, ownerId) {
         try {
             const db = getDatabaseManager();
-            
+
             // Verify ownership
             const playlist = this.getById(playlistId);
             if (!playlist) {
@@ -405,26 +405,38 @@ class Playlist {
                 // Shift positions
                 if (fromPosition < toPosition) {
                     // Moving down: shift tracks between from and to up by 1
-                    db.db.prepare(`
+                    db.db
+                        .prepare(
+                            `
                         UPDATE playlist_tracks
                         SET position = position - 1
                         WHERE playlist_id = ? AND position > ? AND position <= ?
-                    `).run(playlistId, fromPosition, toPosition);
+                    `
+                        )
+                        .run(playlistId, fromPosition, toPosition);
                 } else {
                     // Moving up: shift tracks between to and from down by 1
-                    db.db.prepare(`
+                    db.db
+                        .prepare(
+                            `
                         UPDATE playlist_tracks
                         SET position = position + 1
                         WHERE playlist_id = ? AND position >= ? AND position < ?
-                    `).run(playlistId, toPosition, fromPosition);
+                    `
+                        )
+                        .run(playlistId, toPosition, fromPosition);
                 }
 
                 // Update moved track's position
-                db.db.prepare(`
+                db.db
+                    .prepare(
+                        `
                     UPDATE playlist_tracks
                     SET position = ?
                     WHERE id = ?
-                `).run(toPosition, track.id);
+                `
+                    )
+                    .run(toPosition, track.id);
 
                 db.db.prepare('COMMIT').run();
 
@@ -449,7 +461,7 @@ class Playlist {
     static clearTracks(playlistId, ownerId) {
         try {
             const db = getDatabaseManager();
-            
+
             // Verify ownership
             const playlist = this.getById(playlistId);
             if (!playlist) {
@@ -479,7 +491,7 @@ class Playlist {
     static getPublic(guildId, limit = 50) {
         try {
             const db = getDatabaseManager();
-            
+
             const stmt = db.db.prepare(`
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p
@@ -507,7 +519,7 @@ class Playlist {
     static search(guildId, query, publicOnly = false) {
         try {
             const db = getDatabaseManager();
-            
+
             let sql = `
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p

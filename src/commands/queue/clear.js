@@ -3,14 +3,12 @@ import { createSuccessEmbed, createErrorEmbed } from '../../UI/embeds/MusicEmbed
 import logger from '../../utils/logger.js';
 
 export default {
-    data: new SlashCommandBuilder()
-        .setName('clear')
-        .setDescription('Xóa toàn bộ hàng đợi'),
-    
+    data: new SlashCommandBuilder().setName('clear').setDescription('Xóa toàn bộ hàng đợi'),
+
     async execute(interaction, client) {
         try {
             const queue = client.musicManager.getQueue(interaction.guildId);
-            
+
             // Check if there's a queue
             if (!queue) {
                 return interaction.reply({
@@ -18,7 +16,7 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             // Check if user is in the same voice channel
             const member = interaction.member;
             if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
@@ -27,7 +25,7 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             // Check if queue has tracks
             if (queue.tracks.length === 0) {
                 return interaction.reply({
@@ -35,18 +33,17 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             const count = queue.tracks.length;
-            
+
             // Clear queue
             queue.clear();
-            
+
             await interaction.reply({
                 embeds: [createSuccessEmbed('Xóa hàng đợi', `Đã xóa **${count}** bài khỏi hàng đợi`, client.config)]
             });
-            
+
             logger.command('clear', interaction.user.id, interaction.guildId);
-            
         } catch (error) {
             logger.error('Clear command error', error);
             await interaction.reply({

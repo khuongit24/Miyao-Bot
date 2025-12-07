@@ -7,7 +7,8 @@ export default {
         .setName('jump')
         .setDescription('Nhảy tới một bài cụ thể trong hàng đợi và phát ngay')
         .addIntegerOption(option =>
-            option.setName('position')
+            option
+                .setName('position')
                 .setDescription('Vị trí bài trong hàng đợi (bắt đầu từ 1)')
                 .setMinValue(1)
                 .setRequired(true)
@@ -36,31 +37,38 @@ export default {
                     embeds: [createErrorEmbed('Hàng đợi trống! Không có bài nào để nhảy tới.', client.config)]
                 });
             }
-            
+
             if (position < 1 || position > queue.tracks.length) {
                 return interaction.editReply({
-                    embeds: [createErrorEmbed(
-                        `Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.\n` +
-                        `Hiện có ${queue.tracks.length} bài trong hàng đợi.`, 
-                        client.config
-                    )]
+                    embeds: [
+                        createErrorEmbed(
+                            `Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.\n` +
+                                `Hiện có ${queue.tracks.length} bài trong hàng đợi.`,
+                            client.config
+                        )
+                    ]
                 });
             }
-            
+
             const trackToJump = queue.tracks[position - 1];
             const ok = await queue.jump(position);
             if (!ok) {
                 return interaction.editReply({
-                    embeds: [createErrorEmbed(`Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.`, client.config)]
+                    embeds: [
+                        createErrorEmbed(`Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.`, client.config)
+                    ]
                 });
             }
 
+            const trackTitle = trackToJump?.info?.title || 'Unknown Track';
             await interaction.editReply({
-                embeds: [createSuccessEmbed(
-                    'Đã nhảy tới bài', 
-                    `Đang phát **${trackToJump.info.title}** (vị trí #${position}).`, 
-                    client.config
-                )]
+                embeds: [
+                    createSuccessEmbed(
+                        'Đã nhảy tới bài',
+                        `Đang phát **${trackTitle}** (vị trí #${position}).`,
+                        client.config
+                    )
+                ]
             });
 
             logger.command('jump', interaction.user.id, interaction.guildId);

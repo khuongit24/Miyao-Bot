@@ -1,10 +1,11 @@
 /**
  * Lyrics Command
- * Display song lyrics with pagination
+ * Display song lyrics with pagination and synced lyrics support
+ * @version 1.8.1 - Improved UI and error handling
  */
 
 import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
-import { getLyrics, paginateLyrics, cleanTrackName, parseSyncedLyrics, formatSyncedLyrics } from '../../utils/lyrics.js';
+import { getLyrics, paginateLyrics, cleanTrackName, cleanArtistName, parseSyncedLyrics } from '../../utils/lyrics.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import { NothingPlayingError, DifferentVoiceChannelError, ResourceNotFoundError } from '../../utils/errors.js';
 import logger from '../../utils/logger.js';
@@ -14,14 +15,10 @@ export default {
         .setName('lyrics')
         .setDescription('Hiển thị lời bài hát')
         .addStringOption(option =>
-            option.setName('query')
-                .setDescription('Tìm kiếm lời bài hát (không cần nếu đang phát nhạc)')
-                .setRequired(false)
+            option.setName('query').setDescription('Tìm kiếm lời bài hát (để trống = bài đang phát)').setRequired(false)
         )
         .addBooleanOption(option =>
-            option.setName('synced')
-                .setDescription('Hiển thị lyrics đồng bộ (nếu có)')
-                .setRequired(false)
+            option.setName('synced').setDescription('Hiển thị lyrics đồng bộ thời gian (nếu có)').setRequired(false)
         ),
 
     async execute(interaction, client) {
@@ -30,12 +27,11 @@ export default {
         try {
             const query = interaction.options.getString('query');
             const showSynced = interaction.options.getBoolean('synced') || false;
-            
+
             let trackName, artistName, albumName, duration;
 
             if (query) {
-                // Search by query
-                // Simple parsing: assume format "artist - title"
+                // Parse query: support "artist - title" format
                 const parts = query.split('-').map(p => p.trim());
                 if (parts.length >= 2) {
                     artistName = parts[0];
@@ -52,15 +48,15 @@ export default {
                     throw new NothingPlayingError();
                 }
 
-                // Check if user is in the same voice channel
+                // Optional: Check if user is in the same voice channel
                 const member = interaction.member;
-                if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
+                if (member.voice.channel && queue.voiceChannelId && member.voice.channel.id !== queue.voiceChannelId) {
                     throw new DifferentVoiceChannelError();
                 }
 
                 const track = queue.current;
                 trackName = cleanTrackName(track.info.title);
-                artistName = track.info.author || '';
+                artistName = cleanArtistName(track.info.author || '');
                 albumName = '';
                 duration = track.info.length;
             }
@@ -70,25 +66,27 @@ export default {
             try {
                 lyricsData = await getLyrics(trackName, artistName, albumName, duration);
             } catch (error) {
-                // Gracefully handle lyrics API failure
                 logger.warn('Lyrics API unavailable', { error: error.message });
-                
+
                 const embed = new EmbedBuilder()
                     .setColor('#FFA500')
-                    .setTitle('⚠️ Dịch Vụ Tạm Thời Không Khả Dụng')
+                    .setTitle('⚠️ Không Thể Tải Lyrics')
                     .setDescription(
-                        `Không thể tải lời bài hát cho **${trackName}** lúc này.\n\n` +
-                        'Dịch vụ lyrics tạm thời gặp sự cố. Vui lòng thử lại sau.'
+                        `Không thể tải lời bài hát cho:\n**${trackName}**${artistName ? ` - ${artistName}` : ''}\n\n` +
+                            '**Nguyên nhân có thể:**\n' +
+                            '• Dịch vụ lyrics tạm thời không khả dụng\n' +
+                            '• Bài hát chưa có trong cơ sở dữ liệu\n\n' +
+                            '💡 *Thử lại sau hoặc tìm kiếm với từ khóa khác*'
                     )
                     .setFooter({ text: client.config.bot.footer })
                     .setTimestamp();
-                
+
                 return await interaction.editReply({ embeds: [embed] });
             }
 
             if (!lyricsData) {
                 throw new ResourceNotFoundError(
-                    `Không tìm thấy lời bài hát cho: **${trackName}**${artistName ? ` - ${artistName}` : ''}`,
+                    `Không tìm thấy lời bài hát cho:\n**${trackName}**${artistName ? ` - ${artistName}` : ''}`,
                     'lyrics'
                 );
             }
@@ -97,27 +95,30 @@ export default {
             if (lyricsData.instrumental) {
                 const embed = new EmbedBuilder()
                     .setColor(client.config.bot.color)
-                    .setTitle('🎵 Nhạc Không Lời')
-                    .setDescription(`**${lyricsData.trackName}**\n*${lyricsData.artistName}*\n\nBài hát này là nhạc không lời (instrumental).`)
+                    .setTitle('🎵 Nhạc Không Lời (Instrumental)')
+                    .setDescription(
+                        `**${lyricsData.trackName}**\n` +
+                            `*${lyricsData.artistName}*\n\n` +
+                            '🎹 Bài hát này là nhạc không lời.'
+                    )
                     .setFooter({ text: client.config.bot.footer })
                     .setTimestamp();
 
                 return await interaction.editReply({ embeds: [embed] });
             }
 
-            // Decide whether to show synced or plain lyrics
-            const useSynced = showSynced && lyricsData.syncedLyrics;
-
-            if (useSynced) {
-                // Show synced lyrics
+            // Show synced or plain lyrics
+            if (showSynced && lyricsData.syncedLyrics) {
                 await showSyncedLyrics(interaction, client, lyricsData);
             } else {
-                // Show plain lyrics with pagination
                 await showPlainLyrics(interaction, client, lyricsData);
             }
 
-            logger.command('lyrics', interaction.user.id, interaction.guildId);
-
+            logger.command('lyrics', interaction.user.id, interaction.guildId, {
+                track: trackName,
+                artist: artistName,
+                synced: showSynced
+            });
         } catch (error) {
             logger.error('Lyrics command error', error);
             await sendErrorResponse(interaction, error, client.config);
@@ -147,47 +148,48 @@ async function showPlainLyrics(interaction, client, lyricsData) {
     let currentPage = 0;
 
     // Create embed for current page
-    const createEmbed = (page) => {
+    const createEmbed = page => {
         return new EmbedBuilder()
             .setColor(client.config.bot.color)
             .setTitle(`🎵 ${lyricsData.trackName}`)
-            .setDescription(`**${lyricsData.artistName}**${lyricsData.albumName ? `\n*${lyricsData.albumName}*` : ''}\n\n${pages[page]}`)
+            .setDescription(
+                `**${lyricsData.artistName}**${lyricsData.albumName ? `\n*${lyricsData.albumName}*` : ''}\n\n${pages[page]}`
+            )
             .setFooter({ text: `${client.config.bot.footer} | Trang ${page + 1}/${pages.length}` })
             .setTimestamp();
     };
 
     // Create navigation buttons if more than 1 page
-    const createButtons = (page) => {
+    const createButtons = page => {
         if (pages.length === 1) return [];
 
-        const row = new ActionRowBuilder()
-            .addComponents(
-                new ButtonBuilder()
-                    .setCustomId('lyrics_first')
-                    .setEmoji('⏮️')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(page === 0),
-                new ButtonBuilder()
-                    .setCustomId('lyrics_prev')
-                    .setEmoji('◀️')
-                    .setStyle(ButtonStyle.Primary)
-                    .setDisabled(page === 0),
-                new ButtonBuilder()
-                    .setCustomId('lyrics_page')
-                    .setLabel(`${page + 1}/${pages.length}`)
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(true),
-                new ButtonBuilder()
-                    .setCustomId('lyrics_next')
-                    .setEmoji('▶️')
-                    .setStyle(ButtonStyle.Primary)
-                    .setDisabled(page === pages.length - 1),
-                new ButtonBuilder()
-                    .setCustomId('lyrics_last')
-                    .setEmoji('⏭️')
-                    .setStyle(ButtonStyle.Secondary)
-                    .setDisabled(page === pages.length - 1)
-            );
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('lyrics_first')
+                .setEmoji('⏮️')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(page === 0),
+            new ButtonBuilder()
+                .setCustomId('lyrics_prev')
+                .setEmoji('◀️')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(page === 0),
+            new ButtonBuilder()
+                .setCustomId('lyrics_page')
+                .setLabel(`${page + 1}/${pages.length}`)
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(true),
+            new ButtonBuilder()
+                .setCustomId('lyrics_next')
+                .setEmoji('▶️')
+                .setStyle(ButtonStyle.Primary)
+                .setDisabled(page === pages.length - 1),
+            new ButtonBuilder()
+                .setCustomId('lyrics_last')
+                .setEmoji('⏭️')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(page === pages.length - 1)
+        );
 
         return [row];
     };
@@ -204,7 +206,7 @@ async function showPlainLyrics(interaction, client, lyricsData) {
         time: 300000 // 5 minutes
     });
 
-    collector.on('collect', async (i) => {
+    collector.on('collect', async i => {
         if (i.user.id !== interaction.user.id) {
             return i.reply({ content: 'Chỉ người yêu cầu mới có thể điều khiển!', ephemeral: true });
         }
@@ -254,19 +256,24 @@ async function showSyncedLyrics(interaction, client, lyricsData) {
     }
 
     // For simplicity, show all synced lyrics with timestamps
-    const lyricsText = parsed.slice(0, 30).map(line => {
-        const minutes = Math.floor(line.time / 60000);
-        const seconds = Math.floor((line.time % 60000) / 1000);
-        const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-        return `\`[${timeStr}]\` ${line.text}`;
-    }).join('\n');
+    const lyricsText = parsed
+        .slice(0, 30)
+        .map(line => {
+            const minutes = Math.floor(line.time / 60000);
+            const seconds = Math.floor((line.time % 60000) / 1000);
+            const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            return `\`[${timeStr}]\` ${line.text}`;
+        })
+        .join('\n');
 
     const moreLines = parsed.length > 30 ? `\n\n*...và ${parsed.length - 30} dòng nữa*` : '';
 
     const embed = new EmbedBuilder()
         .setColor(client.config.bot.color)
         .setTitle(`🎵 ${lyricsData.trackName} (Synced)`)
-        .setDescription(`**${lyricsData.artistName}**${lyricsData.albumName ? `\n*${lyricsData.albumName}*` : ''}\n\n${lyricsText}${moreLines}`)
+        .setDescription(
+            `**${lyricsData.artistName}**${lyricsData.albumName ? `\n*${lyricsData.albumName}*` : ''}\n\n${lyricsText}${moreLines}`
+        )
         .setFooter({ text: `${client.config.bot.footer} | Lời đồng bộ` })
         .setTimestamp();
 

@@ -1,7 +1,7 @@
 /**
  * History Model
  * Track play history with automatic retention
- * 
+ *
  * Updated: Now uses HistoryBatcher for batched INSERT operations
  * to improve database performance and reduce I/O
  */
@@ -22,12 +22,12 @@ class History {
     static add(guildId, userId, track) {
         try {
             const batcher = getHistoryBatcher();
-            
+
             // If batcher is running, use it for batched inserts
             if (batcher.isRunning()) {
                 return batcher.add(guildId, userId, track);
             }
-            
+
             // Fallback to direct insert if batcher is not running
             return History.addDirect(guildId, userId, track);
         } catch (error) {
@@ -47,7 +47,7 @@ class History {
     static addDirect(guildId, userId, track) {
         try {
             const db = getDatabaseManager();
-            
+
             db.execute(
                 `INSERT INTO history (guild_id, user_id, track_title, track_author, track_url, track_duration)
                  VALUES (?, ?, ?, ?, ?, ?)`,
@@ -60,7 +60,7 @@ class History {
                     track.info?.length || 0
                 ]
             );
-            
+
             return true;
         } catch (error) {
             logger.error('Failed to add history directly', { guildId, userId, error });
@@ -77,10 +77,10 @@ class History {
     static getGuildHistory(guildId, limit = 10) {
         try {
             const db = getDatabaseManager();
-            return db.query(
-                'SELECT * FROM history WHERE guild_id = ? ORDER BY played_at DESC LIMIT ?',
-                [guildId, limit]
-            );
+            return db.query('SELECT * FROM history WHERE guild_id = ? ORDER BY played_at DESC LIMIT ?', [
+                guildId,
+                limit
+            ]);
         } catch (error) {
             logger.error('Failed to get guild history', { guildId, error });
             return [];
@@ -96,10 +96,7 @@ class History {
     static getUserHistory(userId, limit = 10) {
         try {
             const db = getDatabaseManager();
-            return db.query(
-                'SELECT * FROM history WHERE user_id = ? ORDER BY played_at DESC LIMIT ?',
-                [userId, limit]
-            );
+            return db.query('SELECT * FROM history WHERE user_id = ? ORDER BY played_at DESC LIMIT ?', [userId, limit]);
         } catch (error) {
             logger.error('Failed to get user history', { userId, error });
             return [];
@@ -116,7 +113,7 @@ class History {
     static getMostPlayed(guildId, limit = 10, period = 'all') {
         try {
             const db = getDatabaseManager();
-            
+
             let dateFilter = '';
             switch (period) {
                 case 'day':
@@ -129,7 +126,7 @@ class History {
                     dateFilter = "AND played_at > datetime('now', '-30 days')";
                     break;
             }
-            
+
             return db.query(
                 `SELECT track_title, track_author, track_url,
                         COUNT(*) as play_count,
@@ -156,10 +153,10 @@ class History {
     static getUserStats(userId, guildId = null) {
         try {
             const db = getDatabaseManager();
-            
+
             const guildFilter = guildId ? 'AND guild_id = ?' : '';
             const params = guildId ? [userId, guildId] : [userId];
-            
+
             const stats = db.queryOne(
                 `SELECT 
                     COUNT(*) as total_plays,
@@ -170,11 +167,11 @@ class History {
                  WHERE user_id = ? ${guildFilter}`,
                 params
             );
-            
+
             if (!stats || stats.total_plays === 0) {
                 return null;
             }
-            
+
             return {
                 totalPlays: stats.total_plays,
                 totalListeningTime: stats.total_listening_time || 0,
@@ -197,10 +194,10 @@ class History {
     static getTopTracks(userId, guildId = null, limit = 10) {
         try {
             const db = getDatabaseManager();
-            
+
             const guildFilter = guildId ? 'AND guild_id = ?' : '';
             const params = guildId ? [userId, guildId, limit] : [userId, limit];
-            
+
             return db.query(
                 `SELECT 
                     track_title as track_name,
@@ -230,10 +227,10 @@ class History {
     static getListeningPatterns(userId, guildId = null) {
         try {
             const db = getDatabaseManager();
-            
+
             const guildFilter = guildId ? 'AND guild_id = ?' : '';
             const params = guildId ? [userId, guildId] : [userId];
-            
+
             return db.query(
                 `SELECT 
                     CAST(strftime('%H', played_at) AS INTEGER) as hour_of_day,
@@ -259,7 +256,7 @@ class History {
     static getServerStats(guildId, period = 'all') {
         try {
             const db = getDatabaseManager();
-            
+
             let dateFilter = '';
             switch (period) {
                 case 'day':
@@ -272,7 +269,7 @@ class History {
                     dateFilter = "AND played_at > datetime('now', '-30 days')";
                     break;
             }
-            
+
             const stats = db.queryOne(
                 `SELECT 
                     COUNT(*) as total_plays,
@@ -283,11 +280,11 @@ class History {
                  WHERE guild_id = ? ${dateFilter}`,
                 [guildId]
             );
-            
+
             if (!stats || stats.total_plays === 0) {
                 return null;
             }
-            
+
             return {
                 totalPlays: stats.total_plays,
                 uniqueUsers: stats.unique_users,
@@ -310,7 +307,7 @@ class History {
     static getMostActiveUsers(guildId, limit = 10, period = 'all') {
         try {
             const db = getDatabaseManager();
-            
+
             let dateFilter = '';
             switch (period) {
                 case 'day':
@@ -323,7 +320,7 @@ class History {
                     dateFilter = "AND played_at > datetime('now', '-30 days')";
                     break;
             }
-            
+
             return db.query(
                 `SELECT 
                     user_id,
@@ -350,7 +347,7 @@ class History {
     static getServerPeakHours(guildId) {
         try {
             const db = getDatabaseManager();
-            
+
             return db.query(
                 `SELECT 
                     CAST(strftime('%H', played_at) AS INTEGER) as hour_of_day,
@@ -376,15 +373,12 @@ class History {
     static cleanup(days = 30) {
         try {
             const db = getDatabaseManager();
-            const result = db.execute(
-                "DELETE FROM history WHERE played_at < datetime('now', ?)",
-                [`-${days} days`]
-            );
-            
+            const result = db.execute("DELETE FROM history WHERE played_at < datetime('now', ?)", [`-${days} days`]);
+
             if (result.changes > 0) {
                 logger.info(`Cleaned up ${result.changes} history records older than ${days} days`);
             }
-            
+
             return result.changes;
         } catch (error) {
             logger.error('Failed to cleanup history', error);

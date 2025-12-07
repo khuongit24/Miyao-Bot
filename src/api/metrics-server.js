@@ -8,6 +8,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import os from 'os';
 import { metricsTracker } from '../utils/metrics.js';
 import { VERSION } from '../utils/version.js';
 import logger from '../utils/logger.js';
@@ -21,11 +22,13 @@ let IP_WHITELIST = [];
 
 // Security middleware
 app.use(helmet());
-app.use(cors({
-    origin: process.env.CORS_ORIGIN || '*',
-    methods: ['GET', 'POST'],
-    allowedHeaders: ['Content-Type', 'x-api-key']
-}));
+app.use(
+    cors({
+        origin: process.env.CORS_ORIGIN || '*',
+        methods: ['GET', 'POST'],
+        allowedHeaders: ['Content-Type', 'x-api-key']
+    })
+);
 app.use(express.json({ limit: '1mb' }));
 
 // Rate limiting
@@ -58,15 +61,15 @@ app.use('/api/', (req, res, next) => {
     if (IP_WHITELIST.length === 0) {
         return next();
     }
-    
+
     const clientIp = req.ip || req.connection.remoteAddress;
-    
+
     // Check if IP is whitelisted
     const isAllowed = IP_WHITELIST.some(allowedIp => {
         // Support CIDR notation or exact match
         return clientIp === allowedIp || clientIp.startsWith(allowedIp);
     });
-    
+
     if (!isAllowed) {
         logger.warn('IP blocked by whitelist', { ip: clientIp, path: req.path });
         return res.status(403).json({
@@ -74,7 +77,7 @@ app.use('/api/', (req, res, next) => {
             message: 'Your IP address is not whitelisted'
         });
     }
-    
+
     next();
 });
 
@@ -98,7 +101,7 @@ app.use((req, res, next) => {
 // API Key authentication middleware with audit logging
 const authenticate = (req, res, next) => {
     const apiKey = req.headers['x-api-key'] || req.query.apiKey;
-    
+
     if (!apiKey) {
         logger.warn('API request without key', { ip: req.ip, path: req.path });
         return res.status(401).json({
@@ -106,13 +109,13 @@ const authenticate = (req, res, next) => {
             message: 'API key required. Please provide x-api-key header or apiKey query parameter.'
         });
     }
-    
+
     // Check against all valid API keys (support rotation)
     const isValidKey = VALID_API_KEYS.includes(apiKey);
-    
+
     if (!isValidKey) {
-        logger.warn('API request with invalid key', { 
-            ip: req.ip, 
+        logger.warn('API request with invalid key', {
+            ip: req.ip,
             path: req.path,
             keyPrefix: apiKey.substring(0, 8) + '...' // Log only prefix for security
         });
@@ -121,7 +124,7 @@ const authenticate = (req, res, next) => {
             message: 'Invalid API key'
         });
     }
-    
+
     // Log successful authentication
     logger.debug('API authenticated', { ip: req.ip, path: req.path });
     next();
@@ -133,14 +136,14 @@ app.get('/health', async (req, res) => {
         const client = app.locals.client;
         let healthStatus = 'ok';
         let checks = {};
-        
+
         // Get detailed health if health check manager is available
         if (client && client.healthCheck) {
             const health = await client.healthCheck.getOverallHealth();
             healthStatus = health.status;
             checks = health.checks;
         }
-        
+
         res.json({
             status: healthStatus,
             timestamp: new Date().toISOString(),
@@ -161,7 +164,7 @@ app.get('/health', async (req, res) => {
 app.get('/api/health', authenticate, async (req, res) => {
     try {
         const client = app.locals.client;
-        
+
         if (!client || !client.healthCheck) {
             return res.status(503).json({
                 success: false,
@@ -169,9 +172,9 @@ app.get('/api/health', authenticate, async (req, res) => {
                 message: 'Health check manager not initialized'
             });
         }
-        
+
         const health = await client.healthCheck.getOverallHealth();
-        
+
         res.json({
             success: true,
             timestamp: new Date().toISOString(),
@@ -192,7 +195,7 @@ app.get('/api/health', authenticate, async (req, res) => {
 app.get('/api/metrics', authenticate, (req, res) => {
     try {
         const summary = metricsTracker.getSummary();
-        
+
         res.json({
             success: true,
             timestamp: new Date().toISOString(),
@@ -228,11 +231,13 @@ app.get('/api/metrics', authenticate, (req, res) => {
                     memory: {
                         used: summary.memoryUsage,
                         limit: summary.memoryLimit || 512 * 1024 * 1024,
-                        percentage: ((summary.memoryUsage / (summary.memoryLimit || 512 * 1024 * 1024)) * 100).toFixed(1)
+                        percentage: ((summary.memoryUsage / (summary.memoryLimit || 512 * 1024 * 1024)) * 100).toFixed(
+                            1
+                        )
                     },
                     cpu: {
                         usage: getCPUUsage(),
-                        cores: require('os').cpus().length
+                        cores: os.cpus().length
                     }
                 },
                 errors: {
@@ -263,9 +268,9 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
     try {
         const { category } = req.params;
         const summary = metricsTracker.getSummary();
-        
+
         let data;
-        
+
         switch (category) {
             case 'commands':
                 data = {
@@ -276,7 +281,7 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
                     topCommands: summary.topCommands || []
                 };
                 break;
-                
+
             case 'music':
                 data = {
                     tracksPlayed: summary.tracksPlayed || 0,
@@ -285,7 +290,7 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
                     mostPlayed: summary.mostPlayedTrack || null
                 };
                 break;
-                
+
             case 'performance':
                 data = {
                     averageResponseTime: summary.avgResponseTime,
@@ -294,22 +299,24 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
                     responseTimeHistory: summary.responseTimeHistory || []
                 };
                 break;
-                
+
             case 'system':
                 data = {
                     memory: {
                         used: summary.memoryUsage,
                         limit: summary.memoryLimit || 512 * 1024 * 1024,
-                        percentage: ((summary.memoryUsage / (summary.memoryLimit || 512 * 1024 * 1024)) * 100).toFixed(1)
+                        percentage: ((summary.memoryUsage / (summary.memoryLimit || 512 * 1024 * 1024)) * 100).toFixed(
+                            1
+                        )
                     },
                     cpu: {
                         usage: getCPUUsage(),
-                        cores: require('os').cpus().length
+                        cores: os.cpus().length
                     },
                     uptime: summary.uptime
                 };
                 break;
-                
+
             case 'errors':
                 data = {
                     total: summary.totalErrors || 0,
@@ -318,7 +325,7 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
                     recent: summary.recentErrors || []
                 };
                 break;
-                
+
             default:
                 return res.status(404).json({
                     success: false,
@@ -327,7 +334,7 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
                     availableCategories: ['commands', 'music', 'performance', 'system', 'errors']
                 });
         }
-        
+
         res.json({
             success: true,
             category,
@@ -347,7 +354,7 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
 app.get('/api/stats/realtime', authenticate, (req, res) => {
     try {
         const summary = metricsTracker.getSummary();
-        
+
         res.json({
             success: true,
             timestamp: Date.now(),
@@ -378,13 +385,13 @@ function formatUptime(seconds) {
     const hours = Math.floor((seconds % 86400) / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
-    
+
     const parts = [];
     if (days > 0) parts.push(`${days}d`);
     if (hours > 0) parts.push(`${hours}h`);
     if (minutes > 0) parts.push(`${minutes}m`);
     if (secs > 0 || parts.length === 0) parts.push(`${secs}s`);
-    
+
     return parts.join(' ');
 }
 
@@ -392,8 +399,8 @@ function getCPUUsage() {
     const usage = process.cpuUsage();
     const totalUsage = (usage.user + usage.system) / 1000000; // Convert to seconds
     const uptime = process.uptime();
-    const cpuPercent = (totalUsage / uptime * 100).toFixed(1);
-    
+    const cpuPercent = ((totalUsage / uptime) * 100).toFixed(1);
+
     return parseFloat(cpuPercent);
 }
 
@@ -421,33 +428,33 @@ export function startMetricsServer(client) {
     logger.info(`Metrics API initialized with ${VALID_API_KEYS.length} API key(s)`);
 
     // IP Whitelist (optional, empty = allow all)
-    IP_WHITELIST = process.env.METRICS_ALLOWED_IPS 
-        ? process.env.METRICS_ALLOWED_IPS.split(',').map(ip => ip.trim()) 
+    IP_WHITELIST = process.env.METRICS_ALLOWED_IPS
+        ? process.env.METRICS_ALLOWED_IPS.split(',').map(ip => ip.trim())
         : [];
-        
+
     if (IP_WHITELIST.length > 0) {
         logger.info(`IP whitelist enabled with ${IP_WHITELIST.length} allowed IP(s)`);
     } else {
         logger.warn('IP whitelist is empty - all IPs allowed (set METRICS_ALLOWED_IPS to restrict)');
     }
-    
+
     // Store client reference for future use
     app.locals.client = client;
-    
+
     const server = app.listen(PORT, () => {
         logger.info(`Metrics API server started on port ${PORT}`);
         logger.info(`Health check: http://localhost:${PORT}/health`);
         logger.info(`Metrics endpoint: http://localhost:${PORT}/api/metrics`);
     });
-    
-    server.on('error', (error) => {
+
+    server.on('error', error => {
         if (error.code === 'EADDRINUSE') {
             logger.warn(`Port ${PORT} is already in use. Metrics API not started.`);
         } else {
             logger.error('Metrics API server error:', error);
         }
     });
-    
+
     return server;
 }
 

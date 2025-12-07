@@ -8,16 +8,13 @@ export default {
         .setName('queue')
         .setDescription('Xem danh sách hàng đợi')
         .addIntegerOption(option =>
-            option.setName('page')
-                .setDescription('Số trang')
-                .setMinValue(1)
-                .setRequired(false)
+            option.setName('page').setDescription('Số trang').setMinValue(1).setRequired(false)
         ),
-    
+
     async execute(interaction, client) {
         try {
             const queue = client.musicManager.getQueue(interaction.guildId);
-            
+
             // Check if there's a queue
             if (!queue || !queue.current) {
                 return interaction.reply({
@@ -25,24 +22,28 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             const page = interaction.options.getInteger('page') || 1;
             const totalPages = Math.ceil((queue.tracks.length + 1) / 10);
-            
+
             if (page > totalPages) {
                 return interaction.reply({
-                    embeds: [createErrorEmbed(`Trang không hợp lệ! Chỉ có ${totalPages} trang. Hãy chọn số từ 1 đến ${totalPages}.`, client.config)],
+                    embeds: [
+                        createErrorEmbed(
+                            `Trang không hợp lệ! Chỉ có ${totalPages} trang. Hãy chọn số từ 1 đến ${totalPages}.`,
+                            client.config
+                        )
+                    ],
                     ephemeral: true
                 });
             }
-            
+
             await interaction.reply({
                 embeds: [createQueueEmbed(queue, client.config, page)],
-                components: totalPages > 1 ? createQueueButtons(page, totalPages) : []
+                components: createQueueButtons(page, totalPages, queue)
             });
-            
+
             logger.command('queue', interaction.user.id, interaction.guildId);
-            
         } catch (error) {
             logger.error('Queue command error', error);
             await interaction.reply({

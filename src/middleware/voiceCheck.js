@@ -2,13 +2,13 @@
  * @file voiceCheck.js
  * @description Middleware for voice channel related checks
  * @version 1.8.0 - New middleware system
- * 
+ *
  * This middleware provides reusable voice channel validation functions
  * that can be applied to commands that require the user to be in a voice channel.
  */
 
-import { 
-    UserNotInVoiceError, 
+import {
+    UserNotInVoiceError,
     DifferentVoiceChannelError,
     VoiceChannelPermissionError,
     NothingPlayingError
@@ -23,11 +23,11 @@ import {
 export function requireVoiceChannel(interaction) {
     const member = interaction.member;
     const voiceChannel = member.voice.channel;
-    
+
     if (!voiceChannel) {
         throw new UserNotInVoiceError();
     }
-    
+
     return { voiceChannel, member };
 }
 
@@ -39,7 +39,7 @@ export function requireVoiceChannel(interaction) {
  */
 export function checkVoicePermissions(interaction, voiceChannel) {
     const permissions = voiceChannel.permissionsFor(interaction.client.user);
-    
+
     if (!permissions.has(['Connect', 'Speak'])) {
         throw new VoiceChannelPermissionError(voiceChannel.name);
     }
@@ -56,17 +56,17 @@ export function requireSameVoiceChannel(interaction, queue) {
     if (!queue || !queue.voiceChannelId) {
         return true; // No queue means no restriction
     }
-    
+
     const member = interaction.member;
-    
+
     if (!member.voice.channel) {
         throw new UserNotInVoiceError();
     }
-    
+
     if (member.voice.channel.id !== queue.voiceChannelId) {
         throw new DifferentVoiceChannelError();
     }
-    
+
     return true;
 }
 
@@ -79,11 +79,11 @@ export function requireSameVoiceChannel(interaction, queue) {
 export function requireVoiceWithQueue(interaction, musicManager) {
     const { voiceChannel, member } = requireVoiceChannel(interaction);
     const queue = musicManager.getQueue(interaction.guildId);
-    
+
     if (queue) {
         requireSameVoiceChannel(interaction, queue);
     }
-    
+
     return { voiceChannel, member, queue };
 }
 
@@ -96,15 +96,15 @@ export function requireVoiceWithQueue(interaction, musicManager) {
  */
 export function fullVoiceCheck(interaction, musicManager) {
     const { voiceChannel, member } = requireVoiceChannel(interaction);
-    
+
     checkVoicePermissions(interaction, voiceChannel);
-    
+
     const queue = musicManager.getQueue(interaction.guildId);
-    
+
     if (queue) {
         requireSameVoiceChannel(interaction, queue);
     }
-    
+
     return { voiceChannel, member, queue };
 }
 

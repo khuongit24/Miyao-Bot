@@ -16,11 +16,11 @@ class GuildSettings {
         try {
             const db = getDatabaseManager();
             const settings = db.queryOne('SELECT * FROM guild_settings WHERE guild_id = ?', [guildId]);
-            
+
             if (!settings) {
                 return this.getDefaults(guildId);
             }
-            
+
             return {
                 guildId: settings.guild_id,
                 guildName: settings.guild_name,
@@ -52,15 +52,15 @@ class GuildSettings {
     static set(guildId, settings, guildName = null) {
         try {
             const db = getDatabaseManager();
-            
+
             // Check if guild exists
             const existing = db.queryOne('SELECT guild_id FROM guild_settings WHERE guild_id = ?', [guildId]);
-            
+
             if (existing) {
                 // Update existing settings
                 const updates = [];
                 const params = [];
-                
+
                 if (guildName) {
                     updates.push('guild_name = ?');
                     params.push(guildName);
@@ -101,13 +101,10 @@ class GuildSettings {
                     updates.push('allow_duplicates = ?');
                     params.push(settings.allowDuplicates ? 1 : 0);
                 }
-                
+
                 if (updates.length > 0) {
                     params.push(guildId);
-                    db.execute(
-                        `UPDATE guild_settings SET ${updates.join(', ')} WHERE guild_id = ?`,
-                        params
-                    );
+                    db.execute(`UPDATE guild_settings SET ${updates.join(', ')} WHERE guild_id = ?`, params);
                 }
             } else {
                 // Insert new guild settings
@@ -132,7 +129,7 @@ class GuildSettings {
                     ]
                 );
             }
-            
+
             logger.info('Guild settings updated', { guildId });
             return true;
         } catch (error) {
@@ -175,17 +172,17 @@ class GuildSettings {
         if (member.user.id === process.env.OWNER_ID) {
             return true;
         }
-        
+
         // Server administrators always have DJ permissions
         if (member.permissions.has('Administrator')) {
             return true;
         }
-        
+
         // If no DJ role is set or DJ-only mode is disabled, everyone has permissions
         if (!guildSettings.djRoleId || !guildSettings.djOnlyMode) {
             return true;
         }
-        
+
         // Check if user has the DJ role
         return member.roles.cache.has(guildSettings.djRoleId);
     }

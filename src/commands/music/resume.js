@@ -5,15 +5,13 @@ import { UserNotInVoiceError, DifferentVoiceChannelError, NothingPlayingError } 
 import logger from '../../utils/logger.js';
 
 export default {
-    data: new SlashCommandBuilder()
-        .setName('resume')
-        .setDescription('Tiếp tục phát nhạc'),
-    
+    data: new SlashCommandBuilder().setName('resume').setDescription('Tiếp tục phát nhạc'),
+
     async execute(interaction, client) {
         try {
             // Use middleware for common checks
             const queue = requireQueue(client.musicManager, interaction.guildId);
-            
+
             // Check if user is in voice channel and same as bot
             const member = interaction.member;
             if (!member.voice.channel) {
@@ -22,7 +20,7 @@ export default {
             if (member.voice.channel.id !== queue.voiceChannelId) {
                 throw new DifferentVoiceChannelError();
             }
-            
+
             // Check if not paused
             if (!queue.paused) {
                 return interaction.reply({
@@ -30,16 +28,15 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             // Resume
             await queue.resume();
-            
+
             await interaction.reply({
                 embeds: [createSuccessEmbed('Tiếp tục', 'Đã tiếp tục phát nhạc', client.config)]
             });
-            
+
             logger.command('resume', interaction.user.id, interaction.guildId);
-            
         } catch (error) {
             // Handle middleware errors with user-friendly messages
             if (error instanceof NothingPlayingError) {
@@ -54,7 +51,7 @@ export default {
                     ephemeral: true
                 });
             }
-            
+
             logger.error('Resume command error', error);
             await interaction.reply({
                 embeds: [createErrorEmbed('Đã xảy ra lỗi khi tiếp tục phát nhạc!', client.config)],

@@ -16,11 +16,11 @@ class UserPreferences {
         try {
             const db = getDatabaseManager();
             const user = db.queryOne('SELECT * FROM users WHERE user_id = ?', [userId]);
-            
+
             if (!user) {
                 return this.getDefaults();
             }
-            
+
             return {
                 userId: user.user_id,
                 username: user.username,
@@ -47,15 +47,15 @@ class UserPreferences {
     static set(userId, preferences, username = null) {
         try {
             const db = getDatabaseManager();
-            
+
             // Check if user exists
             const existing = db.queryOne('SELECT user_id FROM users WHERE user_id = ?', [userId]);
-            
+
             if (existing) {
                 // Update existing user
                 const updates = [];
                 const params = [];
-                
+
                 if (username) {
                     updates.push('username = ?');
                     params.push(username);
@@ -76,13 +76,10 @@ class UserPreferences {
                     updates.push('language = ?');
                     params.push(preferences.language);
                 }
-                
+
                 if (updates.length > 0) {
                     params.push(userId);
-                    db.execute(
-                        `UPDATE users SET ${updates.join(', ')} WHERE user_id = ?`,
-                        params
-                    );
+                    db.execute(`UPDATE users SET ${updates.join(', ')} WHERE user_id = ?`, params);
                 }
             } else {
                 // Insert new user
@@ -99,7 +96,7 @@ class UserPreferences {
                     ]
                 );
             }
-            
+
             logger.info('User preferences updated', { userId });
             return true;
         } catch (error) {

@@ -1,6 +1,7 @@
 /**
  * Autoplay Command
- * Enable/disable automatic playlist continuation
+ * Enable/disable automatic playlist continuation with smart recommendations
+ * @version 1.8.1 - Improved UI and feedback
  */
 
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
@@ -12,59 +13,59 @@ import logger from '../../utils/logger.js';
 export default {
     data: new SlashCommandBuilder()
         .setName('autoplay')
-        .setDescription('Bật/tắt tự động phát nhạc liên quan')
+        .setDescription('Bật/tắt tự động phát nhạc liên quan khi hết queue')
         .addBooleanOption(option =>
-            option.setName('enabled')
-                .setDescription('Bật hoặc tắt autoplay')
-                .setRequired(false)
+            option.setName('enabled').setDescription('Bật (true) hoặc tắt (false) autoplay').setRequired(false)
         ),
 
     async execute(interaction, client) {
         try {
             const queue = client.musicManager.getQueue(interaction.guildId);
 
-            // Check if there's a queue
             if (!queue) {
                 throw new NothingPlayingError();
             }
 
-            // Check if user is in the same voice channel
+            // Check voice channel
             const member = interaction.member;
             if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
                 throw new DifferentVoiceChannelError();
             }
 
-            // Get enabled option or toggle current state
+            // Get enabled option or toggle
             const enabled = interaction.options.getBoolean('enabled');
             const newState = enabled !== null ? enabled : !queue.autoplay;
 
-            // Set autoplay state
+            // Apply autoplay state
             queue.setAutoplay(newState);
 
-            // Also save to user preferences
-            UserPreferences.set(
-                interaction.user.id,
-                { autoResume: newState },
-                interaction.user.username
-            );
+            // Save preference
+            UserPreferences.set(interaction.user.id, { autoResume: newState }, interaction.user.username);
+
+            // Current track info for context
+            const currentTrack = queue.current;
+            const trackInfo = currentTrack ? `\n🎵 *Đang phát: ${currentTrack.info.title}*` : '';
 
             const embed = new EmbedBuilder()
-                .setColor(client.config.bot.color)
+                .setColor(newState ? '#00FF00' : '#FF6B6B')
                 .setTitle(newState ? '✅ Autoplay Đã Bật' : '❌ Autoplay Đã Tắt')
                 .setDescription(
                     newState
-                        ? '**Bot sẽ tự động thêm nhạc liên quan khi hàng đợi kết thúc**\n\n' +
-                          '💡 *Autoplay sử dụng tên bài hát và nghệ sĩ để tìm nhạc tương tự*'
-                        : '**Bot sẽ dừng khi hết hàng đợi**\n\n' +
-                          '💡 *Dùng `/autoplay` hoặc `/autoplay enabled:true` để bật lại*'
+                        ? '**Bot sẽ tự động thêm nhạc khi hàng đợi kết thúc**\n\n' +
+                              '🎯 Nhạc sẽ được gợi ý dựa trên:\n' +
+                              '• Bài hát hiện tại\n' +
+                              '• Nghệ sĩ đang nghe\n' +
+                              `• Lịch sử nghe của bạn${trackInfo}`
+                        : '**Bot sẽ dừng khi hết hàng đợi**\n\n' + `💡 Sử dụng \`/autoplay\` để bật lại${trackInfo}`
                 )
                 .setFooter({ text: client.config.bot.footer })
                 .setTimestamp();
 
             await interaction.reply({ embeds: [embed] });
 
-            logger.command('autoplay', interaction.user.id, interaction.guildId);
-
+            logger.command('autoplay', interaction.user.id, interaction.guildId, {
+                enabled: newState
+            });
         } catch (error) {
             logger.error('Autoplay command error', error);
             await sendErrorResponse(interaction, error, client.config, true);

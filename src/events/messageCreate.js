@@ -6,26 +6,26 @@ export default {
     async execute(message, client) {
         // Ignore bot messages
         if (message.author.bot) return;
-        
+
         // Check if message starts with prefix
         const prefix = client.config.bot.prefix || '!';
         if (!message.content.startsWith(prefix)) return;
-        
+
         // Parse command and args
         const args = message.content.slice(prefix.length).trim().split(/ +/);
         const commandName = args.shift().toLowerCase();
-        
+
         // Get command
         const command = client.commands.get(commandName);
-        
+
         if (!command) return;
-        
+
         logger.debug(`Prefix command received: ${prefix}${commandName} from ${message.author.tag}`);
-        
+
         try {
             // Create a fake interaction object for compatibility
             let botReplyMessage = null; // Store bot's reply message
-            
+
             const fakeInteraction = {
                 // Basic properties
                 commandName: commandName,
@@ -36,7 +36,7 @@ export default {
                 channel: message.channel,
                 channelId: message.channelId,
                 client: client,
-                
+
                 // Options handling
                 options: {
                     _hoistedOptions: [],
@@ -48,35 +48,35 @@ export default {
                         // Otherwise return first arg as subcommand, or null
                         return args.length > 0 ? args[0] : null;
                     },
-                    getString: (name) => {
+                    getString: name => {
                         const optIndex = command.data.options?.findIndex(opt => opt.name === name);
                         if (optIndex === undefined || optIndex === -1) return null;
-                        
+
                         // For the first string option, join all remaining args
                         const firstStringOption = command.data.options?.find(opt => opt.type === 3); // STRING type
                         if (firstStringOption && firstStringOption.name === name && args.length > 0) {
                             return args.join(' ');
                         }
-                        
+
                         return args[optIndex] || null;
                     },
-                    getInteger: (name) => {
+                    getInteger: name => {
                         const optIndex = command.data.options?.findIndex(opt => opt.name === name);
                         if (optIndex === undefined || optIndex === -1) return null;
-                        
+
                         const value = parseInt(args[optIndex]);
                         return isNaN(value) ? null : value;
                     },
-                    getBoolean: (name) => {
+                    getBoolean: name => {
                         return null; // Prefix commands don't support boolean options well
                     }
                 },
-                
+
                 // Reply methods
                 replied: false,
                 deferred: false,
-                
-                reply: async (content) => {
+
+                reply: async content => {
                     fakeInteraction.replied = true;
                     if (typeof content === 'string') {
                         botReplyMessage = await message.reply(content);
@@ -85,60 +85,63 @@ export default {
                     botReplyMessage = await message.reply(content);
                     return botReplyMessage;
                 },
-                
-                editReply: async (content) => {
+
+                editReply: async content => {
                     // If we have a bot reply message, edit that
                     if (botReplyMessage) {
                         return await botReplyMessage.edit(content);
                     }
-                    
+
                     // If deferred but no message yet, send a new reply
                     if (fakeInteraction.deferred) {
                         botReplyMessage = await message.reply(content);
                         fakeInteraction.replied = true;
                         return botReplyMessage;
                     }
-                    
+
                     // Fallback: send as new message
                     botReplyMessage = await message.channel.send(content);
                     fakeInteraction.replied = true;
                     return botReplyMessage;
                 },
-                
-                deferReply: async (options) => {
+
+                deferReply: async options => {
                     fakeInteraction.deferred = true;
                     // Send a "thinking" message that can be edited later
                     botReplyMessage = await message.reply({
-                        embeds: [{
-                            description: '⏳ Đang xử lý...',
-                            color: parseInt(client.config?.bot?.color?.replace('#', '') || '5865F2', 16)
-                        }]
+                        embeds: [
+                            {
+                                description: '⏳ Đang xử lý...',
+                                color: parseInt(client.config?.bot?.color?.replace('#', '') || '5865F2', 16)
+                            }
+                        ]
                     });
                     return botReplyMessage;
                 },
-                
-                followUp: async (content) => {
+
+                followUp: async content => {
                     return await message.channel.send(content);
                 }
             };
-            
+
             // Execute command
             await command.execute(fakeInteraction, client);
-            
+
             logger.command(commandName, message.author.id, message.guildId, 'prefix');
-            
         } catch (error) {
             logger.error(`Prefix command error: ${commandName}`, error);
-            
+
             const errorMessage = {
-                embeds: [createErrorEmbed(
-                    `❌ Đã xảy ra lỗi khi thực thi lệnh \`${prefix}${commandName}\`!\n\n` +
-                    `**Lỗi:** ${error.message}\n\n` +
-                    `*Thử sử dụng slash command \`/${commandName}\` để có trải nghiệm tốt hơn.*`,
-                    client.config
-                )]
+                embeds: [
+                    createErrorEmbed(
+                        `❌ Đã xảy ra lỗi khi thực thi lệnh \`${prefix}${commandName}\`!\n\n` +
+                            `**Lỗi:** ${error.message}\n\n` +
+                            `*Thử sử dụng slash command \`/${commandName}\` để có trải nghiệm tốt hơn.*`,
+                        client.config
+                    )
+                ]
             };
-            
+
             try {
                 await message.reply(errorMessage);
             } catch (replyError) {

@@ -1,16 +1,16 @@
 /**
  * History Batcher - Batch INSERT operations for history records
- * 
+ *
  * Problem: Each track play triggers an individual INSERT to the history table,
  * causing high disk I/O and SQLite lock contention.
- * 
+ *
  * Solution: Queue history entries and batch INSERT them in a single transaction
  * every N seconds or when queue reaches capacity.
- * 
+ *
  * Performance Impact:
  * - Before: ~100 ops/s with individual INSERTs
  * - After: ~500+ ops/s with batched transactions
- * 
+ *
  * @module HistoryBatcher
  */
 
@@ -43,13 +43,13 @@ class HistoryBatcher extends EventEmitter {
      */
     constructor(config = {}) {
         super();
-        
+
         this.config = { ...DEFAULT_CONFIG, ...config };
         this.queue = [];
         this.flushInterval = null;
         this.isShuttingDown = false;
         this.isFlushing = false;
-        
+
         // Statistics
         this.stats = {
             totalQueued: 0,
@@ -60,7 +60,7 @@ class HistoryBatcher extends EventEmitter {
             lastFlushCount: 0,
             avgBatchSize: 0
         };
-        
+
         logger.info('HistoryBatcher initialized', { config: this.config });
     }
 
@@ -72,12 +72,12 @@ class HistoryBatcher extends EventEmitter {
             logger.warn('HistoryBatcher already started');
             return;
         }
-        
+
         this.flushInterval = setInterval(() => {
             this._autoFlush();
         }, this.config.flushIntervalMs);
-        
-        logger.info('HistoryBatcher started', { 
+
+        logger.info('HistoryBatcher started', {
             flushIntervalMs: this.config.flushIntervalMs,
             maxQueueSize: this.config.maxQueueSize
         });
@@ -106,7 +106,7 @@ class HistoryBatcher extends EventEmitter {
             logger.warn('Cannot add to HistoryBatcher: shutting down');
             return false;
         }
-        
+
         const entry = {
             guildId,
             userId,
@@ -116,24 +116,24 @@ class HistoryBatcher extends EventEmitter {
             trackDuration: track.info?.length || 0,
             queuedAt: Date.now()
         };
-        
+
         this.queue.push(entry);
         this.stats.totalQueued++;
-        
-        logger.debug('History entry queued', { 
-            guildId, 
+
+        logger.debug('History entry queued', {
+            guildId,
             track: entry.trackTitle,
-            queueSize: this.queue.length 
+            queueSize: this.queue.length
         });
-        
+
         // Force flush if queue is at capacity
         if (this.queue.length >= this.config.maxQueueSize) {
-            logger.info('Queue at capacity, forcing flush', { 
-                queueSize: this.queue.length 
+            logger.info('Queue at capacity, forcing flush', {
+                queueSize: this.queue.length
             });
             this.flush();
         }
-        
+
         return true;
     }
 
@@ -145,7 +145,7 @@ class HistoryBatcher extends EventEmitter {
         if (this.queue.length === 0 || this.isFlushing) {
             return;
         }
-        
+
         await this.flush();
     }
 
@@ -157,55 +157,53 @@ class HistoryBatcher extends EventEmitter {
         if (this.queue.length === 0) {
             return { flushed: 0, failed: 0 };
         }
-        
+
         if (this.isFlushing) {
             logger.debug('Flush already in progress, skipping');
             return { flushed: 0, failed: 0, skipped: true };
         }
-        
+
         this.isFlushing = true;
-        
+
         // Take current queue and reset
         const entriesToFlush = [...this.queue];
         this.queue = [];
-        
+
         const startTime = Date.now();
         let result = { flushed: 0, failed: 0 };
-        
+
         try {
             result = await this._batchInsert(entriesToFlush);
-            
+
             // Update statistics
             this.stats.totalFlushed += result.flushed;
             this.stats.totalBatches++;
             this.stats.lastFlushTime = Date.now();
             this.stats.lastFlushCount = result.flushed;
-            this.stats.avgBatchSize = Math.round(
-                this.stats.totalFlushed / this.stats.totalBatches
-            );
-            
+            this.stats.avgBatchSize = Math.round(this.stats.totalFlushed / this.stats.totalBatches);
+
             const duration = Date.now() - startTime;
-            logger.info('History batch flushed', { 
+            logger.info('History batch flushed', {
                 flushed: result.flushed,
                 failed: result.failed,
                 durationMs: duration,
                 opsPerSecond: Math.round(result.flushed / (duration / 1000))
             });
-            
+
             this.emit('flush', result);
         } catch (error) {
             logger.error('Batch flush failed', { error: error.message });
-            
+
             // Re-queue failed entries for retry
             this.queue = [...entriesToFlush, ...this.queue];
             this.stats.failedBatches++;
-            
+
             this.emit('error', error);
             result.failed = entriesToFlush.length;
         } finally {
             this.isFlushing = false;
         }
-        
+
         return result;
     }
 
@@ -219,13 +217,13 @@ class HistoryBatcher extends EventEmitter {
         if (entries.length === 0) {
             return { flushed: 0, failed: 0 };
         }
-        
+
         const db = getDatabaseManager();
-        
+
         let flushed = 0;
         let failed = 0;
         let retries = 0;
-        
+
         while (retries < this.config.maxRetries) {
             try {
                 // Use transaction for atomic batch insert
@@ -235,7 +233,7 @@ class HistoryBatcher extends EventEmitter {
                         `INSERT INTO history (guild_id, user_id, track_title, track_author, track_url, track_duration)
                          VALUES (?, ?, ?, ?, ?, ?)`
                     );
-                    
+
                     for (const entry of entries) {
                         try {
                             stmt.run(
@@ -248,35 +246,33 @@ class HistoryBatcher extends EventEmitter {
                             );
                             flushed++;
                         } catch (err) {
-                            logger.warn('Failed to insert history entry', { 
-                                entry: entry.trackTitle, 
-                                error: err.message 
+                            logger.warn('Failed to insert history entry', {
+                                entry: entry.trackTitle,
+                                error: err.message
                             });
                             failed++;
                         }
                     }
                 });
-                
+
                 // Success - exit retry loop
                 break;
             } catch (error) {
                 retries++;
-                logger.warn(`Batch insert attempt ${retries} failed`, { 
-                    error: error.message 
+                logger.warn(`Batch insert attempt ${retries} failed`, {
+                    error: error.message
                 });
-                
+
                 if (retries < this.config.maxRetries) {
                     // Wait before retry
-                    await new Promise(resolve => 
-                        setTimeout(resolve, this.config.retryDelayMs * retries)
-                    );
+                    await new Promise(resolve => setTimeout(resolve, this.config.retryDelayMs * retries));
                 } else {
                     // Max retries reached
                     throw error;
                 }
             }
         }
-        
+
         return { flushed, failed };
     }
 
@@ -286,18 +282,18 @@ class HistoryBatcher extends EventEmitter {
      */
     async shutdown() {
         logger.info('HistoryBatcher shutting down...');
-        
+
         this.isShuttingDown = true;
         this.stop();
-        
+
         // Final flush
         const result = await this.flush();
-        
-        logger.info('HistoryBatcher shutdown complete', { 
+
+        logger.info('HistoryBatcher shutdown complete', {
             finalFlush: result,
             stats: this.getStats()
         });
-        
+
         return result;
     }
 
