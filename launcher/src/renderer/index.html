@@ -97,7 +97,11 @@
             </div>
 
             <nav class="sidebar-nav">
-                <button class="nav-item active" data-tab="lavalink">
+                <button class="nav-item active" data-tab="dashboard">
+                    <span class="nav-icon">📊</span>
+                    <span class="nav-text">Dashboard</span>
+                </button>
+                <button class="nav-item" data-tab="lavalink">
                     <span class="nav-icon">🎛️</span>
                     <span class="nav-text">Lavalink</span>
                     <span class="status-dot" id="lavalink-status-dot"></span>
@@ -127,8 +131,156 @@
 
         <!-- Main Content Area -->
         <main class="main-content">
+            <!-- Dashboard Tab -->
+            <section class="tab-content active" id="tab-dashboard">
+                <div class="tab-header">
+                    <h1>📊 Dashboard</h1>
+                    <div class="dashboard-quick-status">
+                        <span class="quick-status-item" id="quick-status-lavalink">
+                            <span class="status-indicator"></span>
+                            <span>Lavalink</span>
+                        </span>
+                        <span class="quick-status-item" id="quick-status-bot">
+                            <span class="status-indicator"></span>
+                            <span>Bot</span>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="tab-body dashboard-body">
+                    <!-- Service Status Cards -->
+                    <div class="dashboard-grid">
+                        <!-- Lavalink Status Card -->
+                        <div class="status-card" id="dashboard-lavalink-card">
+                            <div class="status-card-header">
+                                <span class="status-card-icon">🎛️</span>
+                                <h3>Lavalink Server</h3>
+                            </div>
+                            <div class="status-card-body">
+                                <div class="status-card-status" id="dashboard-lavalink-status">
+                                    <span class="status-indicator"></span>
+                                    <span class="status-text">Đã dừng</span>
+                                </div>
+                                <div class="status-card-uptime">
+                                    <span class="uptime-label">Uptime:</span>
+                                    <span class="uptime-value" id="dashboard-lavalink-uptime">--:--:--</span>
+                                </div>
+                            </div>
+                            <div class="status-card-actions">
+                                <button class="btn btn-sm btn-success" id="dashboard-btn-start-lavalink">
+                                    <span>▶️</span> Khởi động
+                                </button>
+                                <button class="btn btn-sm btn-danger" id="dashboard-btn-stop-lavalink" disabled>
+                                    <span>⏹️</span> Dừng
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Bot Status Card -->
+                        <div class="status-card" id="dashboard-bot-card">
+                            <div class="status-card-header">
+                                <span class="status-card-icon">🤖</span>
+                                <h3>Discord Bot</h3>
+                            </div>
+                            <div class="status-card-body">
+                                <div class="status-card-status" id="dashboard-bot-status">
+                                    <span class="status-indicator"></span>
+                                    <span class="status-text">Đã dừng</span>
+                                </div>
+                                <div class="status-card-uptime">
+                                    <span class="uptime-label">Uptime:</span>
+                                    <span class="uptime-value" id="dashboard-bot-uptime">--:--:--</span>
+                                </div>
+                            </div>
+                            <div class="status-card-actions">
+                                <button class="btn btn-sm btn-success" id="dashboard-btn-start-bot">
+                                    <span>▶️</span> Khởi động
+                                </button>
+                                <button class="btn btn-sm btn-danger" id="dashboard-btn-stop-bot" disabled>
+                                    <span>⏹️</span> Dừng
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Quick Actions Panel -->
+                    <div class="quick-actions-panel">
+                        <div class="panel-header">
+                            <h2>⚡ Hành động nhanh</h2>
+                            <p>Quản lý tất cả dịch vụ cùng lúc</p>
+                        </div>
+                        <div class="quick-actions-buttons">
+                            <button class="btn btn-success btn-lg" id="btn-start-all">
+                                <span class="btn-icon">🚀</span>
+                                <span class="btn-text">Khởi động tất cả</span>
+                            </button>
+                            <button class="btn btn-danger btn-lg" id="btn-stop-all" disabled>
+                                <span class="btn-icon">⏹️</span>
+                                <span class="btn-text">Dừng tất cả</span>
+                            </button>
+                            <button class="btn btn-warning btn-lg" id="btn-restart-all" disabled>
+                                <span class="btn-icon">🔄</span>
+                                <span class="btn-text">Khởi động lại tất cả</span>
+                            </button>
+                        </div>
+                        <div class="quick-actions-progress hidden" id="quick-actions-progress">
+                            <div class="progress-bar">
+                                <div class="progress-fill" id="quick-actions-progress-fill"></div>
+                            </div>
+                            <p class="progress-text" id="quick-actions-progress-text">Đang xử lý...</p>
+                        </div>
+                    </div>
+
+                    <!-- Recent Logs Preview -->
+                    <div class="recent-logs-panel">
+                        <div class="panel-header">
+                            <h2>📜 Logs gần đây</h2>
+                        </div>
+                        <div class="recent-logs-container">
+                            <!-- Lavalink Logs -->
+                            <div class="recent-logs-section">
+                                <div class="recent-logs-header">
+                                    <span>🎛️ Lavalink</span>
+                                    <button class="btn btn-sm btn-secondary" id="btn-view-all-lavalink-logs">
+                                        Xem tất cả →
+                                    </button>
+                                </div>
+                                <div class="recent-logs-content" id="recent-lavalink-logs">
+                                    <div class="no-logs">Chưa có logs</div>
+                                </div>
+                            </div>
+                            <!-- Bot Logs -->
+                            <div class="recent-logs-section">
+                                <div class="recent-logs-header">
+                                    <span>🤖 Bot</span>
+                                    <button class="btn btn-sm btn-secondary" id="btn-view-all-bot-logs">
+                                        Xem tất cả →
+                                    </button>
+                                </div>
+                                <div class="recent-logs-content" id="recent-bot-logs">
+                                    <div class="no-logs">Chưa có logs</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Pre-flight Checks Panel -->
+                    <div class="preflight-panel hidden" id="preflight-panel">
+                        <div class="panel-header">
+                            <h2>🔍 Kiểm tra trước khi khởi động</h2>
+                            <button class="btn btn-sm btn-secondary" id="btn-run-preflight">
+                                <span>🔄</span> Kiểm tra lại
+                            </button>
+                        </div>
+                        <div class="preflight-checks" id="preflight-checks">
+                            <!-- Checks will be added dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </section>
+
             <!-- Lavalink Tab -->
-            <section class="tab-content active" id="tab-lavalink">
+            <section class="tab-content" id="tab-lavalink">
                 <div class="tab-header">
                     <h1>🎛️ Lavalink Server</h1>
                     <div class="status-badge" id="lavalink-status-badge">
@@ -157,13 +309,37 @@
 
                     <div class="terminal-container">
                         <div class="terminal-header">
-                            <div class="terminal-dots">
-                                <span class="terminal-dot red"></span>
-                                <span class="terminal-dot yellow"></span>
-                                <span class="terminal-dot green"></span>
+                            <div class="terminal-header-left">
+                                <div class="terminal-dots">
+                                    <span class="terminal-dot red"></span>
+                                    <span class="terminal-dot yellow"></span>
+                                    <span class="terminal-dot green"></span>
+                                </div>
+                                <span class="terminal-title">📟 Lavalink Terminal</span>
                             </div>
-                            <span class="terminal-title">📟 Lavalink Terminal</span>
-                            <button class="btn btn-sm btn-secondary" id="btn-clear-lavalink-terminal">Xóa</button>
+                            <div class="terminal-header-center">
+                                <div class="terminal-search" id="lavalink-terminal-search">
+                                    <input type="text" class="terminal-search-input" placeholder="🔍 Tìm kiếm logs..." id="lavalink-search-input">
+                                    <div class="terminal-search-nav">
+                                        <span class="search-count" id="lavalink-search-count"></span>
+                                        <button class="btn-icon-only" id="lavalink-search-prev" title="Kết quả trước">▲</button>
+                                        <button class="btn-icon-only" id="lavalink-search-next" title="Kết quả sau">▼</button>
+                                    </div>
+                                </div>
+                                <div class="terminal-filter">
+                                    <select class="terminal-filter-select" id="lavalink-filter-select">
+                                        <option value="all">Tất cả</option>
+                                        <option value="info">INFO</option>
+                                        <option value="warn">WARN</option>
+                                        <option value="error">ERROR</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="terminal-header-right">
+                                <button class="btn btn-sm btn-secondary" id="btn-copy-lavalink-terminal" title="Sao chép logs">📋</button>
+                                <button class="btn btn-sm btn-secondary" id="btn-export-lavalink-terminal" title="Xuất logs">💾</button>
+                                <button class="btn btn-sm btn-secondary" id="btn-clear-lavalink-terminal" title="Xóa terminal">🗑️</button>
+                            </div>
                         </div>
                         <div class="terminal-output" id="lavalink-terminal">
                             <div class="terminal-welcome">Chưa có output. Nhấn "Khởi động Lavalink" để bắt đầu.</div>
@@ -206,13 +382,37 @@
 
                     <div class="terminal-container">
                         <div class="terminal-header">
-                            <div class="terminal-dots">
-                                <span class="terminal-dot red"></span>
-                                <span class="terminal-dot yellow"></span>
-                                <span class="terminal-dot green"></span>
+                            <div class="terminal-header-left">
+                                <div class="terminal-dots">
+                                    <span class="terminal-dot red"></span>
+                                    <span class="terminal-dot yellow"></span>
+                                    <span class="terminal-dot green"></span>
+                                </div>
+                                <span class="terminal-title">📟 Bot Terminal</span>
                             </div>
-                            <span class="terminal-title">📟 Bot Terminal</span>
-                            <button class="btn btn-sm btn-secondary" id="btn-clear-bot-terminal">Xóa</button>
+                            <div class="terminal-header-center">
+                                <div class="terminal-search" id="bot-terminal-search">
+                                    <input type="text" class="terminal-search-input" placeholder="🔍 Tìm kiếm logs..." id="bot-search-input">
+                                    <div class="terminal-search-nav">
+                                        <span class="search-count" id="bot-search-count"></span>
+                                        <button class="btn-icon-only" id="bot-search-prev" title="Kết quả trước">▲</button>
+                                        <button class="btn-icon-only" id="bot-search-next" title="Kết quả sau">▼</button>
+                                    </div>
+                                </div>
+                                <div class="terminal-filter">
+                                    <select class="terminal-filter-select" id="bot-filter-select">
+                                        <option value="all">Tất cả</option>
+                                        <option value="info">INFO</option>
+                                        <option value="warn">WARN</option>
+                                        <option value="error">ERROR</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="terminal-header-right">
+                                <button class="btn btn-sm btn-secondary" id="btn-copy-bot-terminal" title="Sao chép logs">📋</button>
+                                <button class="btn btn-sm btn-secondary" id="btn-export-bot-terminal" title="Xuất logs">💾</button>
+                                <button class="btn btn-sm btn-secondary" id="btn-clear-bot-terminal" title="Xóa terminal">🗑️</button>
+                            </div>
                         </div>
                         <div class="terminal-output" id="bot-terminal">
                             <div class="terminal-welcome">Chưa có output. Nhấn "Khởi động Bot" để bắt đầu.</div>
@@ -235,20 +435,55 @@
                             <p>Chỉnh sửa file cấu hình .env của bot</p>
                         </div>
                         
-                        <div class="env-editor-container">
-                            <div class="env-editor-toolbar">
-                                <button class="btn btn-secondary" id="btn-reload-env">
-                                    <span>🔄</span> Tải lại
-                                </button>
-                                <button class="btn btn-success" id="btn-save-env">
-                                    <span>💾</span> Lưu thay đổi
+                        <!-- P4-05: Validation UI -->
+                        <div class="env-validation-panel" id="env-validation-panel">
+                            <div class="validation-header">
+                                <span class="validation-title">🔍 Trạng thái cấu hình</span>
+                                <button class="btn btn-sm btn-secondary" id="btn-validate-env">
+                                    <span>🔄</span> Kiểm tra
                                 </button>
                             </div>
+                            <div class="validation-content" id="env-validation-content">
+                                <!-- Validation results will be added dynamically -->
+                            </div>
+                        </div>
+                        
+                        <div class="env-editor-container">
+                            <div class="env-editor-toolbar">
+                                <div class="env-editor-toolbar-left">
+                                    <button class="btn btn-secondary" id="btn-reload-env">
+                                        <span>🔄</span> Tải lại
+                                    </button>
+                                    <button class="btn btn-success" id="btn-save-env">
+                                        <span>💾</span> Lưu thay đổi
+                                    </button>
+                                </div>
+                                <div class="env-editor-toolbar-right">
+                                    <!-- P4-03: Toggle visibility button -->
+                                    <button class="btn btn-secondary" id="btn-toggle-all-visibility" title="Ẩn/Hiện tất cả mật khẩu">
+                                        <span id="visibility-icon">👁️</span>
+                                        <span id="visibility-text">Hiện tất cả</span>
+                                    </button>
+                                    <!-- P4-08: Import from .env.example -->
+                                    <button class="btn btn-secondary" id="btn-import-env-example" title="Import từ .env.example">
+                                        <span>📥</span> Import .env.example
+                                    </button>
+                                </div>
+                            </div>
                             <div class="env-editor-status" id="env-editor-status"></div>
-                            <textarea class="env-editor" id="env-editor" placeholder="Đang tải file .env..."></textarea>
+                            
+                            <!-- P4-02, P4-03: Enhanced .env editor with masking -->
+                            <div class="env-editor-enhanced" id="env-editor-enhanced">
+                                <!-- Dynamic env lines will be added here -->
+                            </div>
+                            
+                            <!-- Fallback raw editor (hidden by default) -->
+                            <textarea class="env-editor hidden" id="env-editor" placeholder="Đang tải file .env..."></textarea>
+                            
                             <div class="env-editor-hint">
                                 <p>💡 Mẹo: Các dòng bắt đầu bằng # là comment và sẽ bị bỏ qua.</p>
                                 <p>⚠️ Lưu ý: Khởi động lại bot sau khi thay đổi cấu hình để áp dụng.</p>
+                                <p>🔒 Bảo mật: Các giá trị nhạy cảm (TOKEN, SECRET, KEY...) được ẩn tự động.</p>
                             </div>
                         </div>
                     </div>
@@ -270,6 +505,173 @@
                             </button>
                             <div class="directory-note">
                                 <p>Yêu cầu: Miyao Bot phiên bản ≥ 1.4.0</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- P7-01: Database Backup Section -->
+                    <div class="settings-section">
+                        <div class="section-header">
+                            <h2>💾 Sao lưu Database</h2>
+                            <p>Quản lý sao lưu và khôi phục dữ liệu bot</p>
+                        </div>
+                        
+                        <!-- Database Info -->
+                        <div class="database-info" id="database-info">
+                            <div class="database-info-header">
+                                <span class="database-icon">🗃️</span>
+                                <div class="database-details">
+                                    <span class="database-label">Database hiện tại</span>
+                                    <span class="database-path" id="database-path">Đang tải...</span>
+                                </div>
+                                <div class="database-stats">
+                                    <span class="database-size" id="database-size">--</span>
+                                    <span class="database-modified" id="database-modified">--</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Backup Actions -->
+                        <div class="backup-actions">
+                            <button class="btn btn-success" id="btn-create-backup">
+                                <span>📦</span> Tạo Backup
+                            </button>
+                            <button class="btn btn-secondary" id="btn-import-backup">
+                                <span>📥</span> Nhập Backup
+                            </button>
+                            <button class="btn btn-secondary" id="btn-export-current-db">
+                                <span>📤</span> Xuất Database
+                            </button>
+                            <button class="btn btn-secondary" id="btn-refresh-backups">
+                                <span>🔄</span> Làm mới
+                            </button>
+                        </div>
+                        
+                        <!-- Backup List -->
+                        <div class="backup-list-container">
+                            <div class="backup-list-header">
+                                <span class="backup-list-title">📋 Danh sách Backup</span>
+                                <span class="backup-count" id="backup-count">0 backup</span>
+                            </div>
+                            <div class="backup-list" id="backup-list">
+                                <div class="backup-empty">Chưa có backup nào. Nhấn "Tạo Backup" để bắt đầu.</div>
+                            </div>
+                        </div>
+                        
+                        <div class="backup-hint">
+                            <p>💡 Mẹo: Nên tạo backup trước khi cập nhật bot hoặc thay đổi cấu hình quan trọng.</p>
+                            <p>⚠️ Lưu ý: Dừng bot trước khi khôi phục backup để tránh xung đột dữ liệu.</p>
+                            <p>📁 Backup được lưu tại: <code>data/backups/</code></p>
+                        </div>
+                    </div>
+                    
+                    <!-- P5-08: Auto-restart Settings -->
+                    <div class="settings-section">
+                        <div class="section-header">
+                            <h2>🔄 Tự động khởi động lại</h2>
+                            <p>Cấu hình tự động khởi động lại khi dịch vụ bị crash</p>
+                        </div>
+                        
+                        <div class="auto-restart-settings">
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <span class="setting-label">Tự động khởi động lại Lavalink</span>
+                                    <span class="setting-desc">Tự động khởi động lại khi Lavalink bị crash (tối đa 3 lần)</span>
+                                </div>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="toggle-auto-restart-lavalink">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <span class="setting-label">Tự động khởi động lại Bot</span>
+                                    <span class="setting-desc">Tự động khởi động lại khi Bot bị crash (tối đa 3 lần)</span>
+                                </div>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="toggle-auto-restart-bot">
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- P6-01 to P6-05: System Tray & Notifications Settings -->
+                    <div class="settings-section">
+                        <div class="section-header">
+                            <h2>🖥️ Khay hệ thống & Thông báo</h2>
+                            <p>Cấu hình hành vi thu nhỏ và thông báo</p>
+                        </div>
+                        
+                        <div class="auto-restart-settings">
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <span class="setting-label">Thu nhỏ xuống khay hệ thống</span>
+                                    <span class="setting-desc">Thu nhỏ ứng dụng vào khay hệ thống thay vì thanh taskbar</span>
+                                </div>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="toggle-minimize-to-tray" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <span class="setting-label">Đóng xuống khay hệ thống</span>
+                                    <span class="setting-desc">Khi nhấn nút đóng, ẩn ứng dụng vào khay thay vì thoát hoàn toàn</span>
+                                </div>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="toggle-close-to-tray" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                            <div class="setting-row">
+                                <div class="setting-info">
+                                    <span class="setting-label">Bật thông báo desktop</span>
+                                    <span class="setting-desc">Hiển thị thông báo khi dịch vụ khởi động/dừng hoặc có lỗi</span>
+                                </div>
+                                <label class="toggle-switch">
+                                    <input type="checkbox" id="toggle-notifications" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- P6-06, P6-07: Keyboard Shortcuts Reference -->
+                    <div class="settings-section">
+                        <div class="section-header">
+                            <h2>⌨️ Phím tắt</h2>
+                            <p>Các phím tắt để điều khiển nhanh launcher</p>
+                        </div>
+                        
+                        <div class="shortcuts-list">
+                            <div class="shortcut-item">
+                                <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>1</kbd>-<kbd>5</kbd></span>
+                                <span class="shortcut-desc">Chuyển tab (Dashboard, Lavalink, Bot, Settings, Info)</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>L</kbd></span>
+                                <span class="shortcut-desc">Bật/Tắt Lavalink</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>B</kbd></span>
+                                <span class="shortcut-desc">Bật/Tắt Bot</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>A</kbd></span>
+                                <span class="shortcut-desc">Khởi động tất cả</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>S</kbd></span>
+                                <span class="shortcut-desc">Lưu file .env (trong tab Settings)</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>F</kbd></span>
+                                <span class="shortcut-desc">Focus vào ô tìm kiếm terminal</span>
+                            </div>
+                            <div class="shortcut-item">
+                                <span class="shortcut-keys"><kbd>F5</kbd></span>
+                                <span class="shortcut-desc">Làm mới trạng thái / Chạy pre-flight checks</span>
                             </div>
                         </div>
                     </div>

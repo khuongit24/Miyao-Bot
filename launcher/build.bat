@@ -1,6 +1,6 @@
 @echo off
 REM ========================================
-REM Miyao Launcher Build Script v1.1.0
+REM Miyao Launcher Build Script v1.2.0
 REM Build application to executable
 REM ========================================
 
@@ -9,7 +9,7 @@ title Miyao Launcher Builder
 echo.
 echo ========================================
 echo   MIYAO LAUNCHER BUILD SCRIPT
-echo   Version 1.1.0 - Aurora
+echo   Version 1.2.0 - Celestia
 echo ========================================
 echo.
 
