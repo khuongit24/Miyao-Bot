@@ -35,7 +35,7 @@
     "cors": "^2.8.5",
     "discord.js": "^14.22.1",
     "dotenv": "^16.4.7",
-    "express": "^4.18.2",
+    "express": "^4.22.1",
     "express-rate-limit": "^8.1.0",
     "helmet": "^8.1.0",
     "shoukaku": "^4.1.1",
