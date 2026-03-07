@@ -1,6 +1,6 @@
 server:
   port: 2333
-  address: 0.0.0.0
+  address: 127.0.0.1
   http2:
     enabled: false
 
@@ -10,59 +10,135 @@ plugins:
     allowSearch: true # Allow ytsearch: and ytmsearch:
     allowDirectVideoIds: true # Allow direct video IDs
     allowDirectPlaylistIds: true # Allow direct playlist IDs
-    # Clients are queried in the order they are given
-    # Using multiple clients for redundancy
+    # Clients are queried in the order they are given.
+    # Keep this list up-to-date with youtube-source releases.
+    # See: https://github.com/lavalink-devs/youtube-source#available-clients
+    #
+    # CLIENT STATUS (Feb 2026):
+    # - TVHTML5_SIMPLY: NEW client (post-1.17.0). Playback + Video + Playlist.
+    #   Does NOT require OAuth. Best primary playback client.
+    # - MUSIC: Search only (ytmsearch:). No playback. No OAuth needed.
+    # - ANDROID_VR: Playback + Search + Playlist. Needs OAuth.
+    # - WEB: Playback + Search + Playlist. Needs cipher/OAuth.
+    # - WEBEMBEDDED: Playback only. Needs cipher. Limited but good backup.
+    #
+    # DEAD CLIENTS (do NOT use):
+    # - TVHTML5_SIMPLY_EMBEDDED_PLAYER: Killed by YouTube Jan 2026.
+    #   "YouTube is no longer supported in this application or device."
+    # - IOS: Returns "This video is unavailable"
+    # - MWEB: Frequently returns "This video requires login"
+    # === CLIENT ORDER (v1.11.0) ===
+    # CRITICAL: Thứ tự quyết định client nào được thử trước.
+    # Nguyên tắc v1.11.0: NO-AUTH clients trước, AUTH clients sau.
     clients:
-      - MUSIC          # YouTube Music - best for music search
-      - ANDROID_VR     # Android VR - good fallback
-      - WEB            # Web client - general purpose
-      - WEBEMBEDDED    # Web embedded - for playback
-      - TVHTML5EMBEDDED # TV HTML5 - additional fallback
+      - TVHTML5_SIMPLY     # [1] PRIMARY: Video+Search+Playlist+Mix. NO OAuth, NO Cipher.
+      - MUSIC              # [2] SEARCH: YouTube Music search (ytmsearch:). NO OAuth.
+      - ANDROID_VR         # [3] BACKUP: Full features. Needs OAuth.
+      - WEB                # [4] BACKUP: Full features. Needs OAuth + Cipher.
+    # =====================================================================
+    # OAuth Setup (REQUIRED as of Jan 2026)
+    # =====================================================================
+    # YouTube now requires authentication for ALL playback clients.
+    # Without OAuth, you WILL get "This video requires login" errors.
+    #
+    # FIRST-TIME SETUP:
+    # 1. Set YT_OAUTH_ENABLED=true in your .env file
+    # 2. Start Lavalink: java -jar Lavalink.jar
+    # 3. Watch the Lavalink terminal - it will print a URL and code
+    # 4. Open the URL in a browser, sign in with a BURNER Google account
+    # 5. Enter the code shown in the terminal
+    # 6. After success, Lavalink prints your refresh token in the log
+    # 7. Copy the refresh token and set YT_OAUTH_REFRESH_TOKEN=<token> in .env
+    # 8. Restart Lavalink — it will skip the OAuth flow and use the token directly
+    #
+    # WARNING: Use a BURNER Google account! Your account could get terminated!
+    # See: https://github.com/lavalink-devs/youtube-source#using-oauth-tokens
+    # =====================================================================
+    oauth:
+      enabled: ${YT_OAUTH_ENABLED:true}
+      refreshToken: "${YT_OAUTH_REFRESH_TOKEN:}"
+      skipInitialization: ${YT_OAUTH_SKIP_INIT:true}
+    # Optional poToken for WEB/WEBEMBEDDED clients (alternative to OAuth).
+    # Generate via: https://github.com/iv-org/youtube-trusted-session-generator
+    # See: https://github.com/lavalink-devs/youtube-source#using-a-potoken
+    pot:
+      token: "${YT_POTOKEN:}"
+      visitorData: "${YT_VISITOR_DATA:}"
+    # remoteCipher:
+    #   enabled: false
+    #   endpoint: "https://your-cipher-server.example.com"
+    #   # Required for WEB client without OAuth
+    #   # See: https://github.com/lavalink-devs/youtube-source#remote-cipher
   
   # LavaSrc plugin for Spotify, SoundCloud, Apple Music, and more
   # See: https://github.com/topi314/LavaSrc
   lavasrc:
+    # === PROVIDERS (Spotify mirror resolution order) ===
+    # Khi Spotify track cần resolve sang playable source:
     providers:
-      # Providers are tried in order. ISRC is a unique identifier for tracks
-      - "ytsearch:\"%ISRC%\"" # Try to find by ISRC first (YouTube search)
-      - "ytsearch:%QUERY%"    # Fallback to regular YouTube search
+      # Priority 1: Deezer ISRC (direct playback, không cần YouTube)
+      # Uncomment khi DEEZER_ENABLED=true
+      # - "dzisrc:%ISRC%"
+      
+      # Priority 2: YouTube ISRC search
+      - "ytsearch:\"%ISRC%\""
+      
+      # Priority 3: YouTube Music text search
+      - "ytmsearch:%QUERY%"
+      
+      # Priority 4: YouTube text search
+      - "ytsearch:%QUERY%"
+      
+      # Priority 5: SoundCloud text search (fallback)
+      # Uncomment để bật SoundCloud fallback cho Spotify mirror
+      # - "scsearch:%QUERY%"
+    
+    # === SOURCES ===
     sources:
-      spotify: true           # Enable Spotify source
-      applemusic: false       # Apple Music (requires API token)
-      deezer: false           # Deezer (requires ARL cookie)
-      yandexmusic: false      # Yandex Music
-      flowerytts: false       # Flowery TTS
-      youtube: false          # LavaSearch YouTube
-      vkmusic: false          # VK Music
-      tidal: false            # Tidal
-      qobuz: false            # Qobuz
-      ytdlp: false            # yt-dlp
-      jiosaavn: false         # JioSaavn
+      spotify: true                         # Spotify metadata + mirror
+      applemusic: false                     # Không dùng (cần Apple Dev account)
+      deezer: ${DEEZER_ENABLED:false}       # MỚI v1.11.0: Direct playback source
+      yandexmusic: false                    # Không dùng
+      flowerytts: false                     # Không dùng
+      youtube: false                        # LavaSrc YouTube search (dùng plugin riêng)
+      vkmusic: false                        # Không dùng
+      tidal: false                          # Không dùng
+      qobuz: false                          # Không dùng
+      ytdlp: false                          # Không dùng
+      jiosaavn: false                       # Không dùng
+    
+    # === LYRICS SOURCES ===
     lyrics-sources:
-      spotify: true           # Enable Spotify lyrics
-      deezer: false
+      spotify: true
+      deezer: ${DEEZER_ENABLED:false}       # MỚI v1.11.0: Deezer lyrics
       youtube: false
       yandexmusic: false
       vkmusic: false
-      lrcLib: false
+      lrcLib: false                          # Bot đã dùng LRCLIB riêng
+    
+    # === SPOTIFY CONFIG ===
     spotify:
-      # To use Spotify, you need clientId and clientSecret from:
-      # https://developer.spotify.com/dashboard/applications
       clientId: "${SPOTIFY_CLIENT_ID:}"
       clientSecret: "${SPOTIFY_CLIENT_SECRET:}"
-      # spDc: "${SPOTIFY_SP_DC:}"  # Optional: for lyrics API access
       countryCode: "US"
-      playlistLoadLimit: 6    # Pages at 100 tracks each
-      albumLoadLimit: 6       # Pages at 50 tracks each
+      playlistLoadLimit: 6
+      albumLoadLimit: 6
       resolveArtistsInSearch: true
       localFiles: false
+    
+    # === DEEZER CONFIG (MỚI v1.11.0) ===
+    # Chỉ hoạt động khi DEEZER_ENABLED=true
+    deezer:
+      arl: "${DEEZER_ARL:}"
+      # masterDecryptionKey: "${DEEZER_MASTER_KEY:}"   # Optional: premium quality
+      formats: ["MP3_128", "MP3_256", "MP3_320"]
 
 lavalink:
   plugins:
     - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.8.1"
       repository: "https://maven.lavalink.dev/releases"
   server:
-    password: "youshallnotpass"
+    password: "${LAVALINK_PASSWORD:youshallnotpass}"
     sources:
       youtube: false # IMPORTANT: Disable built-in deprecated YouTube source
       bandcamp: true
@@ -109,6 +185,8 @@ logging:
   level:
     root: INFO
     lavalink: INFO
+    # Required to see OAuth flow instructions and refresh token in terminal
+    dev.lavalink.youtube.http.YoutubeOauth2Handler: INFO
 
   logback:
     rollingpolicy:
