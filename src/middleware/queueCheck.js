@@ -7,7 +7,7 @@
  * that can be applied to commands that require an active queue or current track.
  */
 
-import { NothingPlayingError, EmptyQueueError } from '../utils/errors.js';
+import { NothingPlayingError, EmptyQueueError, InvalidPositionError } from '../utils/errors.js';
 
 /**
  * Check if there's an active queue for the guild
@@ -17,6 +17,11 @@ import { NothingPlayingError, EmptyQueueError } from '../utils/errors.js';
  * @returns {EnhancedQueue}
  */
 export function requireQueue(musicManager, guildId) {
+    // BUG-083: Guard against null musicManager to throw proper error type
+    if (!musicManager) {
+        throw new NothingPlayingError();
+    }
+
     const queue = musicManager.getQueue(guildId);
 
     if (!queue) {
@@ -36,7 +41,8 @@ export function requireQueue(musicManager, guildId) {
 export function requireCurrentTrack(musicManager, guildId) {
     const queue = requireQueue(musicManager, guildId);
 
-    if (!queue.current) {
+    // BUG-084: Also check that player exists, not just current track
+    if (!queue.current || !queue.player) {
         throw new NothingPlayingError();
     }
 
@@ -88,6 +94,7 @@ export function requireAnyTrack(musicManager, guildId) {
  * @returns {EnhancedQueue|null}
  */
 export function getQueueOrNull(musicManager, guildId) {
+    if (!musicManager) return null;
     return musicManager.getQueue(guildId) || null;
 }
 
@@ -96,16 +103,16 @@ export function getQueueOrNull(musicManager, guildId) {
  * @param {EnhancedQueue} queue - Music queue
  * @param {number} position - 1-based position
  * @param {string} action - Action name for error message
- * @throws {Error} If position is invalid
+ * @throws {InvalidPositionError} If position is invalid
  * @returns {number} 0-based index
  */
 export function validateQueuePosition(queue, position, action = 'perform action') {
     if (!Number.isInteger(position) || position < 1) {
-        throw new Error('Invalid position: must be a positive integer');
+        throw new InvalidPositionError(position, queue.tracks.length);
     }
 
     if (position > queue.tracks.length) {
-        throw new Error(`Position ${position} is out of range (max: ${queue.tracks.length})`);
+        throw new InvalidPositionError(position, queue.tracks.length);
     }
 
     return position - 1; // Convert to 0-based index

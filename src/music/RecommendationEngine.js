@@ -14,68 +14,14 @@
  * - YouTube Music recommendations (session-based, personalized)
  * - Netflix hybrid approach (collaborative + content-based)
  *
- * @version 1.0.0
+ * @version 2.0.0 - Refactored: extracted GenreMoodDetector
  */
 
 import { getDatabaseManager } from '../database/DatabaseManager.js';
 import History from '../database/models/History.js';
+import { escapeLikePattern } from '../database/helpers.js';
 import logger from '../utils/logger.js';
-
-/**
- * Genre patterns for detection
- * Maps keywords to canonical genre names
- */
-const GENRE_PATTERNS = {
-    kpop: [
-        'kpop',
-        'k-pop',
-        'korean',
-        'bts',
-        'blackpink',
-        'twice',
-        'exo',
-        'nct',
-        'aespa',
-        'stray kids',
-        'itzy',
-        'ive',
-        'newjeans',
-        '아이돌',
-        'kpop',
-        '케이팝'
-    ],
-    vpop: ['vpop', 'v-pop', 'việt', 'vietnamese', 'nhạc việt', 'nhạc trẻ', 'bolero'],
-    jpop: ['jpop', 'j-pop', 'japanese', 'anime', 'アニメ', 'jpop', 'j-pop', 'ost'],
-    cpop: ['cpop', 'c-pop', 'chinese', 'mandarin', '华语', '中文'],
-    pop: ['pop', 'top 40', 'mainstream', 'chart'],
-    hiphop: ['hip hop', 'hiphop', 'rap', 'trap', 'drill', 'boom bap', 'mumble'],
-    rnb: ['r&b', 'rnb', 'soul', 'neo soul', 'contemporary r&b'],
-    rock: ['rock', 'metal', 'punk', 'alternative', 'indie rock', 'grunge', 'hard rock'],
-    edm: ['edm', 'electronic', 'house', 'techno', 'dubstep', 'trance', 'bass', 'electro'],
-    lofi: ['lofi', 'lo-fi', 'chill', 'relaxing', 'study', 'chillhop'],
-    jazz: ['jazz', 'smooth jazz', 'bebop', 'swing'],
-    classical: ['classical', 'orchestra', 'symphony', 'piano', 'violin', 'baroque'],
-    acoustic: ['acoustic', 'unplugged', 'guitar', 'singer-songwriter'],
-    ballad: ['ballad', 'slow', 'romantic', 'love song', 'sad', 'emotional'],
-    dance: ['dance', 'club', 'disco', 'party'],
-    country: ['country', 'western', 'folk', 'bluegrass'],
-    latin: ['latin', 'reggaeton', 'salsa', 'bachata', 'cumbia'],
-    indie: ['indie', 'alternative', 'underground', 'independent']
-};
-
-/**
- * Mood patterns for detection
- */
-const MOOD_PATTERNS = {
-    energetic: ['energetic', 'upbeat', 'hype', 'pump', 'power', 'workout', 'gym', 'fast', 'intense'],
-    chill: ['chill', 'relaxing', 'calm', 'peaceful', 'mellow', 'easy', 'soft'],
-    happy: ['happy', 'cheerful', 'joyful', 'fun', 'feel good', 'positive', 'bright'],
-    sad: ['sad', 'emotional', 'heartbreak', 'melancholy', 'cry', 'tear', 'pain', 'lonely'],
-    romantic: ['love', 'romantic', 'passion', 'heart', 'together', 'you and me'],
-    focus: ['focus', 'study', 'concentration', 'work', 'productivity', 'ambient'],
-    party: ['party', 'club', 'dance', 'celebration', 'lit', 'turn up'],
-    night: ['night', 'late night', 'midnight', 'dark', 'nocturnal', 'after hours']
-};
+import { GenreMoodDetector, GENRE_PATTERNS, MOOD_PATTERNS, SKIP_PATTERNS } from './GenreMoodDetector.js';
 
 /**
  * Recommendation scoring weights
@@ -107,151 +53,40 @@ const CONFIG = {
 };
 
 /**
- * Skip patterns for filtering non-music content
- */
-const SKIP_PATTERNS = [
-    /#shorts?/i,
-    /\bshorts?\b/i,
-    /compilation/i,
-    /mix\s*20\d{2}/i,
-    /\d+\s*hour/i,
-    /top\s*\d+/i,
-    /best\s*of/i,
-    /playlist/i,
-    /reaction/i,
-    /interview/i,
-    /behind\s*the\s*scenes/i,
-    /making\s*of/i,
-    /tutorial/i,
-    /karaoke/i,
-    /slowed\s*\+?\s*reverb/i,
-    /sped\s*up/i,
-    /8d\s*audio/i,
-    /bass\s*boosted/i,
-    /nightcore/i
-];
-
-/**
  * RecommendationEngine class
  * Provides unified recommendation logic for autoplay, similar, and discover features
  */
 class RecommendationEngine {
     constructor() {
-        this._genreCache = new Map();
-        this._moodCache = new Map();
-        this._artistCache = new Map();
+        /** @type {GenreMoodDetector} Delegated content analysis */
+        this._detector = new GenreMoodDetector({
+            minTrackDuration: CONFIG.MIN_TRACK_DURATION,
+            maxTrackDuration: CONFIG.MAX_TRACK_DURATION
+        });
     }
 
-    /**
-     * Detect genre from track title and artist
-     * @param {string} title - Track title
-     * @param {string} artist - Track artist
-     * @returns {string|null} Detected genre or null
-     */
+    // ==================================================
+    // Content Analysis (delegated to GenreMoodDetector)
+    // ==================================================
+
+    /** @see GenreMoodDetector#detectGenre */
     detectGenre(title, artist) {
-        const cacheKey = `${title}|${artist}`.toLowerCase();
-        if (this._genreCache.has(cacheKey)) {
-            return this._genreCache.get(cacheKey);
-        }
-
-        const combined = `${title} ${artist}`.toLowerCase();
-
-        for (const [genre, patterns] of Object.entries(GENRE_PATTERNS)) {
-            if (patterns.some(p => combined.includes(p))) {
-                this._genreCache.set(cacheKey, genre);
-                // Keep cache size manageable
-                if (this._genreCache.size > 1000) {
-                    const firstKey = this._genreCache.keys().next().value;
-                    this._genreCache.delete(firstKey);
-                }
-                return genre;
-            }
-        }
-
-        this._genreCache.set(cacheKey, null);
-        return null;
+        return this._detector.detectGenre(title, artist);
     }
 
-    /**
-     * Detect mood from track title
-     * @param {string} title - Track title
-     * @returns {string|null} Detected mood or null
-     */
+    /** @see GenreMoodDetector#detectMood */
     detectMood(title) {
-        if (this._moodCache.has(title)) {
-            return this._moodCache.get(title);
-        }
-
-        const titleLower = title.toLowerCase();
-
-        for (const [mood, patterns] of Object.entries(MOOD_PATTERNS)) {
-            if (patterns.some(p => titleLower.includes(p))) {
-                this._moodCache.set(title, mood);
-                if (this._moodCache.size > 1000) {
-                    const firstKey = this._moodCache.keys().next().value;
-                    this._moodCache.delete(firstKey);
-                }
-                return mood;
-            }
-        }
-
-        this._moodCache.set(title, null);
-        return null;
+        return this._detector.detectMood(title);
     }
 
-    /**
-     * Clean artist name for comparison
-     * @param {string} artist - Raw artist name
-     * @returns {string} Cleaned artist name
-     */
+    /** @see GenreMoodDetector#cleanArtistName */
     cleanArtistName(artist) {
-        if (!artist) return '';
-
-        const cacheKey = artist;
-        if (this._artistCache.has(cacheKey)) {
-            return this._artistCache.get(cacheKey);
-        }
-
-        const cleaned = artist
-            .replace(/\s*-\s*Topic$/i, '')
-            .replace(/VEVO$/i, '')
-            .replace(/\s*(Official|Channel|Music|Records|Entertainment)$/gi, '')
-            .replace(/\s*\(.*?\)/g, '')
-            .trim();
-
-        this._artistCache.set(cacheKey, cleaned);
-        if (this._artistCache.size > 500) {
-            const firstKey = this._artistCache.keys().next().value;
-            this._artistCache.delete(firstKey);
-        }
-
-        return cleaned;
+        return this._detector.cleanArtistName(artist);
     }
 
-    /**
-     * Check if track should be skipped
-     * @param {Object} track - Track object with info property
-     * @returns {boolean} True if should skip
-     */
+    /** @see GenreMoodDetector#shouldSkipTrack */
     shouldSkipTrack(track) {
-        if (!track?.info) return true;
-
-        const { title, length, isStream } = track.info;
-
-        // Skip streams
-        if (isStream) return true;
-
-        // Skip invalid duration
-        if (!length || length < CONFIG.MIN_TRACK_DURATION || length > CONFIG.MAX_TRACK_DURATION) {
-            return true;
-        }
-
-        // Skip non-music content
-        if (title && SKIP_PATTERNS.some(pattern => pattern.test(title))) {
-            return true;
-        }
-
-        return false;
+        return this._detector.shouldSkipTrack(track);
     }
 
     /**
@@ -268,15 +103,16 @@ class RecommendationEngine {
     getCollaborativeRecommendations(guildId, trackUrl, trackTitle, seenUrls = new Set(), limit = 10) {
         try {
             const db = getDatabaseManager();
+            const escapedTitle = escapeLikePattern((trackTitle || '').substring(0, 20));
 
             // Find users who played this track or similar title
             const usersWhoPlayed = db.query(
                 `SELECT DISTINCT user_id FROM history
                  WHERE guild_id = ?
-                 AND (track_url = ? OR track_title LIKE ?)
-                 AND played_at > datetime('now', '-${CONFIG.MAX_HISTORY_DAYS} days')
+                 AND (track_url = ? OR track_title LIKE ? ESCAPE '\\')
+                 AND played_at > datetime('now', '-' || ? || ' days')
                  LIMIT 100`,
-                [guildId, trackUrl, `%${trackTitle.substring(0, 20)}%`]
+                [guildId, trackUrl, `%${escapedTitle}%`, String(CONFIG.MAX_HISTORY_DAYS)]
             );
 
             if (usersWhoPlayed.length === 0) {
@@ -297,12 +133,19 @@ class RecommendationEngine {
                  WHERE guild_id = ?
                  AND user_id IN (${placeholders})
                  AND track_url != ?
-                 AND played_at > datetime('now', '-${CONFIG.MAX_HISTORY_DAYS} days')
+                 AND played_at > datetime('now', '-' || ? || ' days')
                  GROUP BY track_url
-                 HAVING listener_overlap >= ${CONFIG.MIN_LISTENERS_FOR_COLLAB}
+                 HAVING listener_overlap >= ?
                  ORDER BY listener_overlap DESC, play_count DESC
                  LIMIT ?`,
-                [guildId, ...userIds, trackUrl, limit * 3]
+                [
+                    guildId,
+                    ...userIds,
+                    trackUrl,
+                    String(CONFIG.MAX_HISTORY_DAYS),
+                    CONFIG.MIN_LISTENERS_FOR_COLLAB,
+                    limit * 3
+                ]
             );
 
             const results = [];
@@ -408,11 +251,11 @@ class RecommendationEngine {
                 `SELECT track_title, track_author, track_url, COUNT(*) as play_count
                  FROM history
                  WHERE user_id = ? ${guildFilter}
-                 AND played_at > datetime('now', '-${CONFIG.MAX_HISTORY_DAYS} days')
+                 AND played_at > datetime('now', '-' || ? || ' days')
                  GROUP BY track_url
                  ORDER BY play_count DESC
                  LIMIT 20`,
-                params
+                [...params, String(CONFIG.MAX_HISTORY_DAYS)]
             );
 
             // Analyze genres
@@ -470,9 +313,9 @@ class RecommendationEngine {
             const userTracks = db.query(
                 `SELECT DISTINCT track_url FROM history
                  WHERE guild_id = ? AND user_id = ?
-                 AND played_at > datetime('now', '-${CONFIG.MAX_HISTORY_DAYS} days')
+                 AND played_at > datetime('now', '-' || ? || ' days')
                  LIMIT 100`,
-                [guildId, userId]
+                [guildId, userId, String(CONFIG.MAX_HISTORY_DAYS)]
             );
 
             if (userTracks.length === 0) {
@@ -489,12 +332,12 @@ class RecommendationEngine {
                  WHERE guild_id = ?
                  AND user_id != ?
                  AND track_url IN (${placeholders})
-                 AND played_at > datetime('now', '-${CONFIG.MAX_HISTORY_DAYS} days')
+                 AND played_at > datetime('now', '-' || ? || ' days')
                  GROUP BY user_id
                  HAVING overlap_count >= 2
                  ORDER BY overlap_count DESC
                  LIMIT ?`,
-                [guildId, userId, ...trackUrls, limit]
+                [guildId, userId, ...trackUrls, String(CONFIG.MAX_HISTORY_DAYS), limit]
             );
 
             return similarUsers.map(u => ({
@@ -596,58 +439,9 @@ class RecommendationEngine {
         return strategies;
     }
 
-    /**
-     * Extract meaningful keywords from title
-     * @param {string} title - Track title
-     * @returns {Array} Keywords
-     */
+    /** @see GenreMoodDetector#extractTitleKeywords */
     extractTitleKeywords(title) {
-        const stopWords = new Set([
-            'official',
-            'video',
-            'audio',
-            'lyrics',
-            'mv',
-            'hd',
-            '4k',
-            'ft',
-            'feat',
-            'the',
-            'a',
-            'an',
-            'and',
-            'or',
-            'but',
-            'in',
-            'on',
-            'at',
-            'to',
-            'for',
-            'of',
-            'with',
-            'by',
-            'is',
-            'it',
-            'this',
-            'that',
-            'từ',
-            'và',
-            'của',
-            'music',
-            'song',
-            'track',
-            'single',
-            'album',
-            'new',
-            'version'
-        ]);
-
-        return title
-            .toLowerCase()
-            .replace(/[^\w\s\u00C0-\u024F\u1E00-\u1EFF]/g, ' ')
-            .split(/\s+/)
-            .filter(word => word.length > 2 && !stopWords.has(word))
-            .slice(0, 5);
+        return this._detector.extractTitleKeywords(title);
     }
 
     /**
@@ -659,8 +453,8 @@ class RecommendationEngine {
      * @returns {Array} Diversified tracks
      */
     applyDiversity(tracks, options = {}) {
-        const maxPerArtist = options.maxPerArtist || CONFIG.MAX_TRACKS_PER_ARTIST;
-        const serendipityChance = options.serendipity || CONFIG.SERENDIPITY_THRESHOLD;
+        const maxPerArtist = options.maxPerArtist ?? CONFIG.MAX_TRACKS_PER_ARTIST;
+        const serendipityChance = options.serendipity ?? CONFIG.SERENDIPITY_THRESHOLD;
 
         const artistCounts = new Map();
         const diversified = [];
@@ -721,11 +515,14 @@ class RecommendationEngine {
             }
 
             // Artist similarity
-            if (refArtist && trackArtist) {
+            if (refArtist?.trim() && trackArtist?.trim()) {
                 if (refArtist.toLowerCase() === trackArtist.toLowerCase()) {
                     score += SCORING_WEIGHTS.ARTIST_SAME;
-                } else if (trackArtist.toLowerCase().includes(refArtist.toLowerCase().split(' ')[0])) {
-                    score += SCORING_WEIGHTS.ARTIST_SIMILAR;
+                } else {
+                    const refFirstWord = refArtist.toLowerCase().split(' ')[0];
+                    if (refFirstWord && trackArtist.toLowerCase().includes(refFirstWord)) {
+                        score += SCORING_WEIGHTS.ARTIST_SIMILAR;
+                    }
                 }
             }
 
@@ -733,10 +530,10 @@ class RecommendationEngine {
             if (userProfile?.topGenres?.includes(trackGenre)) {
                 score += SCORING_WEIGHTS.GENRE_MATCH * 0.5;
             }
+            const trackArtistFirstWord = trackArtist?.trim()?.toLowerCase().split(' ')[0] || '';
             if (
-                userProfile?.topArtists?.some(a =>
-                    a.toLowerCase().includes(trackArtist?.toLowerCase().split(' ')[0] || '')
-                )
+                trackArtistFirstWord &&
+                userProfile?.topArtists?.some(a => a.toLowerCase().includes(trackArtistFirstWord))
             ) {
                 score += SCORING_WEIGHTS.ARTIST_SIMILAR;
             }
@@ -777,6 +574,16 @@ class RecommendationEngine {
 
         const allRecommendations = [];
         const localSeenUrls = new Set(seenUrls);
+
+        // BUG-H07: Content-only recommendation path is intentionally not implemented yet.
+        // Keep behavior explicit to avoid silent assumptions in callers.
+        if (source === 'content') {
+            logger.info('RecommendationEngine: content-based source requested but not implemented', {
+                guildId,
+                userId
+            });
+            return [];
+        }
 
         // Exclude reference track
         if (referenceTrack?.info?.uri) {
@@ -847,9 +654,7 @@ class RecommendationEngine {
      * Clear caches (for memory management)
      */
     clearCaches() {
-        this._genreCache.clear();
-        this._moodCache.clear();
-        this._artistCache.clear();
+        this._detector.clearCaches();
         logger.debug('RecommendationEngine caches cleared');
     }
 
@@ -858,11 +663,7 @@ class RecommendationEngine {
      * @returns {Object} Cache stats
      */
     getStats() {
-        return {
-            genreCacheSize: this._genreCache.size,
-            moodCacheSize: this._moodCache.size,
-            artistCacheSize: this._artistCache.size
-        };
+        return this._detector.getCacheStats();
     }
 }
 

@@ -6,12 +6,12 @@
 export const VERSION = {
     // Main version
     major: 1,
-    minor: 8,
-    patch: 5,
+    minor: 11,
+    patch: 4,
 
     // Build info
-    build: '2025.12.04',
-    codename: 'Seraphina',
+    build: '1.11.4.20260307.build:stable',
+    codename: 'Kaizen',
 
     // Full version string
     get full() {
@@ -73,21 +73,6 @@ export const ENVIRONMENT = {
     }
 };
 
-// Release notes for this version
-export const RELEASE_NOTES = {
-    version: VERSION.full,
-    date: '2025-12-02',
-    changes: [
-        { type: 'fixed', description: 'Seek command now allows seeking to 0:00 (start of track)' },
-        { type: 'fixed', description: 'History replay menu validates entries before creating SelectMenu' },
-        { type: 'fixed', description: 'Queue commands now handle undefined track info gracefully' },
-        { type: 'fixed', description: 'Playlist play command handles connection failures gracefully' },
-        { type: 'fixed', description: 'NodeHealthMonitor memory leak prevention' },
-        { type: 'fixed', description: 'EventQueue infinite loop prevention' },
-        { type: 'improved', description: 'Autoplay error logging shows all strategy errors' }
-    ]
-};
-
 // Feature flags
 export const FEATURES = {
     // Core features
@@ -109,6 +94,51 @@ export const FEATURES = {
     // Debug features
     DEBUG_LOGGING: ENVIRONMENT.isDevelopment,
     VERBOSE_ERRORS: ENVIRONMENT.isDevelopment
+};
+
+/**
+ * Release notes cho version hiện tại.
+ * Cập nhật mỗi khi bump version.
+ */
+export const RELEASE_NOTES = {
+    version: '1.11.4',
+    codename: 'Kaizen',
+    date: '2026-03-07',
+    highlights: [
+        'Updated to latest Shoukaku ^4.3.0 and discord.js ^14.25.1',
+        'Fixed Lavalink mock connection state bugs causing test failures',
+        'Fixed remaining bugs and security vulnerabilities via npm audit',
+        'Enforced strict linting rules and format checks compliance'
+    ],
+    changes: [
+        {
+            type: 'improved',
+            description: 'Updated package.json format, node engines to >=20.0.0.'
+        },
+        {
+            type: 'fixed',
+            description: 'Resolved express-rate-limit audit vulnerabilities through npm audit.'
+        },
+        {
+            type: 'fixed',
+            description: 'Adapted test suites and mock states (0, 1, 2, 3) to conform to Shoukaku v4.3.0 exact enum structures.'
+        },
+        {
+            type: 'fixed',
+            description: 'Fixed linting issues in commands and corrected tests leaking memory handles.'
+        }
+    ],
+    previousVersion: {
+        version: '1.11.1',
+        codename: 'Hibana',
+        date: '2026-02-28',
+        highlights: [
+            'Multi-source fallback: YouTube → SoundCloud → Deezer',
+            'TVHTML5_SIMPLY client — no OAuth required',
+            'Source-aware error recovery with auto-switching',
+            'Enhanced Now Playing with platform indicators'
+        ]
+    }
 };
 
 // Export default object with all info

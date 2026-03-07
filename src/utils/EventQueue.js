@@ -20,7 +20,9 @@ const DEFAULT_CONFIG = {
     normalPriorityWeight: 2, // Normal priority processes 2x faster
     lowPriorityWeight: 1, // Low priority base rate
     warningThreshold: 0.7, // Warn at 70% queue capacity
-    criticalThreshold: 0.9 // Critical at 90% queue capacity
+    criticalThreshold: 0.9, // Critical at 90% queue capacity
+    maxRetries: 2, // Max retry attempts per event (FIX-LB10)
+    retryDelayMs: 1000 // Delay between retries in ms (FIX-LB10)
 };
 
 // Priority levels
@@ -64,6 +66,7 @@ class EventQueue extends EventEmitter {
             totalProcessed: 0,
             totalRejected: 0,
             totalErrors: 0,
+            totalRetries: 0, // FIX-LB10: Track retry attempts
             avgProcessingTime: 0,
             processingTimes: [],
             lastBackpressureEvent: null
@@ -124,6 +127,16 @@ class EventQueue extends EventEmitter {
             });
 
             this.emit('rejected', { reason: 'queue_full', context });
+
+            // Log dropped event details for debugging
+            logger.error('EventQueue: Event dropped due to full queue', {
+                queueSize: this.queueSize,
+                maxSize: this.config.maxQueueSize,
+                priority,
+                totalRejected: this.metrics.totalRejected,
+                contextType: context?.type || 'unknown'
+            });
+
             return false;
         }
 
@@ -179,32 +192,16 @@ class EventQueue extends EventEmitter {
 
         this.isProcessing = true;
 
-        // Safety counter to prevent infinite loops
-        let waitIterations = 0;
-        const maxWaitIterations = 1000; // Max 10 seconds of waiting (1000 * 10ms)
-
         while (this.queueSize > 0 && !this.isPaused) {
-            // Check concurrency limit
+            // Check concurrency limit — wait for a slot via notification instead of polling
             if (this.activeCount >= this.config.concurrencyLimit) {
-                waitIterations++;
-
-                // Safety check: if we've been waiting too long, something is wrong
-                if (waitIterations >= maxWaitIterations) {
-                    logger.warn('EventQueue: Exceeded max wait iterations, breaking processing loop', {
-                        activeCount: this.activeCount,
-                        concurrencyLimit: this.config.concurrencyLimit,
-                        queueSize: this.queueSize
-                    });
-                    break;
-                }
-
-                // Wait a bit before checking again
-                await new Promise(resolve => setTimeout(resolve, 10));
+                await new Promise(resolve => {
+                    // Store resolver so processItem can notify us when a slot opens
+                    if (!this._slotWaiters) this._slotWaiters = [];
+                    this._slotWaiters.push(resolve);
+                });
                 continue;
             }
-
-            // Reset wait counter when we can process
-            waitIterations = 0;
 
             // Get next item based on weighted priority
             const item = this.getNextItem();
@@ -214,6 +211,11 @@ class EventQueue extends EventEmitter {
             this.activeCount++;
             this.processItem(item).finally(() => {
                 this.activeCount--;
+                // Notify a waiting processor that a slot is available
+                if (this._slotWaiters && this._slotWaiters.length > 0) {
+                    const waiter = this._slotWaiters.shift();
+                    waiter();
+                }
             });
         }
 
@@ -290,16 +292,51 @@ class EventQueue extends EventEmitter {
         } catch (error) {
             this.metrics.totalErrors++;
 
-            logger.error('EventQueue: Error processing event', {
-                id: item.id,
-                priority: item.priority,
-                error: error.message
-            });
+            // FIX-LB10: Retry mechanism for failed events
+            const retryCount = item.retryCount || 0;
+            const maxRetries = this.config.maxRetries;
+
+            if (retryCount < maxRetries && !this.isPaused) {
+                this.metrics.totalRetries++;
+                logger.warn('EventQueue: Retrying failed event', {
+                    id: item.id,
+                    priority: item.priority,
+                    retryCount: retryCount + 1,
+                    maxRetries,
+                    error: error.message
+                });
+
+                // Re-enqueue with incremented retry counter after delay
+                setTimeout(
+                    () => {
+                        if (this.isPaused) return; // Don't retry during shutdown
+                        const retryItem = {
+                            ...item,
+                            retryCount: retryCount + 1,
+                            enqueuedAt: Date.now()
+                        };
+                        // Add to front of same priority queue for faster retry
+                        if (this.queues[item.priority]) {
+                            this.queues[item.priority].unshift(retryItem);
+                            this.processQueue();
+                        }
+                    },
+                    this.config.retryDelayMs * (retryCount + 1)
+                ); // Exponential-ish backoff
+            } else {
+                logger.error('EventQueue: Error processing event (no retries left)', {
+                    id: item.id,
+                    priority: item.priority,
+                    retryCount,
+                    error: error.message
+                });
+            }
 
             this.emit('error', {
                 id: item.id,
                 context: item.context,
-                error
+                error,
+                retryCount
             });
         }
     }
@@ -387,6 +424,7 @@ class EventQueue extends EventEmitter {
                 totalProcessed: this.metrics.totalProcessed,
                 totalRejected: this.metrics.totalRejected,
                 totalErrors: this.metrics.totalErrors,
+                totalRetries: this.metrics.totalRetries,
                 avgProcessingTime: this.metrics.avgProcessingTime,
                 successRate:
                     this.metrics.totalProcessed > 0
@@ -406,6 +444,16 @@ class EventQueue extends EventEmitter {
 
         // Pause to prevent new processing
         this.pause();
+
+        // Reject all pending slot waiters to prevent hanging promises
+        if (this._slotWaiters && this._slotWaiters.length > 0) {
+            const waitersCount = this._slotWaiters.length;
+            for (const waiter of this._slotWaiters) {
+                waiter(); // resolve to unblock; processQueue will exit because isPaused=true
+            }
+            this._slotWaiters = [];
+            logger.info(`EventQueue: Released ${waitersCount} pending slot waiters`);
+        }
 
         // Clear pending items
         const pendingCount = this.queueSize;

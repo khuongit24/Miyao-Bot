@@ -6,6 +6,40 @@
 import logger from './logger.js';
 
 /**
+ * Module-level RegExp cache to avoid recompiling the same pattern on every call.
+ * Key: pattern string, Value: compiled RegExp
+ */
+const _regexpCache = new Map();
+const MAX_REGEXP_CACHE_SIZE = 500;
+
+/**
+ * Get a cached RegExp, compiling and storing it on first use.
+ * @param {string} source - RegExp source string
+ * @param {string} flags  - RegExp flags
+ * @returns {RegExp}
+ */
+function getCachedRegExp(source, flags) {
+    const key = `${source}|||${flags}`;
+    let re = _regexpCache.get(key);
+    if (re) return re;
+
+    // Evict oldest half when cache is full
+    if (_regexpCache.size >= MAX_REGEXP_CACHE_SIZE) {
+        const toRemove = Math.floor(_regexpCache.size / 2);
+        let removed = 0;
+        for (const k of _regexpCache.keys()) {
+            if (removed >= toRemove) break;
+            _regexpCache.delete(k);
+            removed++;
+        }
+    }
+
+    re = new RegExp(source, flags);
+    _regexpCache.set(key, re);
+    return re;
+}
+
+/**
  * Content categories that can be filtered
  */
 export const ContentCategory = {
@@ -53,10 +87,32 @@ const BLACKLISTED_KEYWORDS = {
  * Content filter configuration per guild
  * Stored in memory - should be persisted to database in production
  */
+const MAX_GUILD_CONFIGS = 1000;
+
 class ContentFilterConfig {
     constructor() {
         // guildId -> { enabled: boolean, categories: Set, blacklist: Set, whitelist: Set }
         this.guildConfigs = new Map();
+    }
+
+    /**
+     * Evict oldest entries when map exceeds max size (LRU-style)
+     * @private
+     */
+    _evictIfNeeded() {
+        if (this.guildConfigs.size <= MAX_GUILD_CONFIGS) return;
+
+        // Remove the oldest half of entries (Map iterates in insertion order)
+        const toRemove = Math.floor(this.guildConfigs.size / 2);
+        let removed = 0;
+        for (const key of this.guildConfigs.keys()) {
+            if (removed >= toRemove) break;
+            this.guildConfigs.delete(key);
+            removed++;
+        }
+        logger.info(`ContentFilter: Evicted ${removed} guild configs (LRU)`, {
+            remaining: this.guildConfigs.size
+        });
     }
 
     /**
@@ -66,6 +122,7 @@ class ContentFilterConfig {
      */
     getConfig(guildId) {
         if (!this.guildConfigs.has(guildId)) {
+            this._evictIfNeeded();
             // Default configuration: disabled with no filtering
             this.guildConfigs.set(guildId, {
                 enabled: false,
@@ -73,6 +130,11 @@ class ContentFilterConfig {
                 blacklist: new Set(),
                 whitelist: new Set()
             });
+        } else {
+            // Move to end of Map to mark as recently used (LRU)
+            const config = this.guildConfigs.get(guildId);
+            this.guildConfigs.delete(guildId);
+            this.guildConfigs.set(guildId, config);
         }
         return this.guildConfigs.get(guildId);
     }
@@ -186,9 +248,18 @@ export function checkContent(query, title, author, guildId) {
     // Combine all text to check
     const textToCheck = [query, title, author].filter(Boolean).join(' ').toLowerCase();
 
+    // BUG-U07: Add input length limit before regex matching to prevent ReDoS
+    if (textToCheck.length > 1000) {
+        logger.warn('Content check input too long, skipping regex matching', { guildId, length: textToCheck.length });
+        return { safe: true };
+    }
+
     // Check whitelist first (bypasses all filters)
     for (const whitelisted of config.whitelist) {
-        if (textToCheck.includes(whitelisted)) {
+        // Use word boundary matching to prevent partial matches (e.g. "art" matching "fart")
+        const escapedTerm = whitelisted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const pattern = getCachedRegExp(`\\b${escapedTerm}\\b`, 'i');
+        if (pattern.test(textToCheck)) {
             logger.debug('Content allowed via whitelist', { guildId, term: whitelisted });
             return { safe: true };
         }
@@ -212,8 +283,10 @@ export function checkContent(query, title, author, guildId) {
         if (!keywords) continue;
 
         for (const keyword of keywords) {
+            // Escape regex metacharacters to prevent crashes on special characters
+            const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             // Use word boundaries to avoid false positives
-            const pattern = new RegExp(`\\b${keyword}\\b`, 'i');
+            const pattern = getCachedRegExp(`\\b${escapedKeyword}\\b`, 'i');
             if (pattern.test(textToCheck)) {
                 logger.warn('Content blocked by category filter', {
                     guildId,
@@ -263,6 +336,17 @@ export function analyzeContent(text) {
         };
     }
 
+    // BUG-U07: Add input length limit before regex matching to prevent ReDoS
+    if (text.length > 1000) {
+        logger.warn('Content analysis input too long, skipping regex matching', { length: text.length });
+        return {
+            analyzed: false,
+            categories: [],
+            score: 1.0,
+            flagged: []
+        };
+    }
+
     const lowerText = text.toLowerCase();
     const flagged = [];
     const categoryScores = {};
@@ -272,7 +356,9 @@ export function analyzeContent(text) {
         const matches = [];
 
         for (const keyword of keywords) {
-            const pattern = new RegExp(`\\b${keyword}\\b`, 'gi');
+            const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const pattern = getCachedRegExp(`\\b${escapedKeyword}\\b`, 'gi');
+            pattern.lastIndex = 0; // reset stateful /g regex before reuse
             const found = lowerText.match(pattern);
             if (found) {
                 matches.push(...found);

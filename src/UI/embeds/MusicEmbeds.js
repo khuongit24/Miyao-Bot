@@ -1,23 +1,37 @@
+/**
+ * @file MusicEmbeds.js
+ * @description Centralized Discord embed builders for music player UI
+ * @version 1.9.0 - Added comprehensive JSDoc documentation
+ */
+
 import { EmbedBuilder } from 'discord.js';
 import { formatDuration, getProgressBar, truncate, getPlatformIcon } from '../../utils/helpers.js';
-import {
-    optimizeEmbedForMobile,
-    splitEmbedDescription,
-    formatDurationMobile,
-    exceedsMobileLimits
-} from '../../utils/mobile-optimization.js';
+import { formatDurationMobile, exceedsMobileLimits } from '../../utils/mobile-optimization.js';
 import logger from '../../utils/logger.js';
+import { COLORS, ICONS, FIELD_NAMES } from '../../config/design-system.js';
+import { PLATFORM_NAMES } from '../../utils/constants.js';
+import { createErrorEmbed } from './ErrorEmbeds.js';
+import { safeAddFields } from './EmbedUtils.js';
+
+export { safeAddFields } from './EmbedUtils.js';
+export { createErrorEmbed } from './ErrorEmbeds.js';
 
 /**
- * Create now playing embed with dynamic progress
+ * Create now playing embed with dynamic progress bar, track info, and queue status
+ * @param {Object} track - Track object with info property
+ * @param {Object} queue - Queue object with player state, tracks, volume, loop mode
+ * @param {Object} config - Bot configuration with bot.color and bot.footer
+ * @param {number|null} [currentPosition=null] - Override playback position in ms
+ * @returns {EmbedBuilder} Now playing embed
  */
 export function createNowPlayingEmbed(track, queue, config, currentPosition = null) {
     // Validate track and info
     if (!track || !track.info) {
         return new EmbedBuilder()
-            .setColor('#FF0000')
-            .setTitle('❌ Lỗi')
+            .setColor(COLORS.ERROR)
+            .setTitle(`${ICONS.ERROR} Lỗi`)
             .setDescription('Không thể hiển thị thông tin bài hát')
+            .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
             .setTimestamp();
     }
 
@@ -26,86 +40,103 @@ export function createNowPlayingEmbed(track, queue, config, currentPosition = nu
     // Use provided position or get from player
     const progress = currentPosition !== null ? currentPosition : queue.player?.position || track.position || 0;
     const duration = info.length || 0;
-    const progressBar = getProgressBar(progress, duration, 30); // Use 30-char progress bar for better visualization
+    const isStream = info.isStream || false;
 
-    // Calculate percentage
-    const percentage = duration > 0 ? Math.min(Math.round((progress / duration) * 100), 100) : 0;
+    // For streams, show a special livestream indicator instead of progress bar
+    let progressBar;
+    let percentage;
+    if (isStream || duration <= 0) {
+        progressBar = '🔴 ━━━━━━━━━━ LIVE ━━━━━━━━━━ 🔴';
+        percentage = null;
+    } else {
+        progressBar = getProgressBar(progress, duration, 25); // Slightly shorter to fit mobile
+        // BUG-080: Handle large or non-finite ms values safely
+        percentage =
+            Number.isFinite(progress) && Number.isFinite(duration) && duration > 0
+                ? Math.min(Math.round((progress / duration) * 100), 100)
+                : 0;
+    }
 
     // Status indicator
     const statusEmoji = queue.paused ? '⏸️' : '▶️';
     const statusText = queue.paused ? 'Đã tạm dừng' : 'Đang phát';
 
     // Safe access with fallbacks
-    const title = info.title || 'Unknown Track';
+    const title = info.title || 'Không rõ bài hát';
     const uri = info.uri || '#';
-    const author = info.author || 'Unknown Artist';
-    const isStream = info.isStream || false;
-    // Handle requester as string ID, object with id property, or 'autoplay'
+    const author = info.author || 'Không rõ nghệ sĩ';
+
+    // v1.11.0: Source indicator
+    const platformEmoji = getPlatformIcon(info.sourceName || 'unknown');
+    const platformName = PLATFORM_NAMES[(info.sourceName || '').toLowerCase()] || 'Không rõ';
+
+    // Handle requester
     const requesterId =
-        typeof track.requester === 'string' ? track.requester : track.requester?.id || track.requesterId || 'Unknown';
+        typeof track.requester === 'string' ? track.requester : track.requester?.id || track.requesterId || 'Không rõ';
+
+    // Get active filters if any
+    const activeFilters = queue.getActiveFilters ? queue.getActiveFilters() : [];
+    const filterText =
+        activeFilters.length > 0
+            ? `✨ Hiệu ứng: **${activeFilters.map(f => f.charAt(0).toUpperCase() + f.slice(1)).join(', ')}**`
+            : '';
+
+    // Get next track info
+    const nextTrack = queue.tracks && queue.tracks.length > 0 ? queue.tracks[0] : null;
+    const nextTrackText = nextTrack
+        ? `⏭️ **Tiếp theo:** [${truncate(nextTrack.info?.title, 35)}](${nextTrack.info?.uri || '#'})`
+        : '📝 **Tiếp theo:** *Hết danh sách*';
 
     const embed = new EmbedBuilder()
-        .setColor(queue.paused ? '#FFA500' : config.bot.color)
-        .setTitle(`${statusEmoji} ${statusText}`)
-        .setDescription(`**[${title}](${uri})**`)
+        .setColor(queue.paused ? COLORS.NOW_PLAYING_PAUSED : COLORS.NOW_PLAYING)
+        .setAuthor({
+            name: `${statusText} | ${platformEmoji} ${platformName}`,
+            iconURL: 'https://cdn.discordapp.com/emojis/995648833319080006.webp?size=96&quality=lossless', // Dynamic or static music icon
+            url: uri
+        })
+        .setTitle(truncate(title, 60))
+        .setURL(uri)
+        .setDescription(
+            `${progressBar}\n` +
+                `\`${formatDuration(progress)}\` / \`${isStream ? '🔴 LIVE' : formatDuration(duration)}\`${percentage !== null ? ` • **${percentage}%**` : ''}\n\n` +
+                `🎤 ${author}\n` +
+                `${filterText ? filterText + '\n' : ''}` +
+                `${nextTrackText}`
+        )
         .addFields([
             {
-                name: '👤 Tác giả',
-                value: author,
-                inline: true
-            },
-            {
-                name: '⏱️ Thời lượng',
-                value: isStream ? '🔴 LIVE' : formatDuration(duration),
-                inline: true
-            },
-            {
-                name: '📊 Âm lượng',
-                value: `${queue.volume}%`,
-                inline: true
-            },
-            {
-                name: '🔁 Loop',
-                value: queue.loop === 'off' ? 'Tắt' : queue.loop === 'track' ? '🔂 Bài hát' : '🔁 Hàng đợi',
-                inline: true
-            },
-            {
-                name: '📋 Trong hàng đợi',
-                value: `${queue.tracks.length} bài`,
-                inline: true
-            },
-            {
-                name: '👥 Yêu cầu bởi',
+                name: FIELD_NAMES.REQUESTED_BY,
                 value: `<@${requesterId}>`,
                 inline: true
-            }
-        ]);
-
-    // Add progress bar for non-stream tracks
-    if (!isStream) {
-        // Dynamic progress icon based on percentage
-        const progressIcon = percentage >= 75 ? '🏁' : percentage >= 50 ? '⏳' : percentage >= 25 ? '▶️' : '🎵';
-
-        embed.addFields([
+            },
             {
-                name: `${progressIcon} Tiến trình`,
-                value: `\`${formatDuration(progress)}\` ${progressBar} \`${formatDuration(duration)}\`\n**${percentage}%** hoàn thành`,
-                inline: false
+                name: FIELD_NAMES.VOLUME,
+                value: `**${queue.volume}%**`,
+                inline: true
+            },
+            {
+                name: FIELD_NAMES.LOOP,
+                value: queue.loop === 'off' ? 'Tắt' : queue.loop === 'track' ? 'Bài hát' : 'Tất cả',
+                inline: true
             }
         ]);
-    }
 
     if (track.info.artworkUrl) {
         embed.setThumbnail(track.info.artworkUrl);
     }
 
-    embed.setFooter({ text: `${config.bot.footer}` }).setTimestamp();
+    embed.setFooter({ text: `${config?.bot?.footer || 'Miyao Music Bot'} • ${statusText}` }).setTimestamp();
 
     return embed;
 }
 
 /**
- * Create queue embed
+ * Create paginated queue embed showing current track and upcoming tracks
+ * @param {Object} queue - Queue object with current track, tracks array, volume, loop mode
+ * @param {Object} config - Bot configuration with bot.color and bot.footer
+ * @param {number} [page=1] - Page number to display (1-indexed)
+ * @returns {EmbedBuilder} Queue embed with track listing
+ * @throws {Error} If queue or config.bot is missing
  */
 export function createQueueEmbed(queue, config, page = 1) {
     // Validate inputs with better error handling
@@ -120,7 +151,7 @@ export function createQueueEmbed(queue, config, page = 1) {
     const tracks = Array.isArray(queue.tracks) ? queue.tracks : [];
 
     const perPage = 10;
-    const totalPages = Math.max(1, Math.ceil((tracks.length + 1) / perPage));
+    const totalPages = Math.max(1, Math.ceil(tracks.length / perPage));
     const start = (page - 1) * perPage;
     const end = start + perPage;
 
@@ -136,7 +167,7 @@ export function createQueueEmbed(queue, config, page = 1) {
     const eta = currentLeft + totalDuration;
 
     const embed = new EmbedBuilder()
-        .setColor(config.bot.color || '#5865F2')
+        .setColor(COLORS.QUEUE)
         .setTitle('📋 Hàng đợi phát nhạc')
         .setFooter({
             text: `${config.bot.footer || 'Miyao Music Bot'} • Trang ${page}/${totalPages} • Còn ${tracks.length} bài`
@@ -150,24 +181,24 @@ export function createQueueEmbed(queue, config, page = 1) {
 
         try {
             const icon = getPlatformIcon(info.sourceName || 'unknown');
-            const title = truncate(info.title || 'Unknown Track', 50);
+            const title = truncate(info.title || 'Không rõ bài hát', 50);
             const uri = info.uri || '#';
             const isStream = info.isStream || false;
             const length = info.length || 0;
-            const author = truncate(info.author || 'Unknown Artist', 25);
+            const author = truncate(info.author || 'Không rõ nghệ sĩ', 25);
             const requesterId =
                 typeof current.requester === 'string'
                     ? current.requester
-                    : current.requester?.id || current.requesterId || 'Unknown';
+                    : current.requester?.id || current.requesterId || 'Không rõ';
 
             const fieldValue =
                 `${icon} **[${title}](${uri})**\n` +
                 `⏱️ ${isStream ? '🔴 LIVE' : formatDuration(length)} | 👤 ${author} | 📢 <@${requesterId}>`;
 
             if (fieldValue.length > 0 && fieldValue.length <= 1024) {
-                embed.addFields([
+                safeAddFields(embed, [
                     {
-                        name: '🎵 Đang phát',
+                        name: FIELD_NAMES.NOW_PLAYING,
                         value: fieldValue,
                         inline: false
                     }
@@ -183,44 +214,46 @@ export function createQueueEmbed(queue, config, page = 1) {
         try {
             const displayTracks = [queue.current, ...tracks].slice(start + 1, end + 1);
 
-            const trackList = displayTracks
-                .filter(track => track && track.info && track.info.title)
-                .map((track, index) => {
-                    try {
-                        const position = start + index + 1;
-                        const info = track.info;
-                        const icon = getPlatformIcon(info.sourceName || 'unknown');
-                        const title = truncate(info.title || 'Unknown Track', 45);
-                        const isStream = info.isStream || false;
-                        const length = info.length || 0;
+            // Build track list incrementally to stay within 1024 char limit
+            const trackLines = [];
+            let currentLength = 0;
+            const MAX_FIELD_LENGTH = 1024;
+            const TRUNCATION_RESERVE = 50; // Reserve space for "...and X more" message
 
-                        return `**#${position}** ${icon} ${title} • ${isStream ? '🔴 LIVE' : formatDuration(length)}`;
-                    } catch (error) {
-                        logger.error('Error formatting track:', error);
-                        return null;
-                    }
-                })
-                .filter(track => track !== null)
-                .join('\n');
+            for (let index = 0; index < displayTracks.length; index++) {
+                const track = displayTracks[index];
+                if (!track || !track.info || !track.info.title) continue;
 
-            if (trackList && trackList.trim().length > 0 && trackList.length <= 1024) {
-                embed.addFields([
-                    {
-                        name: `📝 Tiếp theo (${tracks.length} bài)`,
-                        value: trackList,
-                        inline: false
+                try {
+                    const position = start + index + 1;
+                    const info = track.info;
+                    const icon = getPlatformIcon(info.sourceName || 'unknown');
+                    const title = truncate(info.title || 'Không rõ bài hát', 40);
+                    const isStream = info.isStream || false;
+                    const length = info.length || 0;
+
+                    const line = `**#${position}** ${icon} ${title} • ${isStream ? '🔴 LIVE' : formatDuration(length)}`;
+
+                    if (currentLength + line.length + 1 > MAX_FIELD_LENGTH - TRUNCATION_RESERVE) {
+                        const remaining = displayTracks.length - index;
+                        trackLines.push(`\n*...và ${remaining} bài khác*`);
+                        break;
                     }
-                ]);
-            } else if (trackList && trackList.length > 1024) {
-                const truncated =
-                    trackList.substring(0, 950) +
-                    '\n\n*...và ' +
-                    (tracks.length - displayTracks.length + 1) +
-                    ' bài khác*';
-                embed.addFields([
+
+                    trackLines.push(line);
+                    currentLength += line.length + 1; // +1 for newline
+                } catch (error) {
+                    logger.error('Error formatting track:', error);
+                }
+            }
+
+            const trackList = trackLines.join('\n');
+
+            if (trackList && trackList.trim().length > 0) {
+                safeAddFields(embed, [
                     {
-                        name: `📝 Tiếp theo (${tracks.length} bài)`,
-                        value: truncated,
+                        name: `${FIELD_NAMES.UP_NEXT} (${tracks.length} bài)`,
+                        value: trackList.substring(0, MAX_FIELD_LENGTH),
                         inline: false
                     }
                 ]);
@@ -233,14 +266,14 @@ export function createQueueEmbed(queue, config, page = 1) {
     // Simplified info line
     try {
         const loopEmoji = queue.loop === 'off' ? '➡️' : queue.loop === 'track' ? '🔂' : '🔁';
-        const loopText = queue.loop === 'off' ? 'Tắt' : queue.loop === 'track' ? 'Bài' : 'Tất cả';
+        const loopText = queue.loop === 'off' ? 'Tắt' : queue.loop === 'track' ? 'Bài hát' : 'Tất cả';
 
         const infoValue = `${loopEmoji} Loop: **${loopText}** | 📊 Âm lượng: **${queue.volume || 50}%** | ⏱️ Tổng: **${formatDuration(totalDuration)}** | 🕒 Còn lại: **${formatDuration(eta)}**`;
 
         if (infoValue.length > 0 && infoValue.length <= 1024) {
-            embed.addFields([
+            safeAddFields(embed, [
                 {
-                    name: '📊 Thông tin',
+                    name: FIELD_NAMES.QUEUE_INFO,
                     value: infoValue,
                     inline: false
                 }
@@ -254,14 +287,22 @@ export function createQueueEmbed(queue, config, page = 1) {
 }
 
 /**
- * Create track added embed
+ * Create embed shown when a track is added to the queue
+ * @param {Object} track - Track object with info property
+ * @param {number} position - Position in queue (1-indexed)
+ * @param {Object} config - Bot configuration with bot.color and bot.footer
+ * @param {Object|null} [searchInfo=null] - Optional search source info for fallback badge
+ * @param {string} [searchInfo.searchSource] - Search prefix used (e.g., 'scsearch')
+ * @param {string} [searchInfo.searchSourceName] - Human-readable source name (e.g., 'SoundCloud')
+ * @param {boolean} [searchInfo.isFallback] - Whether this was a fallback from primary source
+ * @returns {EmbedBuilder} Track added confirmation embed
  */
-export function createTrackAddedEmbed(track, position, config) {
+export function createTrackAddedEmbed(track, position, config, searchInfo = null) {
     // Validate track and info
     if (!track || !track.info) {
         return new EmbedBuilder()
-            .setColor('#FF0000')
-            .setTitle('❌ Lỗi')
+            .setColor(COLORS.ERROR)
+            .setTitle(`${ICONS.ERROR} Lỗi`)
             .setDescription('Không thể hiển thị thông tin bài hát')
             .setTimestamp();
     }
@@ -270,37 +311,42 @@ export function createTrackAddedEmbed(track, position, config) {
 
     // Safe access with fallbacks
     const icon = getPlatformIcon(info.sourceName || 'unknown');
-    const title = info.title || 'Unknown Track';
+    const title = info.title || 'Không rõ bài hát';
     const uri = info.uri || '#';
-    const author = info.author || 'Unknown Artist';
+    const author = info.author || 'Không rõ nghệ sĩ';
     const isStream = info.isStream || false;
     const length = info.length || 0;
     // Handle requester as string ID, object with id property, or 'autoplay'
     const requesterId =
-        typeof track.requester === 'string' ? track.requester : track.requester?.id || track.requesterId || 'Unknown';
+        typeof track.requester === 'string' ? track.requester : track.requester?.id || track.requesterId || 'Không rõ';
 
     const embed = new EmbedBuilder()
-        .setColor(config.bot.color)
+        .setColor(COLORS.SUCCESS)
         .setTitle('✅ Đã thêm vào hàng đợi')
-        .setDescription(`${icon} **[${title}](${uri})**`)
+        .setDescription(
+            `${icon} **[${title}](${uri})**` +
+                (searchInfo?.isFallback
+                    ? `\n${ICONS.SOURCE_SWITCH} Tìm thấy trên **${searchInfo.searchSourceName}**`
+                    : '')
+        )
         .addFields([
             {
-                name: '👤 Tác giả',
+                name: FIELD_NAMES.AUTHOR,
                 value: author,
                 inline: true
             },
             {
-                name: '⏱️ Thời lượng',
+                name: FIELD_NAMES.DURATION,
                 value: isStream ? '🔴 LIVE' : formatDuration(length),
                 inline: true
             },
             {
-                name: '📍 Vị trí',
+                name: FIELD_NAMES.POSITION,
                 value: `#${position}`,
                 inline: true
             },
             {
-                name: '👥 Yêu cầu bởi',
+                name: FIELD_NAMES.REQUESTED_BY,
                 value: `<@${requesterId}>`,
                 inline: true
             }
@@ -310,17 +356,21 @@ export function createTrackAddedEmbed(track, position, config) {
         embed.setThumbnail(info.artworkUrl);
     }
 
-    embed.setFooter({ text: config.bot.footer }).setTimestamp();
+    embed.setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' }).setTimestamp();
 
     return embed;
 }
 
 /**
- * Create playlist added embed
+ * Create embed shown when a playlist is added to the queue
+ * @param {string} playlistName - Name of the added playlist
+ * @param {number} trackCount - Number of tracks added from the playlist
+ * @param {Object} config - Bot configuration with bot.color and bot.footer
+ * @returns {EmbedBuilder} Playlist added confirmation embed
  */
 export function createPlaylistAddedEmbed(playlistName, trackCount, config) {
     const embed = new EmbedBuilder()
-        .setColor(config.bot.color)
+        .setColor(config?.bot?.color || COLORS.PRIMARY)
         .setTitle('✅ Đã thêm playlist')
         .setDescription(`📝 **${playlistName}**`)
         .addFields([
@@ -330,65 +380,58 @@ export function createPlaylistAddedEmbed(playlistName, trackCount, config) {
                 inline: true
             }
         ])
-        .setFooter({ text: config.bot.footer })
+        .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
         .setTimestamp();
 
     return embed;
 }
 
 /**
- * Create error embed
- */
-export function createErrorEmbed(message, config) {
-    // Ensure message is a string and not empty
-    const errorMessage = message ? String(message) : 'Đã xảy ra lỗi không xác định';
-
-    return new EmbedBuilder()
-        .setColor('#FF0000')
-        .setTitle('❌ Lỗi')
-        .setDescription(errorMessage)
-        .setFooter({ text: config.bot.footer })
-        .setTimestamp();
-}
-
-/**
- * Create success embed
+ * Create a success embed with green color
+ * @param {string} title - Success title (auto-prefixed with ✅)
+ * @param {string} message - Success description text
+ * @param {Object} config - Bot configuration with bot.footer
+ * @returns {EmbedBuilder} Success embed
+ * @throws {Error} If config.bot.footer is missing
  */
 export function createSuccessEmbed(title, message, config) {
-    // Validate config to prevent errors
-    if (!config?.bot?.footer) {
-        throw new Error('Config object with bot.footer is required');
-    }
-
     return new EmbedBuilder()
-        .setColor('#00FF00')
-        .setTitle(`✅ ${title}`)
+        .setColor(COLORS.SUCCESS)
+        .setTitle(`${ICONS.SUCCESS} ${title}`)
         .setDescription(message)
-        .setFooter({ text: config.bot.footer })
+        .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
         .setTimestamp();
 }
 
 /**
- * Create info embed
+ * Create an informational embed using the bot's brand color
+ * @param {string} title - Info title (auto-prefixed with ℹ️)
+ * @param {string} message - Info description text
+ * @param {Object} config - Bot configuration with bot.color and bot.footer
+ * @returns {EmbedBuilder} Info embed
  */
 export function createInfoEmbed(title, message, config) {
     return new EmbedBuilder()
-        .setColor(config.bot.color)
-        .setTitle(`ℹ️ ${title}`)
+        .setColor(config?.bot?.color || COLORS.INFO)
+        .setTitle(`${ICONS.INFO} ${title}`)
         .setDescription(message)
-        .setFooter({ text: config.bot.footer })
+        .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
         .setTimestamp();
 }
 
 /**
- * Create search confirmation embed for first track result
+ * Create search confirmation embed for the first track result
+ * Shows track details and prompts user to confirm or search for alternatives
+ * @param {Object} track - Track object with info property (title, author, uri, etc.)
+ * @param {Object} config - Bot configuration with bot.color and bot.footer
+ * @returns {EmbedBuilder} Search confirmation embed
  */
 export function createSearchConfirmEmbed(track, config) {
     // Validate track and info
     if (!track || !track.info) {
         return new EmbedBuilder()
-            .setColor('#FF0000')
-            .setTitle('❌ Lỗi')
+            .setColor(COLORS.ERROR)
+            .setTitle(`${ICONS.ERROR} Lỗi`)
             .setDescription('Không thể hiển thị thông tin bài hát')
             .setTimestamp();
     }
@@ -397,9 +440,9 @@ export function createSearchConfirmEmbed(track, config) {
 
     // Safe access with fallbacks
     const icon = getPlatformIcon(info.sourceName || 'unknown');
-    const title = info.title || 'Unknown Track';
+    const title = info.title || 'Không rõ bài hát';
     const uri = info.uri || '#';
-    const author = info.author || 'Unknown Artist';
+    const author = info.author || 'Không rõ nghệ sĩ';
     const isStream = info.isStream || false;
     const length = info.length || 0;
 
@@ -409,10 +452,10 @@ export function createSearchConfirmEmbed(track, config) {
         `👤 **Tác giả:** ${author}\n` +
         `⏱️ **Thời lượng:** ${isStream ? '🔴 LIVE' : formatDurationMobile(length)}\n\n` +
         '✅ Đúng bài này? Nhấn **Phát ngay**\n' +
-        '🔍 Không phải? Nhấn **Tìm kiếm** để xem thêm';
+        '🔍 Không phải? Bạn nhấn **Tìm kiếm thêm** nhé';
 
     const embed = new EmbedBuilder()
-        .setColor(config.bot.color)
+        .setColor(config?.bot?.color || COLORS.PRIMARY)
         .setTitle('🤔 Bạn muốn phát bài này phải không?')
         .setDescription(description);
 
@@ -420,13 +463,17 @@ export function createSearchConfirmEmbed(track, config) {
         embed.setThumbnail(info.artworkUrl);
     }
 
-    embed.setFooter({ text: config.bot.footer }).setTimestamp();
+    embed.setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' }).setTimestamp();
 
     return embed;
 }
 
 /**
- * Create history replay embed
+ * Create history replay embed showing recent tracks with relative timestamps
+ * @param {Array<{track: Object, playedAt: number}>} history - Array of history entries
+ * @param {Object} config - Bot configuration with bot.color and bot.footer
+ * @returns {EmbedBuilder} History replay embed
+ * @throws {Error} If history is not an array or config.bot is missing
  */
 export function createHistoryReplayEmbed(history, config) {
     // Validate inputs
@@ -439,7 +486,7 @@ export function createHistoryReplayEmbed(history, config) {
     }
 
     const embed = new EmbedBuilder()
-        .setColor(config.bot.color || '#5865F2')
+        .setColor(config.bot.color || COLORS.PRIMARY)
         .setTitle('📜 Lịch Sử Phát Nhạc - Chọn Bài Để Phát Lại')
         .setDescription('Chọn một bài hát từ danh sách bên dưới để phát lại ngay lập tức!')
         .setFooter({
@@ -460,8 +507,8 @@ export function createHistoryReplayEmbed(history, config) {
 
                         // Safe access to all properties
                         const icon = getPlatformIcon(info.sourceName || 'unknown');
-                        const title = truncate(info.title || 'Unknown Track', 40);
-                        const author = truncate(info.author || 'Unknown Artist', 20);
+                        const title = truncate(info.title || 'Không rõ bài hát', 40);
+                        const author = truncate(info.author || 'Không rõ nghệ sĩ', 20);
                         const uri = info.uri || '#';
                         const isStream = info.isStream || false;
                         const length = info.length || 0;
@@ -493,7 +540,7 @@ export function createHistoryReplayEmbed(history, config) {
 
             // Validate field value and add
             if (tracks && tracks.trim().length > 0 && tracks.length <= 1024) {
-                embed.addFields([
+                safeAddFields(embed, [
                     {
                         name: '🎵 Lịch sử phát nhạc',
                         value: tracks,
@@ -501,9 +548,10 @@ export function createHistoryReplayEmbed(history, config) {
                     }
                 ]);
             } else if (tracks && tracks.length > 1024) {
-                // Truncate if too long
-                const truncated = tracks.substring(0, 1000) + '\n\n*... và nhiều bài khác*';
-                embed.addFields([
+                // Truncate if too long - ensure total stays within 1024 char limit
+                const suffix = '\n\n*... và nhiều bài khác*';
+                const truncated = tracks.substring(0, 1024 - suffix.length) + suffix;
+                safeAddFields(embed, [
                     {
                         name: '🎵 Lịch sử phát nhạc',
                         value: truncated,
@@ -533,13 +581,13 @@ export function createHistoryReplayEmbed(history, config) {
  */
 export function createNoResultsSuggestionsEmbed(query, suggestions, config) {
     const embed = new EmbedBuilder()
-        .setColor('#FFA500') // Orange for warning/info
+        .setColor(COLORS.WARNING)
         .setTitle('🔍 Không tìm thấy kết quả')
         .setDescription(
             `Không tìm thấy bài hát nào cho: **"${truncate(query, 50)}"**\n\n` +
                 'Có thể bạn đang tìm một trong những bài này?'
         )
-        .setFooter({ text: config.bot.footer })
+        .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
         .setTimestamp();
 
     // Add suggestions if available
@@ -555,11 +603,11 @@ export function createNoResultsSuggestionsEmbed(query, suggestions, config) {
                 .slice(0, 3)
                 .map(
                     (s, i) =>
-                        `**${i + 1}.** [${truncate(s.title, 40)}](${s.url || '#'})\n   └ 🎤 ${truncate(s.author || 'Unknown', 25)}`
+                        `**${i + 1}.** [${truncate(s.title, 40)}](${s.url || '#'})\n   └ 🎤 ${truncate(s.author || 'Không rõ', 25)}`
                 )
                 .join('\n');
 
-            embed.addFields([
+            safeAddFields(embed, [
                 {
                     name: '📜 Từ lịch sử nghe của bạn',
                     value: historyText || '*Không có gợi ý*',
@@ -572,10 +620,12 @@ export function createNoResultsSuggestionsEmbed(query, suggestions, config) {
         if (artistMatches.length > 0) {
             const artistText = artistMatches
                 .slice(0, 3)
-                .map((s, i) => `**${i + 1}.** ${truncate(s.title, 40)}\n   └ 🎤 ${truncate(s.author || 'Unknown', 25)}`)
+                .map(
+                    (s, i) => `**${i + 1}.** ${truncate(s.title, 40)}\n   └ 🎤 ${truncate(s.author || 'Không rõ', 25)}`
+                )
                 .join('\n');
 
-            embed.addFields([
+            safeAddFields(embed, [
                 {
                     name: '🎤 Bài hát của nghệ sĩ',
                     value: artistText || '*Không có gợi ý*',
@@ -591,7 +641,7 @@ export function createNoResultsSuggestionsEmbed(query, suggestions, config) {
                 .map((s, i) => `**${i + 1}.** ${truncate(s.title, 40)}`)
                 .join('\n');
 
-            embed.addFields([
+            safeAddFields(embed, [
                 {
                     name: '🔥 Phổ biến gần đây',
                     value: popularText || '*Không có gợi ý*',
@@ -602,9 +652,9 @@ export function createNoResultsSuggestionsEmbed(query, suggestions, config) {
     }
 
     // Add tips section
-    embed.addFields([
+    safeAddFields(embed, [
         {
-            name: '💡 Mẹo tìm kiếm',
+            name: FIELD_NAMES.SEARCH_TIPS,
             value:
                 '• Kiểm tra chính tả của từ khóa\n' +
                 '• Thử tìm bằng tên đầy đủ + tên nghệ sĩ\n' +
@@ -618,6 +668,7 @@ export function createNoResultsSuggestionsEmbed(query, suggestions, config) {
 }
 
 export default {
+    safeAddFields,
     createNowPlayingEmbed,
     createQueueEmbed,
     createTrackAddedEmbed,

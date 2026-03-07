@@ -10,14 +10,26 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-// Load config
+// Config is read synchronously once at module load and cached in this variable.
+// This is safe because ESM module evaluation is inherently synchronous and
+// happens only once — subsequent imports reuse the cached module, so the file
+// is never re-read from disk during the application's lifetime.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 let config = { rateLimits: null };
 
+// FIX-UTL-H03: Wrap readFileSync in try-catch with validation.
+// If the config file is missing, malformed, or contains non-object data,
+// fall back to sensible defaults instead of crashing at startup.
 try {
     const configPath = join(__dirname, '../config/config.json');
-    config = JSON.parse(readFileSync(configPath, 'utf-8'));
+    const raw = readFileSync(configPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        config = parsed;
+    } else {
+        logger.warn('Rate limit config file contains invalid data (expected object), using defaults');
+    }
 } catch (error) {
     logger.warn('Could not load rate limit config, using defaults', { error: error.message });
 }
@@ -53,11 +65,13 @@ export class CommandRateLimiter {
         const cleanupInterval = cmdConfig.cleanupIntervalMs || DEFAULT_COMMAND_LIMITS.cleanupIntervalMs;
 
         this.userCooldowns = new Map(); // userId -> { count, resetAt, warnings }
+        this.maxMapSize = 10000; // Maximum entries before forced cleanup
 
-        // Cleanup expired entries
+        // Cleanup expired entries periodically
         this.cleanupInterval = setInterval(() => {
             this.cleanup();
         }, cleanupInterval);
+        this.cleanupInterval.unref();
 
         logger.info(`CommandRateLimiter initialized: ${this.maxCommands} commands per ${this.windowMs}ms`);
     }
@@ -158,7 +172,7 @@ export class CommandRateLimiter {
     }
 
     /**
-     * Cleanup expired entries
+     * Cleanup expired entries and enforce max map size
      */
     cleanup() {
         const now = Date.now();
@@ -171,8 +185,21 @@ export class CommandRateLimiter {
             }
         }
 
+        // If map is still too large after cleaning expired entries,
+        // evict oldest entries to prevent unbounded growth
+        if (this.userCooldowns.size > this.maxMapSize) {
+            const excess = this.userCooldowns.size - this.maxMapSize;
+            const iterator = this.userCooldowns.keys();
+            for (let i = 0; i < excess; i++) {
+                const key = iterator.next().value;
+                this.userCooldowns.delete(key);
+                cleaned++;
+            }
+            logger.warn(`Rate limiter map exceeded max size, evicted ${excess} oldest entries`);
+        }
+
         if (cleaned > 0) {
-            logger.debug(`Cleaned ${cleaned} expired rate limit entries`);
+            logger.debug(`Cleaned ${cleaned} expired rate limit entries, map size: ${this.userCooldowns.size}`);
         }
     }
 
@@ -241,6 +268,7 @@ export class GuildRateLimiter {
         this.cleanupInterval = setInterval(() => {
             this.cleanup();
         }, cleanupInterval);
+        this.cleanupInterval.unref();
 
         logger.info('GuildRateLimiter initialized', { limits: this.limits });
     }

@@ -7,6 +7,8 @@ import logger from './logger.js';
 import { getMemoryUsage } from './performance.js';
 import { TIME, MEMORY } from './constants.js';
 import { getEventQueue } from './EventQueue.js';
+import { COLORS } from '../config/design-system.js';
+import { statfs } from 'fs/promises';
 
 /**
  * Health status levels
@@ -28,6 +30,7 @@ export class HealthCheckManager {
         this.lastStatus = new Map();
         this.alertCooldowns = new Map();
         this.checkInterval = null;
+        this._cooldownCleanupInterval = null;
         this.webhookUrl = process.env.ALERT_WEBHOOK_URL || null;
     }
 
@@ -58,6 +61,25 @@ export class HealthCheckManager {
         this.checkInterval = setInterval(() => {
             this.runAllChecks();
         }, TIME.HEALTH_CHECK_INTERVAL);
+        this.checkInterval.unref();
+
+        // Periodically clean up expired alert cooldowns (every 5 minutes)
+        const COOLDOWN_CLEANUP_INTERVAL = 5 * TIME.MINUTE;
+        const COOLDOWN_EXPIRY = 5 * TIME.MINUTE;
+        this._cooldownCleanupInterval = setInterval(() => {
+            const now = Date.now();
+            let cleaned = 0;
+            for (const [key, timestamp] of this.alertCooldowns) {
+                if (now - timestamp >= COOLDOWN_EXPIRY) {
+                    this.alertCooldowns.delete(key);
+                    cleaned++;
+                }
+            }
+            if (cleaned > 0) {
+                logger.debug(`Health check: Cleaned ${cleaned} expired alert cooldowns`);
+            }
+        }, COOLDOWN_CLEANUP_INTERVAL);
+        this._cooldownCleanupInterval.unref();
 
         logger.info('Health check manager started');
     }
@@ -70,6 +92,11 @@ export class HealthCheckManager {
             clearInterval(this.checkInterval);
             this.checkInterval = null;
         }
+        if (this._cooldownCleanupInterval) {
+            clearInterval(this._cooldownCleanupInterval);
+            this._cooldownCleanupInterval = null;
+        }
+        this.alertCooldowns.clear();
         logger.info('Health check manager stopped');
     }
 
@@ -163,7 +190,7 @@ export class HealthCheckManager {
                 }
 
                 const nodes = Array.from(musicManager.shoukaku.nodes.values());
-                const healthyNodes = nodes.filter(node => node.state === 2); // 2 = CONNECTED
+                const healthyNodes = nodes.filter(node => node.state === 1); // 1 = CONNECTED in Shoukaku v4.3.0
                 const totalNodes = nodes.length;
 
                 if (healthyNodes.length === 0) {
@@ -236,18 +263,49 @@ export class HealthCheckManager {
         // Disk space check (optional, depends on environment)
         this.registerCheck('disk_space', async () => {
             try {
-                // This is a basic check - in production, use a proper disk space library
-                // For now, just return healthy
+                const fsStats = await statfs(process.cwd());
+                const totalBytes = Number(fsStats.blocks) * Number(fsStats.bsize);
+                const availableBytes = Number(fsStats.bavail) * Number(fsStats.bsize);
+                const usedPercent = totalBytes > 0 ? ((totalBytes - availableBytes) / totalBytes) * 100 : 0;
+
+                if (usedPercent >= 95) {
+                    return {
+                        status: HealthStatus.CRITICAL,
+                        message: `Disk usage critical: ${usedPercent.toFixed(1)}%`,
+                        details: {
+                            totalBytes,
+                            availableBytes,
+                            usedPercent: Number(usedPercent.toFixed(2))
+                        }
+                    };
+                }
+
+                if (usedPercent >= 85) {
+                    return {
+                        status: HealthStatus.DEGRADED,
+                        message: `Disk usage high: ${usedPercent.toFixed(1)}%`,
+                        details: {
+                            totalBytes,
+                            availableBytes,
+                            usedPercent: Number(usedPercent.toFixed(2))
+                        }
+                    };
+                }
+
                 return {
                     status: HealthStatus.HEALTHY,
-                    message: 'Disk space check not implemented',
-                    details: {}
+                    message: `Disk usage healthy: ${usedPercent.toFixed(1)}%`,
+                    details: {
+                        totalBytes,
+                        availableBytes,
+                        usedPercent: Number(usedPercent.toFixed(2))
+                    }
                 };
             } catch (error) {
                 return {
-                    status: HealthStatus.HEALTHY,
-                    message: 'Disk space check skipped',
-                    details: {}
+                    status: HealthStatus.DEGRADED,
+                    message: 'Disk space check unavailable (UNKNOWN)',
+                    details: { reason: error.message, state: 'unknown' }
                 };
             }
         });
@@ -402,14 +460,23 @@ export class HealthCheckManager {
     async getHealthStatus() {
         const results = {};
         const now = Date.now();
+        // BUG-U10: Mark data as stale if check hasn't run within 2x its interval
+        const DEFAULT_STALE_MULTIPLIER = 2;
 
         for (const [name, check] of this.checks) {
             if (check.lastStatus) {
+                const age = now - check.lastRun;
+                const staleThreshold = (check.interval || 60000) * DEFAULT_STALE_MULTIPLIER;
                 results[name] = {
                     status: check.lastStatus,
                     lastRun: check.lastRun,
-                    age: now - check.lastRun
+                    age,
+                    stale: age > staleThreshold
                 };
+                // Invalidate stale status to force re-check
+                if (age > staleThreshold) {
+                    check.lastRun = 0;
+                }
             }
         }
 
@@ -472,10 +539,11 @@ export class HealthCheckManager {
         // Send webhook if configured
         if (this.webhookUrl) {
             try {
-                const fetch = (await import('node-fetch')).default;
+                // Use native fetch (Node 18+) - no need for node-fetch
                 await fetch(this.webhookUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    signal: AbortSignal.timeout(5000),
                     body: JSON.stringify({
                         content: `🚨 **Alert: ${checkName}**\n**Status:** ${result.status}\n**Message:** ${result.message}`,
                         embeds: [
@@ -506,12 +574,13 @@ export class HealthCheckManager {
      */
     getAlertColor(status) {
         const colors = {
-            [HealthStatus.HEALTHY]: 0x2ecc71, // Green
-            [HealthStatus.DEGRADED]: 0xf39c12, // Orange
-            [HealthStatus.UNHEALTHY]: 0xe74c3c, // Red
-            [HealthStatus.CRITICAL]: 0xc0392b // Dark red
+            [HealthStatus.HEALTHY]: COLORS.SUCCESS,
+            [HealthStatus.DEGRADED]: COLORS.WARNING,
+            [HealthStatus.UNHEALTHY]: COLORS.ERROR,
+            [HealthStatus.CRITICAL]: COLORS.SEVERITY.critical
         };
-        return colors[status] || 0x95a5a6;
+        const hex = colors[status] || COLORS.MUTED;
+        return parseInt(hex.replace('#', ''), 16);
     }
 }
 

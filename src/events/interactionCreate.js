@@ -4,10 +4,12 @@ import {
     handleQueueButton,
     handleSearchSelect,
     handleHistoryReplaySelect,
+    handlePersonalHistorySelect,
     handleDiscoverySelect,
     handleDiscoveryButton,
     handleQueueRemoveTrackModalSubmit
-} from './buttonHandler.js';
+} from './buttons/index.js';
+import { handleFilterSelect, handleVolumeSelect } from './menus/MenuHandlers.js';
 import {
     handleHelpCategory,
     handleFeedback,
@@ -17,10 +19,17 @@ import {
     handleShowHelpMenu,
     handleShowAllCommands
 } from './helpHandler.js';
-import { handlePlaylistButton, handlePlaylistModalSubmit } from './playlistHandler.js';
+import { handlePlaylistButton, handlePlaylistModalSubmit, handlePlaylistAutocomplete } from './playlists/index.js';
+import {
+    handleSuggestionAccept,
+    handleSuggestionDismiss,
+    handleDisableConfirm,
+    handleDisableCancel
+} from './autoPlaySuggestionHandler.js';
+import { handlePreferencesButton } from '../commands/settings/mypreferences.js';
 import { commandRateLimiter } from '../utils/rate-limiter.js';
-import Playlist from '../database/models/Playlist.js';
 import { getEventQueue, Priority } from '../utils/EventQueue.js';
+import * as contextMenusModule from '../commands/social/context-menus.js';
 
 // Commands that are CPU/IO intensive and should be queued
 const HEAVY_COMMANDS = new Set([
@@ -48,8 +57,98 @@ const INSTANT_COMMANDS = new Set([
     'queue',
     'shuffle',
     'loop',
-    'seek'
+    'seek',
+    'mypreferences'
 ]);
+
+// Button Rate Limiter (10 clicks per 5 seconds)
+const BUTTON_RATE_LIMIT = 10;
+const BUTTON_WINDOW_MS = 5000;
+const buttonUsage = new Map();
+
+// BUG-MW01: Tiered rate limiting for heavy commands (3 per 30s)
+const HEAVY_COMMAND_RATE_LIMIT = 3;
+const HEAVY_COMMAND_WINDOW_MS = 30000;
+const heavyCommandUsage = new Map();
+
+// Periodic cleanup for heavyCommandUsage to prevent unbounded Map growth
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of heavyCommandUsage.entries()) {
+        if (now > value.resetAt) heavyCommandUsage.delete(key);
+    }
+}, HEAVY_COMMAND_WINDOW_MS * 6).unref();
+
+/**
+ * BUG-MW01: Check if user exceeded heavy command rate limit
+ * @param {string} userId
+ * @param {string} commandName
+ * @returns {{ allowed: boolean, remaining?: number, resetIn?: number, reason?: string }}
+ */
+function checkHeavyCommandRateLimit(userId, commandName) {
+    if (!HEAVY_COMMANDS.has(commandName)) return { allowed: true };
+
+    const now = Date.now();
+    const key = `${userId}:heavy`;
+    const usage = heavyCommandUsage.get(key);
+
+    if (!usage || now >= usage.resetAt) {
+        heavyCommandUsage.set(key, { count: 1, resetAt: now + HEAVY_COMMAND_WINDOW_MS });
+        return { allowed: true, remaining: HEAVY_COMMAND_RATE_LIMIT - 1 };
+    }
+
+    if (usage.count < HEAVY_COMMAND_RATE_LIMIT) {
+        usage.count++;
+        return { allowed: true, remaining: HEAVY_COMMAND_RATE_LIMIT - usage.count };
+    }
+
+    return {
+        allowed: false,
+        remaining: 0,
+        resetIn: usage.resetAt - now,
+        reason: 'Bạn đang sử dụng quá nhiều lệnh nặng (play, search, lyrics...)! Vui lòng đợi.'
+    };
+}
+
+/**
+ * Check if user exceeded button rate limit
+ * @param {string} userId
+ * @returns {boolean} True if rate limited
+ */
+function checkButtonRateLimit(userId) {
+    const now = Date.now();
+    const userUsage = buttonUsage.get(userId) || { count: 0, resetAt: now + BUTTON_WINDOW_MS };
+
+    if (now > userUsage.resetAt) {
+        userUsage.count = 0;
+        userUsage.resetAt = now + BUTTON_WINDOW_MS;
+    }
+
+    userUsage.count++;
+    buttonUsage.set(userId, userUsage);
+
+    if (userUsage.count > BUTTON_RATE_LIMIT) {
+        return true;
+    }
+
+    // Auto-cleanup
+    if (buttonUsage.size > 200) {
+        // Simple cleanup of old entries
+        for (const [key, value] of buttonUsage.entries()) {
+            if (now > value.resetAt) buttonUsage.delete(key);
+        }
+    }
+
+    return false;
+}
+
+// BUG-E09: Periodic proactive cleanup of buttonUsage Map to prevent unbounded growth
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, value] of buttonUsage.entries()) {
+        if (now > value.resetAt) buttonUsage.delete(key);
+    }
+}, BUTTON_WINDOW_MS * 6).unref(); // Clean up every 30 seconds
 
 export default {
     name: 'interactionCreate',
@@ -77,6 +176,16 @@ export default {
 
         // Handle button interactions
         if (interaction.isButton()) {
+            // Security H4: Button Interaction Rate Limit
+            if (checkButtonRateLimit(interaction.user.id)) {
+                await interaction.reply({
+                    content: '⚠️ Bạn đang thao tác quá nhanh! Vui lòng đợi một chút.',
+                    ephemeral: true
+                });
+                logger.warn(`Button rate limit hit for user ${interaction.user.id}`);
+                return;
+            }
+
             await handleButton(interaction, client);
             return;
         }
@@ -115,39 +224,16 @@ async function handleAutocomplete(interaction) {
         }
 
         if (interaction.commandName === 'playlist') {
-            const focusedOption = interaction.options.getFocused(true);
+            await handlePlaylistAutocomplete(interaction);
+            return;
+        }
 
-            if (focusedOption.name === 'name') {
-                const query = focusedOption.value.toLowerCase();
-
-                // Get user's own playlists
-                const userPlaylists = Playlist.getByOwner(interaction.user.id, interaction.guildId);
-
-                // Get public playlists in the guild (from other users/bot)
-                const publicPlaylists = Playlist.getPublic(interaction.guildId);
-
-                // Combine and deduplicate (user's own playlists take priority)
-                const userPlaylistNames = new Set(userPlaylists.map(p => p.name));
-                const combinedPlaylists = [
-                    ...userPlaylists,
-                    ...publicPlaylists.filter(p => !userPlaylistNames.has(p.name))
-                ];
-
-                // Filter by search query
-                const filtered = combinedPlaylists.filter(p => p.name.toLowerCase().includes(query));
-
-                // Create choices with indicator for public vs own playlists
-                const choices = filtered.slice(0, 25).map(p => {
-                    const isOwn = p.owner_id === interaction.user.id;
-                    const prefix = isOwn ? '📁' : '🌐';
-                    return {
-                        name: `${prefix} ${p.name} (${p.track_count || 0} bài hát)`,
-                        value: p.name
-                    };
-                });
-
-                await interaction.respond(choices);
-            }
+        // BUG-E12: Generic fallback — delegate to command.autocomplete() if available
+        const command = interaction.client.commands.get(interaction.commandName);
+        if (command && typeof command.autocomplete === 'function') {
+            await command.autocomplete(interaction);
+        } else {
+            await interaction.respond([]);
         }
     } catch (error) {
         logger.error(`Error handling autocomplete for ${interaction.commandName}`, error);
@@ -178,13 +264,19 @@ async function handleModalSubmit(interaction, client) {
 
         logger.info(`Modal handled successfully: ${interaction.customId}`);
     } catch (error) {
+        if (error.code === 10062) {
+            logger.debug(`Interaction expired (modal): ${interaction.customId}`);
+            return;
+        }
         logger.error(`Error handling modal ${interaction.customId}`, error);
 
         if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({
-                content: '❌ Đã xảy ra lỗi khi xử lý form!',
-                ephemeral: true
-            });
+            await interaction
+                .reply({
+                    content: '❌ Đã xảy ra lỗi khi xử lý form!',
+                    ephemeral: true
+                })
+                .catch(() => {});
         }
     }
 }
@@ -195,10 +287,16 @@ async function handleModalSubmit(interaction, client) {
 async function handleSelectMenu(interaction, client) {
     logger.debug(`Select menu used: ${interaction.customId}`);
 
+    // BUG-E04: Validate interaction.values before processing
+    if (!interaction.values?.length) {
+        logger.debug(`Select menu ${interaction.customId} has no values, ignoring`);
+        return;
+    }
+
     try {
         if (interaction.customId === 'help_category') {
             await handleHelpCategory(interaction, client);
-        } else if (interaction.customId === 'search_select') {
+        } else if (interaction.customId.startsWith('search_select')) {
             await handleSearchSelect(interaction, client);
         } else if (interaction.customId === 'history_replay_select') {
             await handleHistoryReplaySelect(interaction, client);
@@ -212,19 +310,28 @@ async function handleSelectMenu(interaction, client) {
             await handleDiscoverySelect(interaction, client, 'trending');
         } else if (interaction.customId === 'context_menu_add_to_playlist') {
             // Handle context menu playlist selection
-            const contextMenus = await import('../commands/social/context-menus.js');
-            await contextMenus.handleContextMenuPlaylistSelect(interaction, client);
+            await contextMenusModule.handleContextMenuPlaylistSelect(interaction, client);
+        } else if (interaction.customId === 'music_filter_select') {
+            await handleFilterSelect(interaction, client);
+        } else if (interaction.customId === 'music_volume_select') {
+            await handleVolumeSelect(interaction, client);
         }
 
         logger.info(`Select menu handled successfully: ${interaction.customId}`);
     } catch (error) {
+        if (error.code === 10062) {
+            logger.debug(`Interaction expired (select menu): ${interaction.customId}`);
+            return;
+        }
         logger.error(`Error handling select menu ${interaction.customId}`, error);
 
         if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({
-                content: '❌ Đã xảy ra lỗi khi xử lý menu!',
-                ephemeral: true
-            });
+            await interaction
+                .reply({
+                    content: '❌ Đã xảy ra lỗi khi xử lý menu!',
+                    ephemeral: true
+                })
+                .catch(() => {});
         }
     }
 }
@@ -258,8 +365,8 @@ async function handleButton(interaction, client) {
         // Queue navigation buttons (pagination only)
         else if (
             interaction.customId.startsWith('queue_') &&
-            ['queue_first', 'queue_previous', 'queue_refresh', 'queue_next', 'queue_last'].includes(
-                interaction.customId
+            ['queue_first', 'queue_previous', 'queue_refresh', 'queue_next', 'queue_last'].some(prefix =>
+                interaction.customId.startsWith(prefix)
             )
         ) {
             await handleQueueButton(interaction, client.musicManager.getQueue(interaction.guildId), client);
@@ -286,16 +393,41 @@ async function handleButton(interaction, client) {
         ) {
             await handleMusicButton(interaction, client);
         }
+        // Auto-play preference buttons (suggestion accept/dismiss, disable confirm/cancel, prefs pagination)
+        else if (interaction.customId.startsWith('ap_')) {
+            const id = interaction.customId;
+            if (id === 'ap_suggest_accept') {
+                await handleSuggestionAccept(interaction, client);
+            } else if (id === 'ap_suggest_dismiss') {
+                await handleSuggestionDismiss(interaction);
+            } else if (id === 'ap_disable_confirm') {
+                await handleDisableConfirm(interaction, client);
+            } else if (id === 'ap_disable_cancel') {
+                await handleDisableCancel(interaction, client);
+            } else if (id.startsWith('ap_pref_')) {
+                await handlePreferencesButton(interaction, client);
+            }
+        } else {
+            // BUG-E03: Unrecognized button - log and skip
+            logger.debug(`Unhandled button customId: ${interaction.customId}`);
+            return;
+        }
 
         logger.info(`Button handled successfully: ${interaction.customId}`);
     } catch (error) {
+        if (error.code === 10062) {
+            logger.debug(`Interaction expired (button): ${interaction.customId}`);
+            return;
+        }
         logger.error(`Error handling button ${interaction.customId}`, error);
 
         if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({
-                content: '❌ Đã xảy ra lỗi khi xử lý nút này!',
-                ephemeral: true
-            });
+            await interaction
+                .reply({
+                    content: '❌ Đã xảy ra lỗi khi xử lý nút này!',
+                    ephemeral: true
+                })
+                .catch(() => {});
         }
     }
 }
@@ -307,23 +439,27 @@ async function handleContextMenu(interaction, client) {
     logger.debug(`Context menu command: ${interaction.commandName}`);
 
     try {
-        const contextMenus = await import('../commands/social/context-menus.js');
-
         if (interaction.commandName === 'Thêm vào Queue') {
-            await contextMenus.addToQueueContextMenu.execute(interaction, client);
+            await contextMenusModule.addToQueueContextMenu.execute(interaction, client);
         } else if (interaction.commandName === 'Thêm vào Playlist') {
-            await contextMenus.addToPlaylistContextMenu.execute(interaction, client);
+            await contextMenusModule.addToPlaylistContextMenu.execute(interaction, client);
         }
 
         logger.info(`Context menu handled successfully: ${interaction.commandName}`);
     } catch (error) {
+        if (error.code === 10062) {
+            logger.debug(`Interaction expired (context menu): ${interaction.commandName}`);
+            return;
+        }
         logger.error(`Error handling context menu ${interaction.commandName}`, error);
 
         if (!interaction.replied && !interaction.deferred) {
-            await interaction.reply({
-                content: '❌ Đã xảy ra lỗi khi thực thi context menu!',
-                ephemeral: true
-            });
+            await interaction
+                .reply({
+                    content: '❌ Đã xảy ra lỗi khi thực thi context menu!',
+                    ephemeral: true
+                })
+                .catch(() => {});
         }
     }
 }
@@ -361,8 +497,26 @@ async function processSlashCommand(interaction, client) {
         return;
     }
 
-    // Determine if command should be queued
+    // BUG-MW01: Tiered rate limiting - stricter limits for heavy/expensive commands
     const commandName = interaction.commandName;
+    if (!isAdmin) {
+        const heavyCheck = checkHeavyCommandRateLimit(interaction.user.id, commandName);
+        if (!heavyCheck.allowed) {
+            logger.warn(`Heavy command rate limit exceeded for user ${interaction.user.id}`, {
+                command: commandName,
+                resetIn: heavyCheck.resetIn
+            });
+
+            await interaction.reply({
+                content: `⏱️ ${heavyCheck.reason}\n\n• Reset sau: ${Math.ceil(heavyCheck.resetIn / 1000)} giây`,
+                ephemeral: true
+            });
+
+            return;
+        }
+    }
+
+    // Determine if command should be queued
     const shouldQueue = HEAVY_COMMANDS.has(commandName);
     const isInstant = INSTANT_COMMANDS.has(commandName);
 
@@ -373,28 +527,48 @@ async function processSlashCommand(interaction, client) {
     if (shouldQueue && eventQueue.isCritical) {
         logger.warn(`EventQueue critical - deferring heavy command: ${commandName}`);
 
-        // Show backpressure message
-        await interaction.reply({
-            content: '⏳ Server đang xử lý nhiều request. Lệnh của bạn đang được xếp hàng, vui lòng đợi...',
-            ephemeral: true
-        });
+        // Defer immediately to avoid double-reply when queued command executes later
+        await interaction.deferReply({ ephemeral: true });
+        try {
+            await interaction.editReply({
+                content: '⏳ Server đang xử lý nhiều request. Lệnh của bạn đang được xếp hàng, vui lòng đợi...'
+            });
+        } catch {
+            // Ignore message update failures (interaction may expire)
+        }
 
         // Queue with normal priority
         const enqueued = await eventQueue.enqueue(
             async ctx => {
                 try {
+                    // FIX-LB04: Check if interaction has expired before processing
+                    // Discord interactions expire after 15 minutes (deferred) or 3 seconds (not deferred)
+                    const queueWaitTime = Date.now() - ctx.enqueuedAt;
+                    if (queueWaitTime > 14 * 60 * 1000) {
+                        logger.debug(
+                            `Queued interaction expired after ${Math.round(queueWaitTime / 1000)}s: ${ctx.commandName}`
+                        );
+                        return;
+                    }
+
                     await executeCommand(ctx.interaction, ctx.client, ctx.command);
-                    // Edit the reply to show completion
-                    await ctx.interaction
-                        .editReply({
-                            content: '✅ Đã xử lý xong!'
-                        })
-                        .catch(() => {});
+
+                    if (!ctx.interaction.replied && ctx.interaction.deferred) {
+                        await ctx.interaction
+                            .editReply({
+                                content: '✅ Đã xử lý xong!'
+                            })
+                            .catch(() => {});
+                    }
                 } catch (error) {
+                    if (error.code === 10062) {
+                        logger.debug(`Queued interaction expired (10062): ${ctx.commandName}`);
+                        return;
+                    }
                     logger.error(`Queued command error: ${ctx.commandName}`, error);
                 }
             },
-            { interaction, client, command, commandName },
+            { interaction, client, command, commandName, enqueuedAt: Date.now() },
             Priority.NORMAL
         );
 
@@ -429,12 +603,28 @@ async function executeCommand(interaction, client, command) {
 
         logger.info(`Command executed successfully: /${interaction.commandName} (${responseTime}ms)`);
     } catch (error) {
+        if (error.code === 10062) {
+            logger.debug(`Interaction expired (command): ${interaction.commandName}`);
+            return;
+        }
         logger.error(`Error executing command ${interaction.commandName}`, error);
 
-        // Track error
+        // Track error metrics
         if (client.metrics) {
             client.metrics.trackCommand(interaction.commandName, false);
             client.metrics.trackError(error, 'command');
+        }
+
+        // BUG-E01: Emit commandError event for external monitoring/handling
+        try {
+            client.emit('commandError', {
+                command: interaction.commandName,
+                userId: interaction.user?.id,
+                guildId: interaction.guildId,
+                error
+            });
+        } catch (_) {
+            /* never let event emission break error handling */
         }
 
         const errorMessage = {
@@ -442,147 +632,18 @@ async function executeCommand(interaction, client, command) {
             ephemeral: true
         };
 
-        if (interaction.replied || interaction.deferred) {
-            await interaction.followUp(errorMessage);
-        } else {
-            await interaction.reply(errorMessage);
-        }
-    }
-}
-
-/**
- * Handle personal history select menu for replaying tracks from database history
- */
-async function handlePersonalHistorySelect(interaction, client) {
-    try {
-        const selectedValue = interaction.values?.[0];
-        if (!selectedValue) {
-            return interaction.update({
-                content: '❌ Không thể xác định lựa chọn của bạn.',
-                embeds: [],
-                components: []
-            });
-        }
-
-        const idx = parseInt(selectedValue.split('_').pop());
-        if (isNaN(idx) || idx < 0) {
-            return interaction.update({
-                content: '❌ Lựa chọn không hợp lệ.',
-                embeds: [],
-                components: []
-            });
-        }
-
-        // Get cached history
-        const cacheKey = `history_personal:${interaction.user.id}`;
-        let historyData = null;
-
-        if (client.cacheManager) {
-            historyData = client.cacheManager.get('history', cacheKey);
-        } else if (client._personalHistoryCache) {
-            historyData = client._personalHistoryCache.get(cacheKey);
-        }
-
-        if (!historyData || !Array.isArray(historyData.tracks)) {
-            return interaction.update({
-                content: '❌ Phiên lịch sử đã hết hạn, hãy dùng lại /history.',
-                embeds: [],
-                components: []
-            });
-        }
-
-        const historyEntry = historyData.tracks[idx];
-        if (!historyEntry || !historyEntry.track_url) {
-            return interaction.update({
-                content: '❌ Bài hát không hợp lệ.',
-                embeds: [],
-                components: []
-            });
-        }
-
-        // Check voice channel
-        const member = interaction.member;
-        const voiceChannel = member.voice.channel;
-
-        if (!voiceChannel) {
-            return interaction.reply({
-                content: '❌ Bạn phải ở trong voice channel!',
-                ephemeral: true
-            });
-        }
-
-        // Get or create queue
-        let queue = client.musicManager.getQueue(interaction.guildId);
-
-        if (!queue) {
-            queue = await client.musicManager.createQueue(interaction.guildId, voiceChannel.id, interaction.channel);
-        }
-
-        if (queue.voiceChannelId !== voiceChannel.id) {
-            return interaction.reply({
-                content: '❌ Bot đang ở voice channel khác!',
-                ephemeral: true
-            });
-        }
-
-        // Search for the track
-        const result = await client.musicManager.search(historyEntry.track_url, interaction.user);
-
-        if (!result || !result.tracks || result.tracks.length === 0) {
-            return interaction.update({
-                content: `❌ Không thể tìm thấy bài hát: **${historyEntry.track_title}**`,
-                embeds: [],
-                components: []
-            });
-        }
-
-        const track = result.tracks[0];
-        track.requester = interaction.user.id;
-
-        // Add to queue
-        queue.add(track);
-        const position = queue.current ? queue.tracks.length : 1;
-
-        // Clean up cache
-        if (client.cacheManager) {
-            client.cacheManager.delete('history', cacheKey);
-        } else if (client._personalHistoryCache) {
-            client._personalHistoryCache.delete(cacheKey);
-        }
-
-        // Import embeds
-        const { createTrackAddedEmbed, createNowPlayingEmbed } = await import('../UI/embeds/MusicEmbeds.js');
-        const { createNowPlayingButtons } = await import('../UI/components/MusicControls.js');
-
-        await interaction.update({
-            embeds: [createTrackAddedEmbed(track, position, client.config)],
-            components: []
-        });
-
-        // Start playing if not already
-        if (!queue.current) {
-            await queue.play();
-
-            try {
-                const nowPlayingMessage = await interaction.channel.send({
-                    embeds: [createNowPlayingEmbed(queue.current, queue, client.config)],
-                    components: createNowPlayingButtons(queue, false)
-                });
-                queue.setNowPlayingMessage(nowPlayingMessage);
-            } catch (err) {
-                logger.error('Failed to send now playing message after history replay', err);
+        try {
+            if (interaction.replied || interaction.deferred) {
+                await interaction.followUp(errorMessage);
+            } else {
+                await interaction.reply(errorMessage);
+            }
+        } catch (replyError) {
+            if (replyError.code === 10062) {
+                logger.debug(`Interaction expired while sending error (command): ${interaction.commandName}`);
+            } else {
+                logger.error(`Failed to send error reply for ${interaction.commandName}`, replyError);
             }
         }
-
-        logger.info(`Track replayed from personal history: ${track.info?.title}`);
-    } catch (error) {
-        logger.error('Personal history select handler error', error);
-        await interaction
-            .update({
-                content: '❌ Đã xảy ra lỗi khi phát lại bài hát!',
-                embeds: [],
-                components: []
-            })
-            .catch(() => {});
     }
 }

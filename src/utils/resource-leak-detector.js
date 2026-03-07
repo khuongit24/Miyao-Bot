@@ -14,6 +14,8 @@ export class EventListenerTracker {
         this.listeners = new Map();
         this.warnings = [];
         this.maxListeners = 10;
+        this._emitterIds = new WeakMap();
+        this._nextEmitterId = 1;
     }
 
     /**
@@ -71,8 +73,12 @@ export class EventListenerTracker {
      * Get unique key for emitter + event
      */
     getKey(emitter, event) {
-        const emitterId = emitter.id || emitter.constructor.name || 'unknown';
-        return `${emitterId}:${event}`;
+        let emitterId = this._emitterIds.get(emitter);
+        if (emitterId === undefined) {
+            emitterId = this._nextEmitterId++;
+            this._emitterIds.set(emitter, emitterId);
+        }
+        return `emitter_${emitterId}::${event}`;
     }
 
     /**
@@ -278,11 +284,11 @@ export class TimerTracker {
      * Clear all tracked timers/intervals
      */
     clearAll() {
-        for (const [id, timer] of this.timers.entries()) {
+        for (const [_id, timer] of this.timers.entries()) {
             clearTimeout(timer.timerId);
         }
 
-        for (const [id, interval] of this.intervals.entries()) {
+        for (const [_id, interval] of this.intervals.entries()) {
             clearInterval(interval.intervalId);
         }
 
@@ -307,6 +313,7 @@ export class TimerTracker {
 export class CollectorTracker {
     constructor() {
         this.collectors = new Map();
+        this._cleanupTimers = new Map(); // Track deferred-removal timeouts to prevent timer leaks
         this.nextId = 1;
     }
 
@@ -330,13 +337,16 @@ export class CollectorTracker {
                 entry.ended = true;
                 entry.endedAt = Date.now();
 
-                // Remove after 5 minutes
-                setTimeout(
+                // Remove after 5 minutes — track the timer so it can be cleared on destroy
+                const timerId = setTimeout(
                     () => {
                         this.collectors.delete(id);
+                        this._cleanupTimers.delete(id);
                     },
                     5 * 60 * 1000
                 );
+                timerId.unref?.(); // Don't keep the process alive for cleanup
+                this._cleanupTimers.set(id, timerId);
             }
         });
 
@@ -350,6 +360,12 @@ export class CollectorTracker {
         const entry = this.collectors.get(id);
         if (entry && !entry.ended) {
             entry.collector.stop();
+            // Clear the deferred-removal timer if one was scheduled
+            const timerId = this._cleanupTimers.get(id);
+            if (timerId) {
+                clearTimeout(timerId);
+                this._cleanupTimers.delete(id);
+            }
             return true;
         }
         return false;
@@ -408,6 +424,28 @@ export class CollectorTracker {
             ended: Array.from(this.collectors.values()).filter(e => e.ended).length,
             orphaned: this.findOrphaned()
         };
+    }
+
+    /**
+     * Destroy tracker — clear all pending cleanup timeouts and tracked collectors
+     */
+    destroy() {
+        // Stop all active collectors before clearing
+        for (const [, entry] of this.collectors) {
+            if (!entry.ended) {
+                try {
+                    entry.collector.stop('cleanup');
+                } catch {
+                    /* ignore */
+                }
+            }
+        }
+        this.collectors.clear();
+        // Clear all deferred-removal timeouts to prevent timer leaks
+        for (const timerId of this._cleanupTimers.values()) {
+            clearTimeout(timerId);
+        }
+        this._cleanupTimers.clear();
     }
 }
 
@@ -500,10 +538,13 @@ export class ResourceLeakMonitor extends EventEmitter {
     cleanupAll() {
         logger.info('Cleaning up all tracked resources...');
 
+        this.eventListenerTracker.clear();
         this.timerTracker.clearAll();
-        const orphaned = this.collectorTracker.stopOrphaned(0); // Stop all
+        const orphaned = this.collectorTracker.stopOrphaned();
+        this.collectorTracker.destroy();
 
-        logger.info(`Cleanup complete: stopped ${orphaned} collectors`);
+        logger.info('Cleanup complete', { orphaned });
+        return { orphaned };
     }
 }
 

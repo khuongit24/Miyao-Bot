@@ -1,22 +1,30 @@
 /**
  * @file EnhancedQueue.js
  * @description Enhanced Queue with advanced features for music playback
- * @version 1.9.1 - Performance optimization: cached imports for hot paths
+ * @version 2.0.0 - Refactored: extracted FilterManager, ReconnectionManager, ProgressTracker, AutoplayManager
  */
 
 import logger from '../utils/logger.js';
-import { TIME, PLAYBACK, AUTOPLAY, RECONNECTION } from '../utils/constants.js';
-import { getRecommendationEngine } from './RecommendationEngine.js';
+import { TIME, PLAYBACK, QUEUE } from '../utils/constants.js';
 import { EmbedBuilder } from 'discord.js';
+import { COLORS, ICONS } from '../config/design-system.js';
+import { createOAuthErrorEmbed } from '../UI/embeds/ErrorEmbeds.js';
 
-// Pre-import frequently used UI modules to avoid dynamic import overhead in hot paths
-// These are used in updateNowPlaying(), autoplay notifications, and reconnection messages
-// which can be called many times during playback
-import { createNowPlayingEmbed } from '../UI/embeds/MusicEmbeds.js';
-import { createNowPlayingButtons } from '../UI/components/MusicControls.js';
+// Extracted managers
+import { FilterManager } from './FilterManager.js';
+import { ReconnectionManager } from './ReconnectionManager.js';
+import { ProgressTracker } from './ProgressTracker.js';
+import { AutoplayManager } from './AutoplayManager.js';
+import { recordTrackEndFullListen } from '../events/autoPlaySuggestionHandler.js';
+import History from '../database/models/History.js';
 
 /**
  * Enhanced Queue with advanced features
+ * Delegates specialized concerns to dedicated managers:
+ * - FilterManager: audio filter state, presets, compatibility
+ * - ReconnectionManager: exponential backoff reconnection
+ * - ProgressTracker: adaptive now-playing message updates
+ * - AutoplayManager: automatic track recommendation and queuing
  */
 export class EnhancedQueue {
     /**
@@ -26,7 +34,7 @@ export class EnhancedQueue {
      * @param {string} voiceChannelId - Voice channel ID
      * @param {TextChannel} textChannel - Text channel for notifications
      */
-    constructor(manager, guildId, voiceChannelId, textChannel) {
+    constructor(manager, guildId, voiceChannelId, textChannel, options = {}) {
         this.manager = manager;
         this.guildId = guildId;
         this.voiceChannelId = voiceChannelId;
@@ -36,36 +44,30 @@ export class EnhancedQueue {
         this.current = null;
         this.player = null;
         this.loop = 'off';
-        this.volume = manager.config.music.defaultVolume || 50;
+        this.volume = options.volume ?? manager.config?.music?.defaultVolume ?? 50;
         this.paused = false;
-        this.autoplay = false; // Autoplay related tracks
-        this.removeDuplicates = false; // Auto-remove duplicate tracks when adding
-
-        // Filters
-        this.filters = {
-            equalizer: [],
-            karaoke: null,
-            timescale: null,
-            tremolo: null,
-            vibrato: null,
-            rotation: null,
-            distortion: null,
-            channelMix: null,
-            lowPass: null
-        };
+        this.removeDuplicates = false;
 
         this.leaveTimeout = null;
-        this.nowPlayingMessage = null;
-        this.updateInterval = null;
+        this._isLeavingGracefully = false;
+        this._skippingToPrevious = false;
 
-        // Smart progress update tracking
-        this.lastUserInteraction = Date.now(); // Track last user interaction
-        this.lastProgressUpdate = 0; // Track last progress update time for debounce
-        this.progressUpdatePaused = false; // Flag to pause updates when idle
+        // Track last activity time for stale queue detection
+        this.lastActivityTime = Date.now();
+
+        // YouTube OAuth failure detection
+        this._oauthFailureDetected = false;
+        this._consecutiveOAuthErrors = 0;
+
+        // Dead-letter list for permanently failed tracks (EQ-H01)
+        this.failedTracks = [];
+        this.maxFailedTracks = 50;
 
         // Track history for analytics
         this.history = [];
-        this.maxHistory = 50;
+        this.maxHistory = options.maxHistory ?? manager.config?.music?.maxHistorySize ?? QUEUE.MAX_HISTORY_SIZE;
+        this._existingUris = new Set();
+        this._uriIndexDirty = true;
 
         // Playback statistics
         this.stats = {
@@ -75,54 +77,395 @@ export class EnhancedQueue {
             errors: 0
         };
 
-        // Reconnection state for exponential backoff
-        this.reconnectionState = {
-            attempts: 0,
-            lastAttempt: 0,
-            isReconnecting: false
-        };
+        // --- Extracted Managers ---
+        /** @type {FilterManager} Audio filter management */
+        this.filterManager = new FilterManager(guildId);
 
-        // Filter compatibility map: defines which filters CAN work together
-        // Key: filter type, Value: array of compatible filter types
-        // If a filter is NOT in the compatible list, it will be cleared when applying the key filter
-        this.COMPATIBLE_FILTERS = {
-            // Equalizer presets are compatible with rotation (8D), tremolo, vibrato, lowPass
-            equalizer: ['rotation', 'tremolo', 'vibrato', 'lowPass', 'channelMix'],
-            // Timescale (nightcore/vaporwave) is compatible with rotation (8D), tremolo, vibrato
-            // NOTE: timescale and equalizer are NOT compatible as per original design (they conflict)
-            timescale: ['rotation', 'tremolo', 'vibrato', 'lowPass', 'channelMix'],
-            // Rotation (8D) is compatible with everything except other rotation
-            rotation: [
-                'equalizer',
-                'timescale',
-                'tremolo',
-                'vibrato',
-                'karaoke',
-                'distortion',
-                'lowPass',
-                'channelMix'
-            ],
-            // Karaoke is compatible with most filters
-            karaoke: ['equalizer', 'timescale', 'rotation', 'tremolo', 'vibrato', 'lowPass', 'channelMix'],
-            // Tremolo/Vibrato are compatible with most
-            tremolo: ['equalizer', 'timescale', 'rotation', 'karaoke', 'vibrato', 'lowPass', 'channelMix'],
-            vibrato: ['equalizer', 'timescale', 'rotation', 'karaoke', 'tremolo', 'lowPass', 'channelMix'],
-            // Distortion is generally incompatible with equalizer for clean sound
-            distortion: ['rotation', 'timescale', 'tremolo', 'vibrato', 'channelMix'],
-            // Low pass is compatible with most
-            lowPass: ['equalizer', 'timescale', 'rotation', 'karaoke', 'tremolo', 'vibrato', 'channelMix'],
-            // Channel mix is compatible with most
-            channelMix: ['equalizer', 'timescale', 'rotation', 'karaoke', 'tremolo', 'vibrato', 'lowPass', 'distortion']
-        };
+        /** @type {ReconnectionManager} Voice reconnection with backoff */
+        this.reconnectionManager = new ReconnectionManager(guildId);
 
-        // Filters that CONFLICT and will be cleared (inverse of compatibility)
-        // This is a special case: timescale and equalizer cannot coexist well
-        // because timescale changes pitch/speed which affects how EQ sounds
-        this.CONFLICTING_FILTERS = {
-            timescale: ['equalizer'], // Nightcore/Vaporwave clears equalizer
-            equalizer: ['timescale'] // Applying EQ preset clears nightcore/vaporwave
-        };
+        /** @type {ProgressTracker} Now-playing progress updates */
+        this.progressTracker = new ProgressTracker(guildId);
+
+        /** @type {AutoplayManager} Automatic track recommendation */
+        this.autoplayManager = new AutoplayManager(guildId);
+
+        this._playerEventHandlers = null;
+
+        // Playback watchdog — detects silent playback failures
+        this._playbackWatchdogTimer = null;
+        this._watchdogTrack = null;
+        this._lastKnownPosition = 0;
+        this._positionStallCount = 0;
+
+        // Connection state flag — prevents voiceStateUpdate from destroying
+        // the queue during connect() retry attempts
+        this._isConnecting = false;
     }
+
+    _markUriIndexDirty() {
+        this._uriIndexDirty = true;
+    }
+
+    _getExistingUris() {
+        if (!this._uriIndexDirty) {
+            return this._existingUris;
+        }
+
+        this._existingUris = new Set();
+
+        if (this.current?.info?.uri) {
+            this._existingUris.add(this.current.info.uri);
+        }
+
+        for (const track of this.tracks) {
+            if (track?.info?.uri) {
+                this._existingUris.add(track.info.uri);
+            }
+        }
+
+        this._uriIndexDirty = false;
+        return this._existingUris;
+    }
+
+    /**
+     * Check if an error message indicates a YouTube OAuth/authentication failure
+     * @param {string} message - Error message to check
+     * @returns {boolean}
+     * @private
+     */
+    _isOAuthError(message) {
+        if (!message) return false;
+        const lower = message.toLowerCase();
+        const oauthPatterns = [
+            'login',
+            'oauth',
+            'all clients failed',
+            'allclientsfailedexception',
+            'requires authentication',
+            'sign in to confirm',
+            'status code 403',
+            'embedder_identity_denied',
+            'video requires login',
+            'video player configuration error'
+        ];
+        return oauthPatterns.some(pattern => lower.includes(pattern));
+    }
+
+    /**
+     * Try to find and play the failed track from an alternative source.
+     * Searches SoundCloud first, then Deezer (if enabled).
+     * If all sources fail, calls _handleAllSourcesFailed().
+     * @param {Object} failedTrack - The track that failed to play
+     * @private
+     */
+    async _tryAlternativeSource(failedTrack) {
+        if (!failedTrack?.info?.title) {
+            logger.warn('[EnhancedQueue] Cannot try alternative source: no track info', {
+                guildId: this.guildId
+            });
+            this._handleAllSourcesFailed();
+            return;
+        }
+
+        const searchTerms = `${failedTrack.info.title} ${failedTrack.info.author || ''}`.trim();
+
+        const altSources = [{ prefix: 'scsearch', name: 'SoundCloud' }];
+        if (process.env.DEEZER_ENABLED === 'true' && process.env.DEEZER_ARL) {
+            altSources.push({ prefix: 'dzsearch', name: 'Deezer' });
+        }
+
+        for (const source of altSources) {
+            try {
+                const altQuery = `${source.prefix}:${searchTerms}`;
+                const result = await this.manager.searchDirect(altQuery);
+
+                if (result?.tracks?.length > 0) {
+                    const altTrack = result.tracks[0];
+                    logger.info(
+                        `[EnhancedQueue] Found alternative on ${source.name}: ` +
+                            `"${altTrack.info.title}" (original: "${failedTrack.info.title}")`,
+                        { guildId: this.guildId }
+                    );
+                    this.tracks.unshift(altTrack);
+                    this._sendSourceSwitchNotification(failedTrack, altTrack, source.name);
+                    this._consecutiveOAuthErrors = 0;
+                    await this.play();
+                    return;
+                }
+            } catch (error) {
+                logger.warn(`[EnhancedQueue] Alternative source ${source.name} failed: ${error.message}`, {
+                    guildId: this.guildId
+                });
+            }
+        }
+
+        logger.error('[EnhancedQueue] All alternative sources failed', {
+            guildId: this.guildId,
+            originalTrack: failedTrack.info.title
+        });
+        this._handleAllSourcesFailed();
+    }
+
+    /**
+     * Send a notification embed when the bot switches to an alternative source.
+     * @param {Object} originalTrack - The track that failed
+     * @param {Object} altTrack - The alternative track found
+     * @param {string} sourceName - Name of the alternative source
+     * @private
+     */
+    _sendSourceSwitchNotification(originalTrack, altTrack, sourceName) {
+        if (!this.textChannel) return;
+
+        const embed = {
+            color: 0xffa500,
+            title: '\uD83D\uDD04 Tự động chuyển nguồn nhạc',
+            description: [
+                `\u26A0\uFE0F YouTube không khả dụng cho bài **${originalTrack.info.title}**`,
+                `\uD83D\uDD04 Đã tự động tìm trên **${sourceName}**`,
+                `\uD83C\uDFB5 Đang phát: **${altTrack.info.title}** — ${altTrack.info.author || 'Unknown'}`
+            ].join('\n'),
+            footer: { text: 'Chất lượng âm thanh có thể khác biệt do nguồn nhạc khác nhau' }
+        };
+
+        this.textChannel.send({ embeds: [embed] }).catch(err => {
+            logger.warn(`[EnhancedQueue] Failed to send source switch notification: ${err.message}`, {
+                guildId: this.guildId
+            });
+        });
+    }
+
+    /**
+     * Handle the case when all alternative sources have failed.
+     * Sends an error embed, clears the queue, and schedules leave.
+     * @private
+     */
+    _handleAllSourcesFailed() {
+        if (this.textChannel) {
+            const embed = {
+                color: 0xff0000,
+                title: '\u274C Không thể phát nhạc',
+                description: [
+                    'Tất cả nguồn nhạc đều không khả dụng.',
+                    '',
+                    '**Nguyên nhân có thể:**',
+                    '\u2022 YouTube yêu cầu xác thực OAuth',
+                    '\u2022 SoundCloud không tìm thấy bài tương tự',
+                    '\u2022 Kết nối mạng không ổn định',
+                    '',
+                    '**Giải pháp:**',
+                    '\u2022 Thử lại sau vài phút',
+                    '\u2022 Sử dụng URL trực tiếp từ SoundCloud hoặc Bandcamp',
+                    '\u2022 Liên hệ admin để kiểm tra cấu hình OAuth'
+                ].join('\n')
+            };
+            this.textChannel.send({ embeds: [embed] }).catch(() => {});
+        }
+        this.tracks = [];
+        this.current = null;
+        this.scheduleLeave();
+    }
+
+    /**
+     * Start a playback watchdog timer after playTrack() succeeds.
+     * If the 'start' event doesn't fire within the timeout, treat as silent playback failure.
+     * Also resets position stall tracking for the new track.
+     * @param {Object} track - The track that was sent to Lavalink
+     * @private
+     */
+    _startPlaybackWatchdog(track) {
+        this._clearPlaybackWatchdog();
+        this._watchdogTrack = track;
+        this._lastKnownPosition = 0;
+        this._positionStallCount = 0;
+
+        // DISABLED (v1.11.3): The 15s watchdog produces false positives
+        // with Shoukaku 4.3.0 + Lavalink 4.2.1, causing infinite
+        // source-switching loops (YouTube → SoundCloud → repeat).
+        // The position stall detection (onUpdate handler, ~30s) serves
+        // as a more reliable fallback for genuinely stuck tracks.
+        // const WATCHDOG_TIMEOUT_MS = 15000;
+        // this._playbackWatchdogTimer = setTimeout(() => { ... }, WATCHDOG_TIMEOUT_MS);
+    }
+
+    /**
+     * Clear the playback watchdog timer.
+     * Called when: start event fires, exception fires, stuck fires, stop/destroy, or closed fires.
+     * @private
+     */
+    _clearPlaybackWatchdog() {
+        if (this._playbackWatchdogTimer) {
+            clearTimeout(this._playbackWatchdogTimer);
+            this._playbackWatchdogTimer = null;
+        }
+        this._watchdogTrack = null;
+    }
+
+    /**
+     * Handle silent playback failure — track was sent to Lavalink but no audio started.
+     * Notifies the user, then tries alternative sources (SoundCloud, Deezer).
+     * If alternatives fail, skips to the next queued track or schedules leave.
+     * @param {Object} failedTrack - The track that failed to play
+     * @private
+     */
+    async _handleSilentPlaybackFailure(failedTrack) {
+        // Notify user about the silent failure
+        if (this.textChannel) {
+            const trackTitle = failedTrack?.info?.title || 'Unknown';
+            const embed = new EmbedBuilder()
+                .setColor(COLORS.WARNING)
+                .setDescription(
+                    `${ICONS.WARNING} **Phát hiện lỗi phát nhạc im lặng**\n\n` +
+                        `Bài hát **${trackTitle}** không phát được âm thanh.\n` +
+                        `Đang thử tìm từ nguồn nhạc khác...`
+                );
+            this.textChannel.send({ embeds: [embed] }).catch(() => {});
+        }
+
+        // Try alternative sources
+        try {
+            await this._tryAlternativeSource(failedTrack);
+        } catch (error) {
+            logger.error('Alternative source fallback failed after silent playback failure', {
+                guildId: this.guildId,
+                error: error.message
+            });
+            // Try next track in queue
+            if (this.tracks.length > 0) {
+                this.play().catch(err => {
+                    logger.error('Next track play failed after silent failure recovery', {
+                        guildId: this.guildId,
+                        error: err.message
+                    });
+                    this.scheduleLeave();
+                });
+            } else {
+                this.current = null;
+                this.scheduleLeave();
+            }
+        }
+    }
+
+    /**
+     * Handle position stall — track "started" but audio position hasn't advanced.
+     * This catches cases where Lavalink reports playing but no audio reaches Discord.
+     * @param {Object} stalledTrack - The track that appears stalled
+     * @private
+     */
+    async _handlePositionStall(stalledTrack) {
+        logger.warn('Position stall detected — track playing but audio not advancing', {
+            guildId: this.guildId,
+            track: stalledTrack?.info?.title,
+            position: this._lastKnownPosition,
+            stallCount: this._positionStallCount
+        });
+
+        // Notify user
+        if (this.textChannel) {
+            const trackTitle = stalledTrack?.info?.title || 'Unknown';
+            this.textChannel
+                .send(`⚠️ Phát hiện bài **${trackTitle}** bị kẹt (không có âm thanh). Đang thử nguồn nhạc khác...`)
+                .catch(() => {});
+        }
+
+        // Stop current playback before retrying
+        try {
+            if (this.player) {
+                await this.player.stopTrack();
+            }
+        } catch {
+            /* ignore */
+        }
+
+        // Reset stall counter
+        this._positionStallCount = 0;
+
+        // Try alternative sources
+        try {
+            await this._tryAlternativeSource(stalledTrack);
+        } catch (error) {
+            logger.error('Alternative source fallback failed after position stall', {
+                guildId: this.guildId,
+                error: error.message
+            });
+            if (this.tracks.length > 0) {
+                this.play().catch(err => {
+                    logger.error('Next track play failed after stall recovery', {
+                        guildId: this.guildId,
+                        error: err.message
+                    });
+                    this.scheduleLeave();
+                });
+            } else {
+                this.current = null;
+                this.scheduleLeave();
+            }
+        }
+    }
+
+    // ==========================================
+    // Backward-compatible property accessors
+    // ==========================================
+
+    /**
+     * Get/set filters (delegates to FilterManager)
+     * @type {Object}
+     */
+    get filters() {
+        return this.filterManager.filters;
+    }
+
+    set filters(value) {
+        this.filterManager.filters = value;
+    }
+
+    /**
+     * Get/set autoplay state (delegates to AutoplayManager)
+     * @type {boolean}
+     */
+    get autoplay() {
+        return this.autoplayManager.enabled;
+    }
+
+    set autoplay(value) {
+        this.autoplayManager.enabled = value;
+    }
+
+    /**
+     * Get/set now playing message (delegates to ProgressTracker)
+     * @type {import('discord.js').Message|null}
+     */
+    get nowPlayingMessage() {
+        return this.progressTracker.nowPlayingMessage;
+    }
+
+    set nowPlayingMessage(value) {
+        this.progressTracker.nowPlayingMessage = value;
+    }
+
+    /**
+     * Get/set last user interaction timestamp (delegates to ProgressTracker)
+     * @type {number}
+     */
+    get lastUserInteraction() {
+        return this.progressTracker.lastUserInteraction;
+    }
+
+    set lastUserInteraction(value) {
+        this.progressTracker.lastUserInteraction = value;
+    }
+
+    /**
+     * Get reconnection state (delegates to ReconnectionManager)
+     * @type {Object}
+     */
+    get reconnectionState() {
+        return this.reconnectionManager.state;
+    }
+
+    // ==========================================
+    // Connection & Player Setup
+    // ==========================================
 
     /**
      * Connect with retry logic
@@ -130,250 +473,80 @@ export class EnhancedQueue {
      * @returns {Promise<Player>}
      */
     async connect(retries = 3) {
-        for (let i = 0; i < retries; i++) {
-            try {
-                const node = this.manager.nodeMonitor.getBestNode(this.manager.shoukaku);
+        this._isConnecting = true;
+        try {
+            for (let i = 0; i < retries; i++) {
+                try {
+                    // Check if queue was destroyed between retries
+                    if (!this.manager.queues.has(this.guildId)) {
+                        throw new Error('Queue was destroyed during connection retry');
+                    }
 
-                if (!node) {
-                    throw new Error('No available nodes');
+                    const node = this.manager.nodeMonitor.getBestNode(this.manager.shoukaku);
+
+                    if (!node) {
+                        throw new Error('No available nodes');
+                    }
+
+                    const guild = this.manager.client.guilds.cache.get(this.guildId);
+                    const shardId = guild ? guild.shardId : 0;
+
+                    logger.info(`Connecting to voice channel (attempt ${i + 1}/${retries})`);
+
+                    this.player = await this.manager.shoukaku.joinVoiceChannel({
+                        guildId: this.guildId,
+                        channelId: this.voiceChannelId,
+                        shardId: shardId
+                    });
+
+                    this.setupPlayerEvents();
+                    await this.player.setGlobalVolume(this.volume);
+
+                    // Apply any existing filters
+                    await this.applyFilters();
+
+                    logger.music('Player connected successfully', {
+                        guildId: this.guildId,
+                        node: node.name
+                    });
+
+                    return this.player;
+                } catch (error) {
+                    logger.error(`Connection attempt ${i + 1} failed`, error);
+                    if (i === retries - 1) throw error;
+                    // Exponential backoff: 1s, 2s, 4s
+                    const backoffMs = 1000 * Math.pow(2, i);
+                    logger.debug(`Retrying connection in ${backoffMs}ms`, { guildId: this.guildId });
+                    await new Promise(resolve => setTimeout(resolve, backoffMs));
                 }
-
-                const guild = this.manager.client.guilds.cache.get(this.guildId);
-                const shardId = guild ? guild.shardId : 0;
-
-                logger.info(`Connecting to voice channel (attempt ${i + 1}/${retries})`);
-
-                this.player = await this.manager.shoukaku.joinVoiceChannel({
-                    guildId: this.guildId,
-                    channelId: this.voiceChannelId,
-                    shardId: shardId
-                });
-
-                this.setupPlayerEvents();
-                await this.player.setGlobalVolume(this.volume);
-
-                // Apply any existing filters
-                await this.applyFilters();
-
-                logger.music('Player connected successfully', {
-                    guildId: this.guildId,
-                    node: node.name
-                });
-
-                return this.player;
-            } catch (error) {
-                logger.error(`Connection attempt ${i + 1} failed`, error);
-                if (i === retries - 1) throw error;
-                await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
             }
+        } finally {
+            this._isConnecting = false;
         }
     }
 
     /**
      * Reconnect after node failure with exponential backoff
-     * Implements: 1s → 2s → 4s → 8s → 16s → 30s max
-     * Max 5 retries before giving up
+     * Delegates to ReconnectionManager
      */
     async reconnect() {
-        // Prevent concurrent reconnection attempts
-        if (this.reconnectionState.isReconnecting) {
-            logger.warn('Reconnection already in progress, ignoring duplicate request', { guildId: this.guildId });
+        return this.reconnectionManager.reconnect(this);
+    }
+
+    _detachPlayerEventHandlers(player = this.player) {
+        if (!player || !this._playerEventHandlers) {
             return;
         }
 
-        // Configuration from constants (with defaults for backward compatibility)
-        const INITIAL_DELAY = RECONNECTION?.INITIAL_DELAY_MS || 1000;
-        const MAX_DELAY = RECONNECTION?.MAX_DELAY_MS || 30000;
-        const MULTIPLIER = RECONNECTION?.MULTIPLIER || 2;
-        const MAX_RETRIES = RECONNECTION?.MAX_RETRIES || 5;
-        const JITTER_FACTOR = RECONNECTION?.JITTER_FACTOR || 0.1;
-
-        this.reconnectionState.isReconnecting = true;
-
-        const currentTrack = this.current;
-        const currentPosition = this.player?.position || 0;
-
-        logger.info(`Starting reconnection for guild ${this.guildId}`, {
-            currentTrack: currentTrack?.info?.title,
-            position: currentPosition,
-            previousAttempts: this.reconnectionState.attempts
-        });
-
-        // Notify user about reconnection
-        await this._sendReconnectionNotification('starting');
-
-        // Disconnect old player
-        if (this.player) {
-            try {
-                await this.manager.shoukaku.leaveVoiceChannel(this.guildId);
-            } catch (err) {
-                logger.warn('Error leaving voice channel during reconnect', err);
+        for (const [eventName, handler] of Object.entries(this._playerEventHandlers)) {
+            if (typeof player.off === 'function') {
+                player.off(eventName, handler);
+            } else if (typeof player.removeListener === 'function') {
+                player.removeListener(eventName, handler);
             }
         }
 
-        // Exponential backoff retry loop
-        let attempt = 0;
-        let lastError = null;
-
-        while (attempt < MAX_RETRIES) {
-            attempt++;
-            this.reconnectionState.attempts++;
-            this.reconnectionState.lastAttempt = Date.now();
-
-            // Calculate backoff delay: 1s, 2s, 4s, 8s, 16s, capped at 30s
-            let delay = Math.min(INITIAL_DELAY * Math.pow(MULTIPLIER, attempt - 1), MAX_DELAY);
-
-            // Add jitter to prevent thundering herd
-            const jitter = delay * JITTER_FACTOR * Math.random();
-            delay = Math.round(delay + jitter);
-
-            logger.info(`Reconnection attempt ${attempt}/${MAX_RETRIES}`, {
-                guildId: this.guildId,
-                delay: delay,
-                totalAttempts: this.reconnectionState.attempts
-            });
-
-            // Wait before attempting
-            if (attempt > 1) {
-                await this._sendReconnectionNotification('retrying', attempt, MAX_RETRIES, delay);
-                await new Promise(resolve => setTimeout(resolve, delay));
-            }
-
-            try {
-                // Attempt to reconnect
-                await this.connect();
-
-                // Reconnection successful!
-                logger.info(`Reconnection successful after ${attempt} attempts`, {
-                    guildId: this.guildId,
-                    totalAttempts: this.reconnectionState.attempts
-                });
-
-                // Reset reconnection state on success
-                this.reconnectionState.attempts = 0;
-                this.reconnectionState.isReconnecting = false;
-
-                // Resume playback if there was a track playing
-                if (currentTrack) {
-                    try {
-                        await this.player.playTrack({ track: { encoded: currentTrack.encoded } });
-                        if (currentPosition > 0) {
-                            await this.player.seekTo(currentPosition);
-                        }
-
-                        // Notify user about successful reconnection
-                        await this._sendReconnectionNotification('success', attempt);
-
-                        logger.info(`Playback resumed at position ${currentPosition}ms`, {
-                            guildId: this.guildId,
-                            track: currentTrack.info?.title
-                        });
-                    } catch (playError) {
-                        logger.error('Failed to resume playback after reconnection', {
-                            guildId: this.guildId,
-                            error: playError.message
-                        });
-                        // Don't fail the reconnection, just log
-                    }
-                }
-
-                return; // Success - exit the function
-            } catch (error) {
-                lastError = error;
-                logger.warn(`Reconnection attempt ${attempt} failed`, {
-                    guildId: this.guildId,
-                    error: error.message
-                });
-
-                // Record failure in node health monitor
-                if (this.manager.nodeMonitor) {
-                    this.manager.nodeMonitor.recordFailure('reconnect', error.message);
-                }
-            }
-        }
-
-        // All retries exhausted
-        this.reconnectionState.isReconnecting = false;
-
-        logger.error(`Reconnection failed after ${MAX_RETRIES} attempts`, {
-            guildId: this.guildId,
-            lastError: lastError?.message,
-            totalAttempts: this.reconnectionState.attempts
-        });
-
-        // Notify user about failure
-        await this._sendReconnectionNotification('failed', MAX_RETRIES, MAX_RETRIES);
-
-        // Clean up
-        this.destroy();
-        throw new Error(`Reconnection failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
-    }
-
-    /**
-     * Send reconnection status notification to text channel
-     * @private
-     * @param {'starting'|'retrying'|'success'|'failed'} status - Reconnection status
-     * @param {number} attempt - Current attempt number
-     * @param {number} maxAttempts - Maximum attempts
-     * @param {number} delay - Delay before next attempt in ms
-     */
-    async _sendReconnectionNotification(status, attempt = 0, maxAttempts = 0, delay = 0) {
-        if (!this.textChannel) return;
-
-        try {
-            // Use pre-imported EmbedBuilder for better performance
-            let embed;
-
-            switch (status) {
-                case 'starting':
-                    embed = new EmbedBuilder()
-                        .setColor('#FFA500')
-                        .setTitle('🔄 Đang kết nối lại...')
-                        .setDescription('Phát hiện lỗi kết nối. Đang cố gắng kết nối lại với server nhạc...')
-                        .setTimestamp();
-                    break;
-
-                case 'retrying':
-                    embed = new EmbedBuilder()
-                        .setColor('#FFA500')
-                        .setTitle('🔄 Đang thử lại...')
-                        .setDescription(
-                            `Lần thử ${attempt}/${maxAttempts}\n` +
-                            `⏳ Đợi ${Math.round(delay / 1000)} giây trước khi thử lại...`
-                        )
-                        .setTimestamp();
-                    break;
-
-                case 'success':
-                    embed = new EmbedBuilder()
-                        .setColor('#00FF00')
-                        .setTitle('✅ Đã kết nối lại!')
-                        .setDescription(`Kết nối thành công sau ${attempt} lần thử.\n` + 'Đang tiếp tục phát nhạc...')
-                        .setTimestamp();
-                    break;
-
-                case 'failed':
-                    embed = new EmbedBuilder()
-                        .setColor('#FF0000')
-                        .setTitle('❌ Không thể kết nối lại')
-                        .setDescription(
-                            `Đã thử ${maxAttempts} lần nhưng không thành công.\n` +
-                            'Vui lòng thử lại sau hoặc dùng lệnh /play để bắt đầu lại.'
-                        )
-                        .setTimestamp();
-                    break;
-            }
-
-            if (embed) {
-                await this.textChannel.send({ embeds: [embed] });
-            }
-        } catch (error) {
-            logger.debug('Could not send reconnection notification', {
-                guildId: this.guildId,
-                status,
-                error: error.message
-            });
-        }
+        this._playerEventHandlers = null;
     }
 
     /**
@@ -382,7 +555,12 @@ export class EnhancedQueue {
     setupPlayerEvents() {
         if (!this.player) return;
 
-        this.player.on('start', async data => {
+        this._detachPlayerEventHandlers(this.player);
+
+        const onStart = async data => {
+            // Clear playback watchdog — track has started on Lavalink
+            this._clearPlaybackWatchdog();
+
             logger.music('Track started', {
                 guildId: this.guildId,
                 track: data.track?.info?.title
@@ -390,10 +568,20 @@ export class EnhancedQueue {
             this.clearLeaveTimeout();
             this.stats.tracksPlayed++;
 
-            // Add to in-memory history
-            if (this.current) {
+            // Add to in-memory history (compact track shape to reduce memory)
+            if (this.current && this.loop !== 'track') {
+                // EQ-M01: Store user ID string instead of full User object to reduce memory
+                const rawRequester = this.current.requester || this.current.requesterId || null;
+                const requesterId = typeof rawRequester === 'string' ? rawRequester : rawRequester?.id || rawRequester;
                 this.history.unshift({
-                    track: this.current,
+                    track: {
+                        info: {
+                            title: this.current.info?.title || 'Unknown Track',
+                            uri: this.current.info?.uri || null,
+                            length: this.current.info?.length || 0
+                        },
+                        requester: requesterId
+                    },
                     playedAt: Date.now()
                 });
                 if (this.history.length > this.maxHistory) {
@@ -401,10 +589,12 @@ export class EnhancedQueue {
                 }
 
                 // Add to database history (non-blocking)
-                this._saveToDatabase(this.current).catch(error => {
+                // EQ-H02: Capture reference before async call to avoid stale this.current in catch
+                const trackForDb = this.current;
+                this._saveToDatabase(trackForDb).catch(error => {
                     logger.error('Failed to save track to database history', {
                         guildId: this.guildId,
-                        track: this.current?.info?.title,
+                        track: trackForDb?.info?.title,
                         error
                     });
                 });
@@ -413,20 +603,42 @@ export class EnhancedQueue {
             if (this.nowPlayingMessage) {
                 this.startProgressUpdates();
             }
-        });
+        };
 
-        this.player.on('end', data => {
+        const onEnd = data => {
             logger.music('Track ended', { guildId: this.guildId, reason: data.reason });
             this.stopProgressUpdates();
 
             if (this.current) {
-                this.stats.totalDuration += this.current.info.length;
+                this.stats.totalDuration += this.current?.info?.length || 0;
+            }
+
+            // Auto-play feedback: record full listen when track finishes naturally
+            if (data.reason === 'finished' && this.current?.requester && this.current?.info?.uri) {
+                try {
+                    recordTrackEndFullListen(this.current.requester, this.current.info.uri);
+                } catch {
+                    /* non-critical */
+                }
             }
 
             if (data.reason === 'replaced') return;
 
+            // Guard: previous() is handling playback, skip queue advancement
+            if (this._skippingToPrevious) return;
+
+            // BUG-018: stop() already called scheduleLeave(), don't double-schedule
+            if (this._isStopping) {
+                this._isStopping = false;
+                return;
+            }
+
             if (this.loop === 'track' && this.current) {
-                this.play(this.current);
+                // BUG-014: catch unhandled promise rejection from async play()
+                this.play(this.current).catch(error => {
+                    logger.error('Loop track play failed', { guildId: this.guildId, error: error.message });
+                    this.scheduleLeave();
+                });
                 return;
             }
 
@@ -435,140 +647,232 @@ export class EnhancedQueue {
             }
 
             if (this.tracks.length > 0) {
-                this.play();
+                // BUG-014: catch unhandled promise rejection from async play()
+                this.play().catch(error => {
+                    logger.error('Next track play failed', { guildId: this.guildId, error: error.message });
+                    this.scheduleLeave();
+                });
             } else if (this.autoplay && this.current) {
-                // Autoplay: add related track
                 logger.info('Autoplay enabled, searching for related track', { guildId: this.guildId });
                 this.addRelatedTrack().catch(error => {
                     logger.error('Autoplay failed', { guildId: this.guildId, error: error.message });
+                    this.stopProgressUpdates();
                     this.current = null;
+                    this.paused = false;
                     this.scheduleLeave();
                 });
             } else {
                 this.current = null;
                 this.scheduleLeave();
             }
-        });
 
-        this.player.on('exception', data => {
-            logger.error('Player exception', { guildId: this.guildId, exception: data.exception });
+            this._markUriIndexDirty();
+        };
+
+        const onException = data => {
+            this._clearPlaybackWatchdog();
+
+            const exceptionMsg = data.exception?.message || data.exception?.cause || '';
+            const isOAuth = this._isOAuthError(exceptionMsg);
+
+            if (isOAuth) {
+                this._consecutiveOAuthErrors++;
+                logger.warn(
+                    'YouTube OAuth failure detected — YouTube requires authentication. Check Lavalink OAuth configuration (YT_OAUTH_REFRESH_TOKEN).',
+                    {
+                        guildId: this.guildId,
+                        exception: data.exception,
+                        consecutiveOAuthErrors: this._consecutiveOAuthErrors
+                    }
+                );
+            } else {
+                this._consecutiveOAuthErrors = 0;
+                logger.error('Player exception', { guildId: this.guildId, exception: data.exception });
+            }
             this.stats.errors++;
 
+            // Notify user about the exception
+            if (this.textChannel && this.current) {
+                const trackTitle = this.current?.info?.title || 'Unknown';
+                if (isOAuth && !this._oauthFailureDetected) {
+                    // Send OAuth error message ONCE per queue session
+                    this._oauthFailureDetected = true;
+                    const embed = createOAuthErrorEmbed(trackTitle);
+                    this.textChannel.send({ embeds: [embed] }).catch(() => {});
+                } else if (!isOAuth) {
+                    this.textChannel.send(`⏭️ Bỏ qua bài hát do lỗi phát: **${trackTitle}**`).catch(() => {});
+                }
+                // If isOAuth and already detected: silently skip
+            }
+
+            // v1.11.0: If consecutive OAuth failures, try alternative sources instead of clearing queue
+            if (isOAuth && this._consecutiveOAuthErrors >= 3) {
+                logger.warn('Consecutive OAuth failures detected, attempting alternative source fallback', {
+                    guildId: this.guildId,
+                    skippedTracks: this.tracks.length,
+                    failedTrack: this.current?.info?.title
+                });
+                this._tryAlternativeSource(this.current).catch(error => {
+                    logger.error('Alternative source fallback failed', {
+                        guildId: this.guildId,
+                        error: error.message
+                    });
+                    this._handleAllSourcesFailed();
+                });
+                return;
+            }
+
             if (this.tracks.length > 0) {
-                this.play();
+                // BUG-014: catch unhandled promise rejection from async play()
+                this.play().catch(error => {
+                    logger.error('Exception recovery play failed', { guildId: this.guildId, error: error.message });
+                    this.scheduleLeave();
+                });
             } else {
                 this.scheduleLeave();
             }
-        });
+        };
 
-        this.player.on('stuck', data => {
+        const onStuck = data => {
+            this._clearPlaybackWatchdog();
+
             logger.warn('Player stuck', { guildId: this.guildId, threshold: data.thresholdMs });
-            if (this.tracks.length > 0) {
-                this.play();
+            this.stats.errors++;
+
+            // Stuck events with OAuth failures often manifest as timeouts
+            // If we already know OAuth is broken, don't burn through the queue
+            if (this._oauthFailureDetected) {
+                logger.warn('Player stuck while OAuth failure active — likely same root cause, clearing queue', {
+                    guildId: this.guildId
+                });
+                this.tracks = [];
+                this.scheduleLeave();
+                return;
             }
-        });
 
-        this.player.on('closed', data => {
+            // Notify user about the stuck track
+            if (this.textChannel && this.current) {
+                const trackTitle = this.current?.info?.title || 'Unknown';
+                this.textChannel.send(`⏭️ Bài hát bị kẹt, đang bỏ qua: **${trackTitle}**`).catch(() => {});
+            }
+
+            if (this.tracks.length > 0) {
+                // BUG-014: catch unhandled promise rejection from async play()
+                this.play().catch(error => {
+                    logger.error('Stuck recovery play failed', { guildId: this.guildId, error: error.message });
+                    this.scheduleLeave();
+                });
+            } else {
+                this.scheduleLeave();
+            }
+        };
+
+        const onClosed = data => {
             logger.warn('WebSocket closed', { guildId: this.guildId, code: data.code, reason: data.reason });
-        });
+            this._clearPlaybackWatchdog();
 
-        this.player.on('update', _data => {
-            // Position updates - handled silently
-        });
+            // DAVE protocol (E2EE) enforcement — code 4017
+            // Requires Lavalink v4.2.1+ and Shoukaku v4.2.0+ to handle properly
+            if (data.code === 4017) {
+                logger.warn('DAVE protocol (E2EE) required by Discord — ensure Lavalink v4.2.1+ and Shoukaku v4.2.0+', {
+                    guildId: this.guildId,
+                    reason: data.reason
+                });
+            }
+
+            // FIX: Clean up Shoukaku's internal connection BEFORE nulling player.
+            // Without this, Shoukaku's connections map retains a stale entry for this guild,
+            // causing all subsequent joinVoiceChannel() calls to throw
+            // "This guild already have an existing connection".
+            try {
+                this.manager.shoukaku.leaveVoiceChannel(this.guildId);
+            } catch (err) {
+                logger.debug('Error cleaning Shoukaku connection on WebSocket close', {
+                    guildId: this.guildId,
+                    error: err?.message
+                });
+            }
+
+            // Null out player so next play() triggers fresh connection
+            this.player = null;
+
+            // If we were actively playing, attempt reconnection
+            if (this.current && !this._isStopping && !this._isLeavingGracefully) {
+                logger.info('Attempting reconnection after unexpected WebSocket close', {
+                    guildId: this.guildId,
+                    currentTrack: this.current?.info?.title
+                });
+                this.reconnectionManager.reconnect(this).catch(error => {
+                    logger.error('Reconnection after WebSocket close failed', {
+                        guildId: this.guildId,
+                        error: error.message
+                    });
+                    this.current = null;
+                    this.scheduleLeave();
+                });
+            }
+        };
+
+        const onUpdate = data => {
+            // Position stall detection — catches cases where Lavalink reports "playing"
+            // but audio position never advances (e.g., broken stream, voice connection issue)
+            const position = data?.state?.position ?? 0;
+
+            if (this.current && !this.paused && position > 0) {
+                // Track is advancing — reset stall counter
+                if (position !== this._lastKnownPosition) {
+                    this._positionStallCount = 0;
+                    this._lastKnownPosition = position;
+                } else {
+                    this._positionStallCount++;
+                    if (this._positionStallCount >= 6 && this.current) {
+                        this._positionStallCount = 0;
+                        this._handlePositionStall(this.current);
+                    }
+                }
+            } else if (position > 0) {
+                this._lastKnownPosition = position;
+                this._positionStallCount = 0;
+            }
+        };
+
+        this._playerEventHandlers = {
+            start: onStart,
+            end: onEnd,
+            exception: onException,
+            stuck: onStuck,
+            closed: onClosed,
+            update: onUpdate
+        };
+
+        this.player.on('start', onStart);
+        this.player.on('end', onEnd);
+        this.player.on('exception', onException);
+        this.player.on('stuck', onStuck);
+        this.player.on('closed', onClosed);
+        this.player.on('update', onUpdate);
     }
+
+    // ==========================================
+    // Filter Methods (delegate to FilterManager)
+    // ==========================================
 
     /**
      * Apply filters to player
      * @returns {Promise<boolean>} Success status
      */
     async applyFilters() {
-        if (!this.player) {
-            logger.warn('Cannot apply filters: player not connected', { guildId: this.guildId });
-            return false;
-        }
-
-        try {
-            const filters = {};
-
-            // Build filters object from current state
-            if (this.filters.equalizer.length > 0) {
-                filters.equalizer = this.filters.equalizer;
-            }
-            if (this.filters.karaoke) {
-                filters.karaoke = this.filters.karaoke;
-            }
-            if (this.filters.timescale) {
-                filters.timescale = this.filters.timescale;
-            }
-            if (this.filters.tremolo) {
-                filters.tremolo = this.filters.tremolo;
-            }
-            if (this.filters.vibrato) {
-                filters.vibrato = this.filters.vibrato;
-            }
-            if (this.filters.rotation) {
-                filters.rotation = this.filters.rotation;
-            }
-            if (this.filters.distortion) {
-                filters.distortion = this.filters.distortion;
-            }
-            if (this.filters.channelMix) {
-                filters.channelMix = this.filters.channelMix;
-            }
-            if (this.filters.lowPass) {
-                filters.lowPass = this.filters.lowPass;
-            }
-
-            // CRITICAL FIX: Always call setFilters, even with empty object
-            // This is required to clear filters in Lavalink
-            // According to Lavalink v4 docs: "filters overrides all previously applied filters"
-            await this.player.setFilters(filters);
-
-            const filterCount = Object.keys(filters).length;
-            if (filterCount > 0) {
-                logger.info(`Applied ${filterCount} filter(s) to player`, {
-                    guildId: this.guildId,
-                    filters: Object.keys(filters)
-                });
-            } else {
-                logger.info('Cleared all filters from player', { guildId: this.guildId });
-            }
-
-            return true;
-        } catch (error) {
-            logger.error('Failed to apply filters', error, { guildId: this.guildId });
-            return false;
-        }
+        return this.filterManager.applyFilters(this.player);
     }
 
     /**
      * Clear only conflicting filters when applying a new filter type
-     * This allows compatible filters to coexist (e.g., bass + 8D)
      * @param {string} newFilterType - The type of filter being applied
      * @returns {string[]} Array of filter types that were cleared
      * @private
      */
     _clearConflictingFilters(newFilterType) {
-        const clearedFilters = [];
-        const conflicts = this.CONFLICTING_FILTERS[newFilterType] || [];
-
-        for (const conflictType of conflicts) {
-            if (conflictType === 'equalizer' && this.filters.equalizer.length > 0) {
-                this.filters.equalizer = [];
-                clearedFilters.push('equalizer');
-                logger.debug(`Cleared conflicting filter: equalizer (due to ${newFilterType})`, {
-                    guildId: this.guildId
-                });
-            } else if (conflictType !== 'equalizer' && this.filters[conflictType]) {
-                this.filters[conflictType] = null;
-                clearedFilters.push(conflictType);
-                logger.debug(`Cleared conflicting filter: ${conflictType} (due to ${newFilterType})`, {
-                    guildId: this.guildId
-                });
-            }
-        }
-
-        return clearedFilters;
+        return this.filterManager._clearConflictingFilters(newFilterType);
     }
 
     /**
@@ -577,18 +881,7 @@ export class EnhancedQueue {
      * @returns {string[]} Array of currently active conflicting filter names
      */
     getConflictingActiveFilters(filterType) {
-        const conflicts = this.CONFLICTING_FILTERS[filterType] || [];
-        const activeConflicts = [];
-
-        for (const conflictType of conflicts) {
-            if (conflictType === 'equalizer' && this.filters.equalizer.length > 0) {
-                activeConflicts.push('equalizer');
-            } else if (conflictType !== 'equalizer' && this.filters[conflictType]) {
-                activeConflicts.push(conflictType);
-            }
-        }
-
-        return activeConflicts;
+        return this.filterManager.getConflictingActiveFilters(filterType);
     }
 
     /**
@@ -596,32 +889,7 @@ export class EnhancedQueue {
      * @returns {Promise<boolean>} Success status
      */
     async clearFilters() {
-        try {
-            // Reset all filter states to default
-            this.filters = {
-                equalizer: [],
-                karaoke: null,
-                timescale: null,
-                tremolo: null,
-                vibrato: null,
-                rotation: null,
-                distortion: null,
-                channelMix: null,
-                lowPass: null
-            };
-
-            // Apply empty filters to Lavalink
-            const success = await this.applyFilters();
-
-            if (success) {
-                logger.info('Successfully cleared all filters', { guildId: this.guildId });
-            }
-
-            return success;
-        } catch (error) {
-            logger.error('Failed to clear filters', error, { guildId: this.guildId });
-            return false;
-        }
+        return this.filterManager.clearFilters(this.player);
     }
 
     /**
@@ -629,115 +897,16 @@ export class EnhancedQueue {
      * @returns {string[]} Array of active filter names
      */
     getActiveFilters() {
-        const active = [];
-
-        if (this.filters.equalizer.length > 0) active.push('equalizer');
-        if (this.filters.karaoke) active.push('karaoke');
-        if (this.filters.timescale) active.push('timescale');
-        if (this.filters.tremolo) active.push('tremolo');
-        if (this.filters.vibrato) active.push('vibrato');
-        if (this.filters.rotation) active.push('rotation');
-        if (this.filters.distortion) active.push('distortion');
-        if (this.filters.channelMix) active.push('channelMix');
-        if (this.filters.lowPass) active.push('lowPass');
-
-        return active;
+        return this.filterManager.getActiveFilters();
     }
 
     /**
      * Set equalizer preset
      * @param {string} preset - Preset name (flat, bass, rock, jazz, pop)
-     * @returns {Promise<Object>} Result with success status and cleared filters
+     * @returns {Promise<boolean>} Success status
      */
     async setEqualizer(preset) {
-        const presets = {
-            flat: [],
-            bass: [
-                { band: 0, gain: 0.6 },
-                { band: 1, gain: 0.67 },
-                { band: 2, gain: 0.67 },
-                { band: 3, gain: 0 },
-                { band: 4, gain: -0.5 },
-                { band: 5, gain: 0.15 },
-                { band: 6, gain: -0.45 },
-                { band: 7, gain: 0.23 },
-                { band: 8, gain: 0.35 },
-                { band: 9, gain: 0.45 },
-                { band: 10, gain: 0.55 },
-                { band: 11, gain: 0.6 },
-                { band: 12, gain: 0.55 },
-                { band: 13, gain: 0 }
-            ],
-            rock: [
-                { band: 0, gain: 0.3 },
-                { band: 1, gain: 0.25 },
-                { band: 2, gain: 0.2 },
-                { band: 3, gain: 0.1 },
-                { band: 4, gain: 0.05 },
-                { band: 5, gain: -0.05 },
-                { band: 6, gain: -0.15 },
-                { band: 7, gain: -0.2 },
-                { band: 8, gain: -0.1 },
-                { band: 9, gain: -0.05 },
-                { band: 10, gain: 0.05 },
-                { band: 11, gain: 0.1 },
-                { band: 12, gain: 0.15 },
-                { band: 13, gain: 0.2 }
-            ],
-            jazz: [
-                { band: 0, gain: 0.3 },
-                { band: 1, gain: 0.3 },
-                { band: 2, gain: 0.2 },
-                { band: 3, gain: 0.2 },
-                { band: 4, gain: -0.2 },
-                { band: 5, gain: -0.2 },
-                { band: 6, gain: 0 },
-                { band: 7, gain: 0.2 },
-                { band: 8, gain: 0.25 },
-                { band: 9, gain: 0.3 },
-                { band: 10, gain: 0.3 },
-                { band: 11, gain: 0.3 },
-                { band: 12, gain: 0.3 },
-                { band: 13, gain: 0.3 }
-            ],
-            pop: [
-                { band: 0, gain: -0.25 },
-                { band: 1, gain: -0.2 },
-                { band: 2, gain: -0.15 },
-                { band: 3, gain: -0.1 },
-                { band: 4, gain: -0.05 },
-                { band: 5, gain: 0.05 },
-                { band: 6, gain: 0.15 },
-                { band: 7, gain: 0.2 },
-                { band: 8, gain: 0.25 },
-                { band: 9, gain: 0.25 },
-                { band: 10, gain: 0.25 },
-                { band: 11, gain: 0.25 },
-                { band: 12, gain: 0.25 },
-                { band: 13, gain: 0.25 }
-            ]
-        };
-
-        if (!presets[preset]) {
-            logger.warn(`Unknown equalizer preset: ${preset}`, { guildId: this.guildId });
-            return false;
-        }
-
-        // Clear only conflicting filters (timescale conflicts with equalizer)
-        const clearedFilters = this._clearConflictingFilters('equalizer');
-        this.filters.equalizer = presets[preset];
-
-        const success = await this.applyFilters();
-        if (success) {
-            const activeFilters = this.getActiveFilters();
-            logger.info(`Applied equalizer preset: ${preset}`, {
-                guildId: this.guildId,
-                clearedFilters,
-                activeFilters
-            });
-        }
-
-        return success;
+        return this.filterManager.setEqualizer(preset, this.player);
     }
 
     /**
@@ -746,30 +915,7 @@ export class EnhancedQueue {
      * @returns {Promise<boolean>} Success status
      */
     async setNightcore(enabled) {
-        try {
-            if (enabled) {
-                // Clear only conflicting filters (equalizer conflicts with timescale)
-                // Other filters like rotation (8D) will be preserved
-                const clearedFilters = this._clearConflictingFilters('timescale');
-                this.filters.timescale = { speed: 1.1, pitch: 1.1, rate: 1 };
-
-                const activeFilters = this.getActiveFilters();
-                logger.info('Enabled nightcore filter', {
-                    guildId: this.guildId,
-                    clearedFilters,
-                    activeFilters
-                });
-            } else {
-                this.filters.timescale = null;
-                logger.info('Disabled nightcore filter', { guildId: this.guildId });
-            }
-
-            const success = await this.applyFilters();
-            return success;
-        } catch (error) {
-            logger.error('Failed to set nightcore filter', error, { guildId: this.guildId });
-            return false;
-        }
+        return this.filterManager.setNightcore(enabled, this.player);
     }
 
     /**
@@ -778,30 +924,7 @@ export class EnhancedQueue {
      * @returns {Promise<boolean>} Success status
      */
     async setVaporwave(enabled) {
-        try {
-            if (enabled) {
-                // Clear only conflicting filters (equalizer conflicts with timescale)
-                // Other filters like rotation (8D) will be preserved
-                const clearedFilters = this._clearConflictingFilters('timescale');
-                this.filters.timescale = { speed: 0.8, pitch: 0.8, rate: 1 };
-
-                const activeFilters = this.getActiveFilters();
-                logger.info('Enabled vaporwave filter', {
-                    guildId: this.guildId,
-                    clearedFilters,
-                    activeFilters
-                });
-            } else {
-                this.filters.timescale = null;
-                logger.info('Disabled vaporwave filter', { guildId: this.guildId });
-            }
-
-            const success = await this.applyFilters();
-            return success;
-        } catch (error) {
-            logger.error('Failed to set vaporwave filter', error, { guildId: this.guildId });
-            return false;
-        }
+        return this.filterManager.setVaporwave(enabled, this.player);
     }
 
     /**
@@ -810,66 +933,85 @@ export class EnhancedQueue {
      * @returns {Promise<boolean>} Success status
      */
     async set8D(enabled) {
-        try {
-            if (enabled) {
-                // 8D (rotation) is compatible with most other filters
-                // No need to clear conflicting filters
-                this.filters.rotation = { rotationHz: 0.2 };
-
-                const activeFilters = this.getActiveFilters();
-                logger.info('Enabled 8D audio filter', {
-                    guildId: this.guildId,
-                    activeFilters
-                });
-            } else {
-                this.filters.rotation = null;
-                logger.info('Disabled 8D audio filter', { guildId: this.guildId });
-            }
-
-            const success = await this.applyFilters();
-            return success;
-        } catch (error) {
-            logger.error('Failed to set 8D filter', error, { guildId: this.guildId });
-            return false;
-        }
+        return this.filterManager.set8D(enabled, this.player);
     }
+
+    /**
+     * Set karaoke filter
+     * @param {boolean} enabled - Enable/disable karaoke
+     * @returns {Promise<boolean>} Success status
+     */
+    async setKaraoke(enabled) {
+        return this.filterManager.setKaraoke(enabled, this.player);
+    }
+
+    /**
+     * Set timescale (speed/pitch/rate)
+     * @param {Object} options - { speed?, pitch?, rate? }
+     * @returns {Promise<boolean>} Success status
+     */
+    async setTimescale(options) {
+        return this.filterManager.setTimescale(options, this.player);
+    }
+
+    // ==========================================
+    // Queue Management
+    // ==========================================
 
     /**
      * Add track(s) to queue
      * @param {Object|Object[]} track - Track or array of tracks
      * @param {Object} options - Options for adding tracks
-     * @param {boolean} options.skipDuplicateCheck - Skip duplicate check even if removeDuplicates is enabled
+     * @param {boolean} options.skipDuplicateCheck - Skip duplicate check
      * @returns {Object} Result with added count and skipped duplicates
      */
     add(track, options = {}) {
-        const tracks = Array.isArray(track) ? track : [track];
+        let tracks = Array.isArray(track) ? track : [track];
         const skipDuplicateCheck = options.skipDuplicateCheck || false;
+
+        // Enforce max queue size (configurable via config.music.maxQueueSize)
+        const maxQueueSize = this.manager.config?.music?.maxQueueSize || QUEUE.MAX_SIZE;
+        if (this.tracks.length >= maxQueueSize) {
+            logger.warn('Queue full, rejecting tracks', {
+                guildId: this.guildId,
+                currentSize: this.tracks.length,
+                maxSize: maxQueueSize,
+                rejected: tracks.length
+            });
+            return {
+                added: 0,
+                skipped: tracks.length,
+                skippedTracks: [],
+                total: this.tracks.length,
+                error: 'QUEUE_FULL',
+                maxSize: maxQueueSize
+            };
+        }
+
+        // Trim incoming tracks to fit within limit
+        const availableSlots = maxQueueSize - this.tracks.length;
+        let trimmed = 0;
+        if (tracks.length > availableSlots) {
+            trimmed = tracks.length - availableSlots;
+            tracks = tracks.slice(0, availableSlots);
+            logger.info('Trimmed tracks to fit queue limit', {
+                guildId: this.guildId,
+                requested: tracks.length + trimmed,
+                accepted: tracks.length,
+                trimmed
+            });
+        }
 
         let addedCount = 0;
         const skippedDuplicates = [];
 
         if (this.removeDuplicates && !skipDuplicateCheck) {
-            // Build a Set of existing track URIs for quick lookup
-            const existingUris = new Set();
+            const existingUris = this._getExistingUris();
 
-            // Add current track URI if playing
-            if (this.current?.info?.uri) {
-                existingUris.add(this.current.info.uri);
-            }
-
-            // Add all queued track URIs
-            for (const t of this.tracks) {
-                if (t.info?.uri) {
-                    existingUris.add(t.info.uri);
-                }
-            }
-
-            // Filter out duplicates
             for (const t of tracks) {
                 const uri = t.info?.uri;
 
                 if (uri && existingUris.has(uri)) {
-                    // Track is a duplicate
                     skippedDuplicates.push({
                         title: t.info?.title || 'Unknown',
                         uri: uri
@@ -880,11 +1022,9 @@ export class EnhancedQueue {
                         uri: uri
                     });
                 } else {
-                    // Track is unique, add it
                     this.tracks.push(t);
                     addedCount++;
 
-                    // Add to existing URIs to catch duplicates within the batch
                     if (uri) {
                         existingUris.add(uri);
                     }
@@ -899,16 +1039,28 @@ export class EnhancedQueue {
                 });
             }
         } else {
-            // No duplicate check, add all tracks
             this.tracks.push(...tracks);
             addedCount = tracks.length;
+
+            for (const addedTrack of tracks) {
+                const uri = addedTrack?.info?.uri;
+                if (uri) {
+                    this._getExistingUris().add(uri);
+                }
+            }
+        }
+
+        // Update activity timestamp
+        if (addedCount > 0) {
+            this.lastActivityTime = Date.now();
         }
 
         return {
             added: addedCount,
-            skipped: skippedDuplicates.length,
+            skipped: skippedDuplicates.length + trimmed,
             skippedTracks: skippedDuplicates,
-            total: this.tracks.length
+            total: this.tracks.length,
+            ...(trimmed > 0 && { trimmed, maxSize: maxQueueSize })
         };
     }
 
@@ -932,12 +1084,10 @@ export class EnhancedQueue {
         const uri = track.info?.uri;
         if (!uri) return false;
 
-        // Check current track
         if (this.current?.info?.uri === uri) {
             return true;
         }
 
-        // Check queue
         return this.tracks.some(t => t.info?.uri === uri);
     }
 
@@ -950,7 +1100,6 @@ export class EnhancedQueue {
         const removed = [];
         const uniqueTracks = [];
 
-        // Current track is always kept first
         if (this.current?.info?.uri) {
             seenUris.add(this.current.info.uri);
         }
@@ -973,6 +1122,7 @@ export class EnhancedQueue {
 
         const removedCount = this.tracks.length - uniqueTracks.length;
         this.tracks = uniqueTracks;
+        this._markUriIndexDirty();
 
         if (removedCount > 0) {
             logger.info('Removed duplicate tracks from queue', {
@@ -989,40 +1139,204 @@ export class EnhancedQueue {
         };
     }
 
+    // ==========================================
+    // Playback Control
+    // ==========================================
+
     /**
      * Play a track or next in queue
      * @param {Object} [track] - Specific track to play
      * @returns {Promise<boolean>} Success status
      */
     async play(track) {
-        if (!this.player) {
-            await this.connect();
-        }
+        // Update activity timestamp
+        this.lastActivityTime = Date.now();
 
-        const toPlay = track || this.tracks.shift();
+        const maxRetries = this.manager.config?.music?.playMaxRetries || PLAYBACK.TRACK_PLAY_MAX_RETRIES;
+        let currentTrack = track;
 
-        if (!toPlay) {
-            this.current = null;
-            this.scheduleLeave();
-            return false;
-        }
-
-        this.current = toPlay;
-        this.paused = false;
-
-        try {
-            await this.player.playTrack({ track: { encoded: toPlay.encoded } });
-            return true;
-        } catch (error) {
-            logger.error('Failed to play track', error);
-            this.stats.errors++;
-
-            if (this.tracks.length > 0) {
-                return await this.play();
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            if (!this.player) {
+                await this.connect();
             }
 
-            return false;
+            if (!currentTrack) {
+                currentTrack = this.tracks.shift();
+                this._markUriIndexDirty();
+            }
+
+            const toPlay = currentTrack;
+
+            if (!toPlay) {
+                this.current = null;
+                this.scheduleLeave();
+                return false;
+            }
+
+            this.current = toPlay;
+            this.paused = false;
+
+            try {
+                // FIX-CMD-C02: Guard against lazy tracks with encoded: null
+                // These tracks (from trending/discovery) must be resolved before playback
+                if (!toPlay.encoded && toPlay._requiresResolve && toPlay.info?.uri) {
+                    logger.debug('Resolving lazy track before playback', {
+                        guildId: this.guildId,
+                        uri: toPlay.info.uri
+                    });
+                    try {
+                        const result = await this.manager.search(toPlay.info.uri);
+                        if (result?.tracks?.length > 0) {
+                            const resolved = result.tracks[0];
+                            toPlay.encoded = resolved.encoded;
+                            toPlay.info = resolved.info || toPlay.info;
+                            delete toPlay._requiresResolve;
+                        } else {
+                            logger.warn('Failed to resolve lazy track — skipping', {
+                                guildId: this.guildId,
+                                uri: toPlay.info.uri
+                            });
+                            this.current = null;
+                            // Move to next track if available
+                            if (this.tracks.length > 0) {
+                                currentTrack = this.tracks.shift();
+                                this._markUriIndexDirty();
+                                continue;
+                            }
+                            this.scheduleLeave();
+                            return false;
+                        }
+                    } catch (resolveErr) {
+                        logger.error('Error resolving lazy track', {
+                            guildId: this.guildId,
+                            error: resolveErr.message
+                        });
+                        this.current = null;
+                        if (this.tracks.length > 0) {
+                            currentTrack = this.tracks.shift();
+                            this._markUriIndexDirty();
+                            continue;
+                        }
+                        this.scheduleLeave();
+                        return false;
+                    }
+                }
+
+                await this.player.playTrack({ track: { encoded: toPlay.encoded } });
+                // Start playback watchdog — detects if track never starts
+                this._startPlaybackWatchdog(toPlay);
+
+                // Reset consecutive OAuth errors on success
+                this._consecutiveOAuthErrors = 0;
+                return true;
+            } catch (error) {
+                const isOAuth = this._isOAuthError(error.message);
+
+                if (isOAuth) {
+                    this._consecutiveOAuthErrors++;
+                }
+
+                logger.error('Failed to play track', {
+                    error: error.message,
+                    attempt: attempt + 1,
+                    maxRetries,
+                    remainingTracks: this.tracks.length,
+                    isOAuthError: isOAuth,
+                    consecutiveOAuthErrors: this._consecutiveOAuthErrors
+                });
+                this.stats.errors++;
+
+                // Notify user that this track is being skipped due to error
+                if (this.textChannel) {
+                    const trackTitle = toPlay?.info?.title || 'Unknown';
+                    if (isOAuth && !this._oauthFailureDetected) {
+                        this._oauthFailureDetected = true;
+                        const embed = createOAuthErrorEmbed(trackTitle);
+                        this.textChannel.send({ embeds: [embed] }).catch(() => {});
+                    } else if (!isOAuth) {
+                        this.textChannel.send(`⏭️ Bỏ qua bài hát do lỗi phát: **${trackTitle}**`).catch(() => {});
+                    }
+                }
+
+                // Break retry loop early on consecutive OAuth failures
+                if (isOAuth && this._consecutiveOAuthErrors >= 2) {
+                    logger.warn('Consecutive OAuth errors in play() retry loop — aborting retries', {
+                        guildId: this.guildId,
+                        consecutiveOAuthErrors: this._consecutiveOAuthErrors,
+                        remainingTracks: this.tracks.length
+                    });
+                    this.tracks = [];
+                    this.current = null;
+                    this.paused = false;
+                    return false;
+                }
+
+                if (!currentTrack) {
+                    this.current = null;
+                    this.paused = false;
+                    return false;
+                }
+
+                // P1-02: Dead-letter the failed track and advance to next track
+                // instead of retrying the same broken track repeatedly
+                const failedEntry = {
+                    track: currentTrack,
+                    failedAt: Date.now(),
+                    reason: 'play_error',
+                    error: error.message,
+                    attempt: attempt + 1
+                };
+                this.failedTracks.push(failedEntry);
+                if (this.failedTracks.length > this.maxFailedTracks) {
+                    this.failedTracks.shift();
+                }
+                logger.warn('Track moved to dead-letter after play failure — advancing to next', {
+                    guildId: this.guildId,
+                    track: currentTrack.info?.title,
+                    error: error.message,
+                    failedTracksCount: this.failedTracks.length
+                });
+
+                // Emit trackFailed event
+                try {
+                    this.manager?.client?.emit('trackFailed', {
+                        guildId: this.guildId,
+                        track: currentTrack,
+                        reason: 'play_error',
+                        error: error.message,
+                        textChannel: this.textChannel
+                    });
+                } catch {
+                    /* non-critical */
+                }
+
+                // Clear currentTrack so next iteration advances to next queued track
+                currentTrack = null;
+
+                // If no more tracks in queue, schedule leave
+                if (this.tracks.length === 0) {
+                    this.current = null;
+                    this.paused = false;
+                    this.scheduleLeave();
+                    return false;
+                }
+
+                const backoffMs = Math.min(1000 * Math.pow(2, attempt), 5000);
+                await new Promise(resolve => setTimeout(resolve, backoffMs));
+                // Continue loop — next iteration will shift next track from queue
+            }
         }
+
+        // P1-02: All consecutive tracks failed — each was already dead-lettered in the catch block
+        logger.warn('play() exhausted retry limit across multiple tracks', {
+            guildId: this.guildId,
+            maxRetries,
+            failedTracksCount: this.failedTracks.length
+        });
+        this.current = null;
+        this.paused = false;
+        this.scheduleLeave();
+        return false;
     }
 
     /**
@@ -1031,11 +1345,16 @@ export class EnhancedQueue {
      */
     async pause() {
         if (!this.player || this.paused) return false;
-        await this.player.setPaused(true);
-        this.paused = true;
-        this.recordUserInteraction();
-        await this.updateNowPlaying();
-        return true;
+        try {
+            await this.player.setPaused(true);
+            this.paused = true;
+            this.recordUserInteraction();
+            await this.updateNowPlaying();
+            return true;
+        } catch (error) {
+            logger.error('Failed to pause playback', { guildId: this.guildId, error: error.message });
+            return false;
+        }
     }
 
     /**
@@ -1044,11 +1363,16 @@ export class EnhancedQueue {
      */
     async resume() {
         if (!this.player || !this.paused) return false;
-        await this.player.setPaused(false);
-        this.paused = false;
-        this.recordUserInteraction();
-        await this.updateNowPlaying();
-        return true;
+        try {
+            await this.player.setPaused(false);
+            this.paused = false;
+            this.recordUserInteraction();
+            await this.updateNowPlaying();
+            return true;
+        } catch (error) {
+            logger.error('Failed to resume playback', { guildId: this.guildId, error: error.message });
+            return false;
+        }
     }
 
     /**
@@ -1057,10 +1381,15 @@ export class EnhancedQueue {
      */
     async skip() {
         if (!this.player) return false;
-        this.stats.skips++;
-        this.recordUserInteraction();
-        await this.player.stopTrack();
-        return true;
+        try {
+            this.stats.skips++;
+            this.recordUserInteraction();
+            await this.player.stopTrack();
+            return true;
+        } catch (error) {
+            logger.error('Failed to skip track', { guildId: this.guildId, error: error.message });
+            return false;
+        }
     }
 
     /**
@@ -1070,8 +1399,23 @@ export class EnhancedQueue {
     async stop() {
         this.tracks = [];
         this.current = null;
-        if (this.player) {
-            await this.player.stopTrack();
+        this.paused = false;
+        this._oauthFailureDetected = false;
+        this._consecutiveOAuthErrors = 0;
+        this._clearPlaybackWatchdog();
+        this._markUriIndexDirty();
+        // BUG-018: set flag so end handler doesn't double-scheduleLeave
+        // FIX-EQ-C01: Wrap in try-catch to prevent _isStopping from getting stuck
+        this._isStopping = true;
+        try {
+            if (this.player) {
+                await this.player.stopTrack();
+            }
+        } catch (err) {
+            // Reset flag so queue is not permanently frozen
+            this._isStopping = false;
+            logger.error('stopTrack() failed during stop()', { guildId: this.guildId, error: err.message });
+            // Still schedule leave even if stop failed
         }
         this.scheduleLeave();
         return true;
@@ -1079,16 +1423,27 @@ export class EnhancedQueue {
 
     /**
      * Set volume
-     * @param {number} volume - Volume level (0-100)
+     * @param {number} volume - Volume level (0-200)
      * @returns {Promise<number>} Actual volume set
      */
     async setVolume(volume) {
-        volume = Math.max(0, Math.min(100, volume));
+        // EQ-M03: Validate volume is a number and not NaN
+        if (typeof volume !== 'number' || isNaN(volume)) {
+            throw new Error('Volume must be a number');
+        }
+        volume = Math.max(0, Math.min(200, volume));
         this.volume = volume;
         this.recordUserInteraction();
-        if (this.player) {
-            await this.player.setGlobalVolume(volume);
+        if (!this.player) {
+            return volume;
         }
+
+        try {
+            await this.player.setGlobalVolume(volume);
+        } catch (error) {
+            logger.error('Failed to set volume', { guildId: this.guildId, volume, error: error.message });
+        }
+
         return volume;
     }
 
@@ -1099,9 +1454,14 @@ export class EnhancedQueue {
      */
     async seek(position) {
         if (!this.player || !this.current) return false;
-        this.recordUserInteraction();
-        await this.player.seekTo(position);
-        return true;
+        try {
+            this.recordUserInteraction();
+            await this.player.seekTo(position);
+            return true;
+        } catch (error) {
+            logger.error('Failed to seek playback', { guildId: this.guildId, position, error: error.message });
+            return false;
+        }
     }
 
     /**
@@ -1121,13 +1481,33 @@ export class EnhancedQueue {
 
     /**
      * Shuffle queue
+     * BUG-048: Excludes current track from shuffle when it appears in queue (from queue loop)
      */
     shuffle() {
         this.recordUserInteraction();
+
+        // BUG-048: If current track is in queue (from queue loop), exclude it from shuffle
+        const currentEncoded = this.current?.encoded;
+        let currentTrackInQueue = null;
+        if (currentEncoded && this.loop === 'queue') {
+            const idx = this.tracks.findIndex(t => t.encoded === currentEncoded);
+            if (idx !== -1) {
+                currentTrackInQueue = this.tracks.splice(idx, 1)[0];
+            }
+        }
+
+        // Fisher-Yates shuffle
         for (let i = this.tracks.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [this.tracks[i], this.tracks[j]] = [this.tracks[j], this.tracks[i]];
         }
+
+        // Re-add current track at the end if it was removed
+        if (currentTrackInQueue) {
+            this.tracks.push(currentTrackInQueue);
+        }
+
+        this._markUriIndexDirty();
     }
 
     /**
@@ -1135,6 +1515,7 @@ export class EnhancedQueue {
      */
     clear() {
         this.tracks = [];
+        this._markUriIndexDirty();
     }
 
     /**
@@ -1146,7 +1527,9 @@ export class EnhancedQueue {
         if (index < 0 || index >= this.tracks.length) {
             return null;
         }
-        return this.tracks.splice(index, 1)[0];
+        const removed = this.tracks.splice(index, 1)[0];
+        this._markUriIndexDirty();
+        return removed;
     }
 
     /**
@@ -1162,16 +1545,18 @@ export class EnhancedQueue {
         if (toIndex < 0 || toIndex >= this.tracks.length) return false;
         const [track] = this.tracks.splice(fromIndex, 1);
         this.tracks.splice(toIndex, 0, track);
+        this._markUriIndexDirty();
         return true;
     }
 
     /**
      * Go back to the previous track from history
-     * @returns {Promise<{success: boolean, track?: Object, message?: string}>} Result with success status and played track
+     * @returns {Promise<{success: boolean, track?: Object, message?: string}>} Result
      */
     async previous() {
         try {
-            // Check if there's any history to go back to
+            this.clearLeaveTimeout();
+
             if (!this.history || this.history.length === 0) {
                 logger.debug('No history available for previous track', { guildId: this.guildId });
                 return {
@@ -1180,7 +1565,6 @@ export class EnhancedQueue {
                 };
             }
 
-            // Get the most recent track from history
             const previousEntry = this.history.shift();
 
             if (!previousEntry || !previousEntry.track) {
@@ -1191,49 +1575,79 @@ export class EnhancedQueue {
                 };
             }
 
-            const previousTrack = previousEntry.track;
+            let previousTrack = previousEntry.track;
 
-            // If there's a current track, push it to the front of the queue
-            // so it plays next after the previous track finishes
+            if (!previousTrack.encoded) {
+                const previousUri = previousTrack?.info?.uri;
+                if (previousUri && typeof this.manager?.search === 'function') {
+                    try {
+                        const fallbackRequester = previousTrack.requester || { id: 'system' };
+                        const searchResult = await this.manager.search(previousUri, fallbackRequester);
+                        if (searchResult?.tracks?.length > 0) {
+                            previousTrack = searchResult.tracks[0];
+                        }
+                    } catch (error) {
+                        logger.warn('Failed to resolve previous track from URI', {
+                            guildId: this.guildId,
+                            uri: previousUri,
+                            error: error.message
+                        });
+                    }
+                }
+
+                if (!previousTrack.encoded) {
+                    logger.warn('Cannot play previous track: missing encoded payload', {
+                        guildId: this.guildId,
+                        title: previousTrack.info?.title
+                    });
+                    return {
+                        success: false,
+                        message: 'Không thể quay lại bài này vì dữ liệu phát nhạc không đầy đủ!'
+                    };
+                }
+            }
+
+            // EQ-H03: Save current track's playback position before switching
             if (this.current) {
+                const position = this.player?.position || 0;
+                this.current._savedPosition = position;
                 this.tracks.unshift(this.current);
-                logger.debug('Pushed current track to front of queue', {
+                this._markUriIndexDirty();
+                logger.debug('Pushed current track to front of queue with saved position', {
                     guildId: this.guildId,
-                    track: this.current.info?.title
+                    track: this.current.info?.title,
+                    savedPosition: position
                 });
             }
 
-            // Record user interaction for progress updates
             this.recordUserInteraction();
 
-            // Play the previous track
             logger.info('Playing previous track from history', {
                 guildId: this.guildId,
                 track: previousTrack.info?.title,
                 historyRemaining: this.history.length
             });
 
-            // Set current to null first to avoid it being added to history again
-            // when play() calls stopTrack
             const wasPlaying = this.current !== null;
 
-            // Stop current playback if playing
-            if (this.player && wasPlaying) {
-                // Don't trigger the 'end' event logic which would play next track
-                await this.player.stopTrack();
+            this._skippingToPrevious = true;
+            try {
+                if (this.player && wasPlaying) {
+                    await this.player.stopTrack();
+                }
+
+                this.current = previousTrack;
+                this.paused = false;
+
+                if (!this.player) {
+                    await this.connect();
+                }
+
+                await this.player.playTrack({ track: { encoded: previousTrack.encoded } });
+            } finally {
+                this._skippingToPrevious = false;
             }
 
-            // Play the previous track directly
-            this.current = previousTrack;
-            this.paused = false;
-
-            if (!this.player) {
-                await this.connect();
-            }
-
-            await this.player.playTrack({ track: { encoded: previousTrack.encoded } });
-
-            // Update now playing embed
             await this.updateNowPlaying();
 
             return {
@@ -1242,6 +1656,7 @@ export class EnhancedQueue {
                 message: `Đang phát: ${previousTrack.info?.title}`
             };
         } catch (error) {
+            this._skippingToPrevious = false;
             logger.error('Failed to play previous track', {
                 guildId: this.guildId,
                 error: error.message
@@ -1260,13 +1675,57 @@ export class EnhancedQueue {
      */
     async jump(position) {
         if (!Number.isInteger(position)) return false;
+        if (this.tracks.length === 0) return false;
         if (position < 1 || position > this.tracks.length) return false;
         const index = position - 1;
         const [track] = this.tracks.splice(index, 1);
         if (!track) return false;
+
+        // EQ-M04: Validate track has a valid encoded field before playing
+        if (!track.encoded) {
+            // Attempt to resolve the track if it has a URI
+            if (track.info?.uri) {
+                try {
+                    const result = await this.manager.search(track.info.uri);
+                    if (result?.tracks?.length > 0) {
+                        track.encoded = result.tracks[0].encoded;
+                        track.info = result.tracks[0].info || track.info;
+                    } else {
+                        throw new Error(`Cannot resolve track: ${track.info?.title || 'Unknown'} — no results found`);
+                    }
+                } catch (resolveErr) {
+                    logger.warn('Jump failed: could not resolve encoded data for track', {
+                        guildId: this.guildId,
+                        title: track.info?.title,
+                        uri: track.info?.uri,
+                        error: resolveErr.message
+                    });
+                    this._markUriIndexDirty();
+                    throw new Error(
+                        `Cannot jump to track "${track.info?.title || 'Unknown'}": failed to resolve encoded data — ${resolveErr.message}`
+                    );
+                }
+            } else {
+                logger.warn('Jump failed: track has no encoded data and no URI to resolve', {
+                    guildId: this.guildId,
+                    position,
+                    title: track.info?.title
+                });
+                this._markUriIndexDirty();
+                throw new Error(
+                    `Cannot jump to track at position ${position}: track has no encoded data and no URI to resolve`
+                );
+            }
+        }
+
+        this._markUriIndexDirty();
         await this.play(track);
         return true;
     }
+
+    // ==========================================
+    // Leave & Goodbye
+    // ==========================================
 
     /**
      * Schedule leave after playback ends
@@ -1275,7 +1734,6 @@ export class EnhancedQueue {
         this.clearLeaveTimeout();
         const delay = this.manager.config.music.leaveOnEndDelay || PLAYBACK.AUTO_LEAVE_DELAY;
         if (this.manager.config.music.leaveOnEnd) {
-            // Store text channel and stats before timeout (they may be gone after delay)
             const textChannelRef = this.textChannel;
             const guildId = this.guildId;
             const sessionStats = { ...this.stats };
@@ -1284,7 +1742,6 @@ export class EnhancedQueue {
 
             this.leaveTimeout = setTimeout(async () => {
                 try {
-                    // Send goodbye message before destroying
                     await this._sendGoodbyeMessage({
                         textChannel: textChannelRef,
                         guildId: guildId,
@@ -1301,7 +1758,8 @@ export class EnhancedQueue {
                     });
                 }
 
-                this.destroy();
+                this._isLeavingGracefully = true;
+                await this.destroy();
             }, delay);
         }
     }
@@ -1320,13 +1778,6 @@ export class EnhancedQueue {
      * Send goodbye message when bot leaves voice channel
      * @private
      * @param {Object} options - Options for the goodbye message
-     * @param {TextChannel} options.textChannel - Text channel to send message
-     * @param {string} options.guildId - Guild ID for logging
-     * @param {string} options.reason - Reason for leaving ('end' or 'empty')
-     * @param {number} options.delayMinutes - Delay before leaving in minutes
-     * @param {number} options.tracksPlayed - Number of tracks played in session
-     * @param {number} options.totalDuration - Total duration played in ms
-     * @param {string} options.footer - Footer text
      */
     async _sendGoodbyeMessage(options = {}) {
         const {
@@ -1345,9 +1796,6 @@ export class EnhancedQueue {
         }
 
         try {
-            // Use pre-imported EmbedBuilder for better performance
-
-            // Format duration helper
             const formatDuration = ms => {
                 if (!ms || ms <= 0) return '0 phút';
                 const minutes = Math.floor(ms / 60000);
@@ -1359,12 +1807,11 @@ export class EnhancedQueue {
             };
 
             const embed = new EmbedBuilder()
-                .setColor('#5865F2')
+                .setColor(COLORS.PRIMARY)
                 .setTitle('👋 Hẹn gặp lại!')
                 .setDescription('Cảm ơn bạn đã nghe nhạc cùng mình')
                 .setTimestamp();
 
-            // Add session stats if available
             if (tracksPlayed > 0 || totalDuration > 0) {
                 embed.addFields({
                     name: 'Phiên nghe nhạc',
@@ -1373,7 +1820,6 @@ export class EnhancedQueue {
                 });
             }
 
-            // Add tips based on reason
             if (reason === 'end') {
                 embed.addFields({
                     name: '💡 Mẹo',
@@ -1393,7 +1839,6 @@ export class EnhancedQueue {
                     text: `${footer} • Rời sau ${delayMinutes} phút không có ai`
                 });
             } else if (reason === 'disconnect') {
-                // Bot was manually disconnected/kicked
                 embed.addFields({
                     name: '💡 Mẹo',
                     value: '`/play` để bắt đầu lại phiên nhạc mới',
@@ -1415,133 +1860,40 @@ export class EnhancedQueue {
         }
     }
 
+    // ==========================================
+    // Progress & Autoplay (delegate to managers)
+    // ==========================================
+
     /**
      * Start progress updates with adaptive frequency
-     * Updates continue as long as music is playing, with reduced frequency when idle
-     * to balance UX (smooth progress bar) with API call optimization
+     * Delegates to ProgressTracker
      */
     startProgressUpdates() {
-        this.stopProgressUpdates();
-
-        // Reset interaction tracking when starting updates
-        this.lastUserInteraction = Date.now();
-        this.lastProgressUpdate = 0;
-        this.progressUpdatePaused = false;
-
-        // Track update count for adaptive frequency
-        this.updateCount = 0;
-
-        this.updateInterval = setInterval(async () => {
-            try {
-                // Don't update if no message or no current track
-                if (!this.nowPlayingMessage || !this.current || !this.player) {
-                    return;
-                }
-
-                // Check if player is actually playing (not paused, not ended)
-                if (this.paused) {
-                    // When paused, update less frequently (every 10 seconds) just to keep embed alive
-                    const timeSinceLastUpdate = Date.now() - this.lastProgressUpdate;
-                    if (timeSinceLastUpdate < 10000) {
-                        return;
-                    }
-                }
-
-                // Smart frequency adjustment based on user interaction
-                const timeSinceInteraction = Date.now() - this.lastUserInteraction;
-                const idleTimeout = TIME.PROGRESS_IDLE_TIMEOUT || 30000;
-
-                // Calculate dynamic update interval based on idle time
-                // Active: every 2s, Idle (30s-60s): every 5s, Very idle (60s+): every 10s
-                let effectiveInterval;
-                if (timeSinceInteraction <= idleTimeout) {
-                    // User is active - use normal interval
-                    effectiveInterval = TIME.PROGRESS_UPDATE_INTERVAL || 2000;
-                    if (this.progressUpdatePaused) {
-                        this.progressUpdatePaused = false;
-                        logger.debug('Progress updates at full frequency (user active)', { guildId: this.guildId });
-                    }
-                } else if (timeSinceInteraction <= idleTimeout * 2) {
-                    // User is idle - use reduced frequency (every 5s)
-                    effectiveInterval = 5000;
-                    if (!this.progressUpdatePaused) {
-                        this.progressUpdatePaused = true;
-                        logger.debug('Progress updates at reduced frequency (user idle)', { guildId: this.guildId });
-                    }
-                } else {
-                    // User is very idle - use minimal frequency (every 10s)
-                    // Still update to keep the embed looking alive
-                    effectiveInterval = 10000;
-                }
-
-                // Debounce: Ensure minimum time between updates based on current frequency
-                const timeSinceLastUpdate = Date.now() - this.lastProgressUpdate;
-                const debounceTime = Math.max(effectiveInterval - 500, TIME.PROGRESS_UPDATE_DEBOUNCE || 1500);
-
-                if (timeSinceLastUpdate < debounceTime) {
-                    return;
-                }
-
-                await this.updateNowPlaying();
-                this.lastProgressUpdate = Date.now();
-                this.updateCount++;
-            } catch (error) {
-                logger.error('Failed to update now playing message', error);
-            }
-        }, TIME.PROGRESS_UPDATE_INTERVAL);
+        this.progressTracker.startProgressUpdates(this);
     }
 
     /**
      * Record user interaction to keep progress updates active
-     * Call this when user interacts with music controls
+     * Delegates to ProgressTracker
      */
     recordUserInteraction() {
-        this.lastUserInteraction = Date.now();
-
-        // If updates were paused, they will resume on next interval
-        if (this.progressUpdatePaused) {
-            logger.debug('User interaction recorded, updates will resume', { guildId: this.guildId });
-        }
+        this.progressTracker.recordUserInteraction();
     }
 
     /**
      * Stop progress updates
+     * Delegates to ProgressTracker
      */
     stopProgressUpdates() {
-        if (this.updateInterval) {
-            clearInterval(this.updateInterval);
-            this.updateInterval = null;
-        }
+        this.progressTracker.stopProgressUpdates();
     }
 
     /**
      * Update now playing message
-     * Optimized: Uses pre-imported modules instead of dynamic imports for better performance
+     * Delegates to ProgressTracker
      */
     async updateNowPlaying() {
-        if (!this.nowPlayingMessage || !this.current || !this.player) {
-            return;
-        }
-
-        try {
-            // Use pre-imported modules (imported at top of file) for better performance
-            // This avoids dynamic import overhead in this frequently-called method
-            const currentPosition = this.player.position || 0;
-            const embed = createNowPlayingEmbed(this.current, this, this.manager.config, currentPosition);
-            const components = createNowPlayingButtons(this, false);
-
-            await this.nowPlayingMessage.edit({
-                embeds: [embed],
-                components: components
-            });
-        } catch (error) {
-            if (error.code === 10008 || error.code === 50001) {
-                this.nowPlayingMessage = null;
-                this.stopProgressUpdates();
-            } else {
-                logger.error('Failed to update now playing embed', error);
-            }
-        }
+        return this.progressTracker.updateNowPlaying(this);
     }
 
     /**
@@ -1549,13 +1901,7 @@ export class EnhancedQueue {
      * @param {Message} message - Discord message
      */
     setNowPlayingMessage(message) {
-        this.nowPlayingMessage = message;
-        this.recordUserInteraction(); // User interacted by playing a track
-        if (message && this.current) {
-            this.startProgressUpdates();
-        } else {
-            this.stopProgressUpdates();
-        }
+        this.progressTracker.setNowPlayingMessage(message, this);
     }
 
     /**
@@ -1563,323 +1909,54 @@ export class EnhancedQueue {
      * @param {boolean} enabled - Enable/disable autoplay
      */
     setAutoplay(enabled) {
-        this.autoplay = enabled;
-        logger.music(`Autoplay ${enabled ? 'enabled' : 'disabled'}`, { guildId: this.guildId });
+        this.autoplayManager.setAutoplay(enabled);
     }
 
     /**
      * Add a related track when queue is empty (autoplay feature)
-     * Enhanced version using RecommendationEngine for smarter recommendations
-     *
-     * Strategy priority:
-     * 1. Collaborative filtering from guild history
-     * 2. Smart search strategies based on genre/mood/artist
-     * 3. Trending fallback
-     *
-     * @version 2.0.0 - Enhanced with RecommendationEngine
+     * Delegates to AutoplayManager
      */
     async addRelatedTrack() {
-        if (!this.current || !this.current.info) {
-            logger.warn('Cannot add related track: no current track', { guildId: this.guildId });
-            return;
-        }
-
-        try {
-            const track = this.current;
-            const title = track.info.title;
-            const author = track.info.author;
-
-            // Configuration from constants
-            const STRATEGY_TIMEOUT = AUTOPLAY?.STRATEGY_TIMEOUT || 2000;
-            const RACE_COUNT = AUTOPLAY?.RACE_STRATEGIES_COUNT || 3;
-            const MAX_CANDIDATES = AUTOPLAY?.MAX_CANDIDATES || 5;
-
-            // Get the RecommendationEngine
-            const recEngine = getRecommendationEngine();
-
-            // Build recent history URLs to exclude
-            const recentUrls = new Set(
-                this.history
-                    .slice(0, 10)
-                    .map(h => h.track?.info?.uri)
-                    .filter(Boolean)
-            );
-            recentUrls.add(track.info.uri); // Exclude current track
-
-            logger.info('Autoplay: Starting enhanced recommendation', {
-                guildId: this.guildId,
-                currentTrack: title,
-                currentAuthor: author,
-                historyExcluded: recentUrls.size
-            });
-
-            let selectedTrack = null;
-            let strategyUsed = 'none';
-
-            // PHASE 1: Try collaborative filtering from guild history
-            try {
-                const collaborativeResults = recEngine.getCollaborativeRecommendations(
-                    this.guildId,
-                    track.info.uri,
-                    title,
-                    recentUrls,
-                    5
-                );
-
-                if (collaborativeResults.length > 0) {
-                    // Score and rank the results
-                    const scoredResults = recEngine.scoreAndRank(collaborativeResults, {
-                        referenceTrack: track,
-                        guildProfile: recEngine.getGuildGenreProfile(this.guildId)
-                    });
-
-                    // Apply diversity
-                    const diversified = recEngine.applyDiversity(scoredResults);
-
-                    if (diversified.length > 0) {
-                        // Pick from top candidates with some randomness
-                        const pickIndex = Math.floor(Math.random() * Math.min(diversified.length, 3));
-                        selectedTrack = diversified[pickIndex];
-                        strategyUsed = 'collaborative';
-
-                        logger.debug('Autoplay: Collaborative filtering succeeded', {
-                            guildId: this.guildId,
-                            track: selectedTrack.info.title,
-                            score: selectedTrack.score,
-                            resultsCount: collaborativeResults.length
-                        });
-                    }
-                }
-            } catch (collabError) {
-                logger.debug('Autoplay: Collaborative filtering failed', {
-                    guildId: this.guildId,
-                    error: collabError.message
-                });
-            }
-
-            // PHASE 2: If no collaborative results, use smart search strategies
-            if (!selectedTrack) {
-                // Build smart strategies using RecommendationEngine
-                const searchStrategies = recEngine.buildAutoplayStrategies(track, this.guildId);
-
-                /**
-                 * Execute a single search strategy with timeout
-                 */
-                const executeStrategy = async strategy => {
-                    const searchResult = await Promise.race([
-                        this.manager.search(`ytsearch:${strategy.query}`, null),
-                        new Promise((_, reject) =>
-                            setTimeout(() => reject(new Error('Strategy timeout')), STRATEGY_TIMEOUT)
-                        )
-                    ]);
-
-                    if (searchResult?.tracks?.length > 0) {
-                        return { result: searchResult, strategy: strategy.name };
-                    }
-                    throw new Error('No results');
-                };
-
-                // Race the top strategies
-                const raceStrategies = searchStrategies.slice(0, RACE_COUNT);
-                let searchResult = null;
-
-                try {
-                    logger.debug(`Autoplay: Racing ${raceStrategies.length} smart strategies`, {
-                        guildId: this.guildId,
-                        strategies: raceStrategies.map(s => s.name)
-                    });
-
-                    const raceResult = await Promise.any(raceStrategies.map(strategy => executeStrategy(strategy)));
-
-                    searchResult = raceResult.result;
-                    strategyUsed = raceResult.strategy;
-                } catch {
-                    logger.debug('Autoplay: All racing strategies failed, trying sequential', {
-                        guildId: this.guildId
-                    });
-
-                    // Sequential fallback
-                    const remainingStrategies = searchStrategies.slice(RACE_COUNT);
-                    for (const strategy of remainingStrategies) {
-                        try {
-                            const result = await executeStrategy(strategy);
-                            searchResult = result.result;
-                            strategyUsed = result.strategy;
-                            break;
-                        } catch {
-                            // Continue to next strategy
-                        }
-                    }
-                }
-
-                if (searchResult?.tracks?.length > 0) {
-                    // Filter out recent tracks and apply quality checks
-                    const currentLower = title.toLowerCase();
-                    const recentTitles = new Set(
-                        this.history.slice(0, 5).map(h => h.track?.info?.title?.toLowerCase())
-                    );
-
-                    const candidates = searchResult.tracks.filter(t => {
-                        // Skip if in recent or current
-                        const tTitle = t.info?.title?.toLowerCase() || '';
-                        if (tTitle === currentLower || recentTitles.has(tTitle)) return false;
-
-                        // Use RecommendationEngine's quality check
-                        if (recEngine.shouldSkipTrack(t)) return false;
-
-                        return true;
-                    });
-
-                    if (candidates.length > 0) {
-                        // Score candidates
-                        const scoredCandidates = candidates.map(c => ({
-                            ...c,
-                            info: c.info,
-                            score: 0
-                        }));
-
-                        const rankedCandidates = recEngine.scoreAndRank(scoredCandidates, {
-                            referenceTrack: track
-                        });
-
-                        // Apply diversity and pick
-                        const diversified = recEngine.applyDiversity(rankedCandidates);
-                        const pickIndex = Math.floor(Math.random() * Math.min(diversified.length, MAX_CANDIDATES));
-                        selectedTrack = diversified[pickIndex];
-                    }
-                }
-            }
-
-            // PHASE 3: Handle no results
-            if (!selectedTrack) {
-                logger.warn('Autoplay: No related tracks found after all strategies', {
-                    guildId: this.guildId
-                });
-                this.current = null;
-                this.scheduleLeave();
-                return;
-            }
-
-            // Add the selected track
-            selectedTrack.requester = 'autoplay';
-
-            // Store detected metadata for future recommendations
-            if (selectedTrack.detectedGenre) {
-                selectedTrack._autoplayGenre = selectedTrack.detectedGenre;
-            }
-            if (selectedTrack.detectedMood) {
-                selectedTrack._autoplayMood = selectedTrack.detectedMood;
-            }
-
-            logger.info('Autoplay: Added related track', {
-                guildId: this.guildId,
-                track: selectedTrack.info.title,
-                author: selectedTrack.info.author,
-                strategy: strategyUsed,
-                score: selectedTrack.score || 0,
-                genre: selectedTrack.detectedGenre || 'unknown',
-                isSerendipity: selectedTrack.isSerendipity || false
-            });
-
-            this.tracks.push(selectedTrack);
-            await this.play();
-
-            // Send enhanced notification
-            await this._sendAutoplayNotification(selectedTrack, strategyUsed);
-        } catch (error) {
-            logger.error('Autoplay error', { guildId: this.guildId, error: error.message, stack: error.stack });
-            this.current = null;
-            this.scheduleLeave();
-        }
+        return this.autoplayManager.addRelatedTrack(this);
     }
 
-    /**
-     * Send autoplay notification to text channel
-     * @param {Object} track - The track being played
-     * @param {string} strategy - Strategy used to find the track
-     * @private
-     */
-    async _sendAutoplayNotification(track, strategy = 'search') {
-        if (!this.textChannel || !track) return;
-
-        try {
-            // Use pre-imported EmbedBuilder for better performance
-
-            // Strategy icons for visual feedback
-            const strategyIcons = {
-                collaborative: '👥',
-                artist_tracks: '🎤',
-                artist_popular: '⭐',
-                genre_trending: '🎵',
-                genre_popular: '🔥',
-                similar_keywords: '🔍',
-                mood_match: '🎭',
-                guild_preference: '📊',
-                trending_global: '🌍',
-                search: '🎵'
-            };
-
-            const icon = strategyIcons[strategy] || '🎵';
-            const isSerendipity = track.isSerendipity;
-            const genre = track._autoplayGenre || track.detectedGenre;
-
-            // Build description based on strategy
-            let reason = '';
-            switch (strategy) {
-                case 'collaborative':
-                    reason = '🎯 Người nghe tương tự cũng thích';
-                    break;
-                case 'artist_tracks':
-                case 'artist_popular':
-                    reason = `🎤 Bài khác của ${track.info.author}`;
-                    break;
-                case 'genre_trending':
-                case 'genre_popular':
-                    reason = `🎵 ${genre ? `${genre.toUpperCase()} đang hot` : 'Cùng thể loại'}`;
-                    break;
-                case 'mood_match':
-                    reason = '🎭 Cùng tâm trạng';
-                    break;
-                case 'guild_preference':
-                    reason = '📊 Dựa trên sở thích server';
-                    break;
-                default:
-                    reason = '🎵 Gợi ý cho bạn';
-            }
-
-            const embed = new EmbedBuilder()
-                .setColor(isSerendipity ? '#E91E63' : '#9B59B6')
-                .setDescription(
-                    `${icon} **Autoplay${isSerendipity ? ' ✨' : ''}:** [${track.info.title}](${track.info.uri})\n` +
-                    `└ 🎤 ${track.info.author}\n\n` +
-                    `${reason}`
-                )
-                .setFooter({ text: '💡 Dùng /autoplay để tắt • /similar để xem thêm' });
-
-            await this.textChannel.send({ embeds: [embed] });
-        } catch (error) {
-            logger.debug('Could not send autoplay notification', { guildId: this.guildId, error: error.message });
-        }
-    }
+    // ==========================================
+    // Destroy & Stats
+    // ==========================================
 
     /**
-     * Destroy queue and disconnect
+     * Destroy queue and disconnect.
+     *
+     * **Ownership**: Prefer calling {@link MusicManager#destroyQueue MusicManager.destroyQueue(guildId)}
+     * rather than invoking this method directly. `MusicManager.destroyQueue()` performs
+     * additional external cleanup (e.g. auto-play suggestion maps, logging) before
+     * delegating here.
+     *
+     * Direct calls are acceptable only from *within* the queue itself (e.g. scheduled
+     * leave timeout) or from managers that operate on behalf of the queue
+     * (e.g. {@link ReconnectionManager} after exhausting reconnection retries).
+     *
+     * **What happens during destroy**:
+     * 1. Clears the scheduled leave timeout.
+     * 2. Stops progress-tracker updates.
+     * 3. Removes all Shoukaku player event listeners and leaves the voice channel.
+     * 4. Nullifies player, track list, current track, and now-playing message.
+     * 5. Removes this queue from `MusicManager.queues` (idempotent with
+     *    `MusicManager.destroyQueue()` which also calls `queues.delete()`).
+     *
+     * @warning Calling `destroy()` directly bypasses MusicManager-level cleanup.
+     *          Use `MusicManager.destroyQueue(guildId)` unless you have a specific reason not to.
      */
-    async destroy() {
+    async destroy(options = {}) {
+        const { skipManagerDelete = false } = options;
+
         this.clearLeaveTimeout();
         this.stopProgressUpdates();
+        this._clearPlaybackWatchdog();
 
         if (this.player) {
             try {
-                // CRITICAL FIX: Remove all event listeners to prevent memory leak
-                // Each player has 6 event listeners (start, end, exception, stuck, closed, update)
-                // Without this, listeners accumulate and cause memory leaks
-                this.player.removeAllListeners('start');
-                this.player.removeAllListeners('end');
-                this.player.removeAllListeners('exception');
-                this.player.removeAllListeners('stuck');
-                this.player.removeAllListeners('closed');
-                this.player.removeAllListeners('update');
+                this._detachPlayerEventHandlers(this.player);
 
                 await this.manager.shoukaku.leaveVoiceChannel(this.guildId);
             } catch (err) {
@@ -1890,9 +1967,21 @@ export class EnhancedQueue {
 
         this.tracks = [];
         this.current = null;
+        this._oauthFailureDetected = false;
+        this._consecutiveOAuthErrors = 0;
+        this._markUriIndexDirty();
         this.nowPlayingMessage = null;
 
-        this.manager.queues.delete(this.guildId);
+        if (skipManagerDelete) {
+            return;
+        }
+
+        if (typeof this.manager?.destroyQueue === 'function') {
+            await this.manager.destroyQueue(this.guildId, { skipDestroy: true });
+            return;
+        }
+
+        this.manager?.queues?.delete(this.guildId);
     }
 
     /**
@@ -1901,13 +1990,16 @@ export class EnhancedQueue {
      */
     async _saveToDatabase(track) {
         try {
-            // Dynamically import to avoid circular dependencies
-            const { default: History } = await import('../database/models/History.js');
-
-            // Get requester from track metadata
             const userId = track.requester || track.requesterId || 'unknown';
 
-            // Save to database
+            if (userId === '__cache_warm__') {
+                logger.debug('Skipping history save for cache warming track', {
+                    guildId: this.guildId,
+                    track: track.info?.title
+                });
+                return;
+            }
+
             History.add(this.guildId, userId, track);
 
             logger.debug('Track saved to database history', {
@@ -1916,13 +2008,27 @@ export class EnhancedQueue {
                 userId
             });
         } catch (error) {
-            // Don't throw - this is a non-critical operation
             logger.warn('Failed to save track to database history', {
                 guildId: this.guildId,
                 track: track?.info?.title,
                 error: error.message
             });
         }
+    }
+
+    /**
+     * Get failed tracks from the dead-letter list (EQ-H01)
+     * @returns {Array<{track: Object, failedAt: number, reason: string, retries: number}>}
+     */
+    getFailedTracks() {
+        return [...this.failedTracks];
+    }
+
+    /**
+     * Clear the dead-letter list of failed tracks
+     */
+    clearFailedTracks() {
+        this.failedTracks = [];
     }
 
     /**
@@ -1934,10 +2040,11 @@ export class EnhancedQueue {
             ...this.stats,
             queueLength: this.tracks.length,
             historyLength: this.history.length,
+            failedTracksCount: this.failedTracks.length,
             volume: this.volume,
             loop: this.loop,
             paused: this.paused,
-            activeFilters: Object.keys(this.filters).filter(k => this.filters[k] !== null)
+            activeFilters: this.getActiveFilters()
         };
     }
 }

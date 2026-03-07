@@ -1,31 +1,17 @@
 /**
  * @file SearchCache.js
- * @description Enhanced Search Cache with TTL, TRUE LRU eviction, zlib compression, and warming
- * @version 1.8.2 - Added real zlib compression for memory optimization
+ * @description Enhanced Search Cache with TTL, TRUE LRU eviction, and warming
+ * @version 1.11.1 - Removed dead zlib compression code (SC-H01)
  *
  * Implementation: Uses Map's insertion order property for LRU tracking.
  * On access, we delete and re-insert the entry to move it to the end (most recently used).
  * On eviction, we remove the first entry (least recently used).
  *
- * Compression: Uses zlib gzip/gunzip for entries larger than threshold (1KB).
- * This significantly reduces memory usage for large search results.
- *
  * This is a proper O(1) LRU implementation using ES6 Map.
  */
 
-import { gzipSync, gunzipSync } from 'zlib';
 import logger from '../utils/logger.js';
 import { TIME, CACHE } from '../utils/constants.js';
-
-/**
- * Compression configuration
- */
-const COMPRESSION_CONFIG = {
-    /** Minimum size in bytes to compress (1KB) */
-    MIN_SIZE_FOR_COMPRESSION: 1024,
-    /** Compression level (1-9, 6 is default balance) */
-    COMPRESSION_LEVEL: 6
-};
 
 export class SearchCache {
     /**
@@ -35,26 +21,45 @@ export class SearchCache {
      */
     constructor(maxSize = CACHE.MAX_SIZE, ttlMs = TIME.SEARCH_CACHE_TTL) {
         this.cache = new Map(); // Map maintains insertion order
-        this.maxSize = maxSize;
+        // SC-M02: Enforce minimum cache size of 10 to prevent degenerate behavior
+        this.maxSize = Math.max(maxSize || CACHE.MAX_SIZE, 10);
         this.ttlMs = ttlMs;
         this.stats = {
             hits: 0,
             misses: 0,
-            evictions: 0,
-            compressionSavings: 0,
-            compressedEntries: 0,
-            totalOriginalSize: 0,
-            totalCompressedSize: 0
+            evictions: 0
         };
+
+        // Periodically prune expired entries every 5 minutes
+        this._pruneInterval = setInterval(
+            () => {
+                this.pruneExpired();
+            },
+            5 * 60 * 1000
+        );
+        // Don't prevent Node from exiting
+        if (this._pruneInterval.unref) {
+            this._pruneInterval.unref();
+        }
+    }
+
+    /**
+     * Dispose the cache and clear the prune interval
+     */
+    dispose() {
+        if (this._pruneInterval) {
+            clearInterval(this._pruneInterval);
+            this._pruneInterval = null;
+        }
+        this.clear();
     }
 
     /**
      * Set a value in the cache
      * @param {string} key - Cache key
      * @param {*} value - Value to cache
-     * @param {boolean} compress - Whether to attempt compression (default: true)
      */
-    set(key, value, compress = true) {
+    set(key, value) {
         // If key already exists, delete it first (to update position to end)
         if (this.cache.has(key)) {
             this.cache.delete(key);
@@ -65,48 +70,14 @@ export class SearchCache {
             this._evictLRU();
         }
 
-        // Estimate original size
-        const originalSize = this._estimateSize(value);
+        // Estimate size
+        const size = this._estimateSize(value);
 
         const entry = {
             value,
             timestamp: Date.now(),
-            compressed: false,
-            originalSize: originalSize,
-            size: originalSize
+            size
         };
-
-        // Compress large objects if requested and above threshold
-        if (compress && originalSize > COMPRESSION_CONFIG.MIN_SIZE_FOR_COMPRESSION) {
-            try {
-                const compressed = this._compress(value);
-                const compressedSize = compressed.length;
-
-                // Only use compression if it actually saves space
-                if (compressedSize < originalSize * 0.9) {
-                    // At least 10% savings
-                    entry.value = compressed;
-                    entry.compressed = true;
-                    entry.size = compressedSize;
-
-                    const savings = originalSize - compressedSize;
-                    this.stats.compressionSavings += savings;
-                    this.stats.compressedEntries++;
-                    this.stats.totalOriginalSize += originalSize;
-                    this.stats.totalCompressedSize += compressedSize;
-
-                    logger.debug(`Compressed cache entry: ${key}`, {
-                        originalSize,
-                        compressedSize,
-                        savings,
-                        ratio: ((compressedSize / originalSize) * 100).toFixed(1) + '%'
-                    });
-                }
-            } catch (error) {
-                // Compression failed, store uncompressed
-                logger.debug(`Compression failed for key: ${key}`, { error: error.message });
-            }
-        }
 
         this.cache.set(key, entry);
     }
@@ -137,18 +108,6 @@ export class SearchCache {
         this.cache.set(key, entry);
 
         this.stats.hits++;
-
-        // Decompress if needed
-        if (entry.compressed) {
-            try {
-                return this._decompress(entry.value);
-            } catch (error) {
-                logger.error(`Decompression failed for key: ${key}`, { error: error.message });
-                // Remove corrupted entry
-                this.cache.delete(key);
-                return null;
-            }
-        }
 
         return entry.value;
     }
@@ -207,28 +166,6 @@ export class SearchCache {
     }
 
     /**
-     * Compress a value using zlib gzip
-     * @param {*} value - Value to compress
-     * @returns {Buffer} Compressed data
-     * @private
-     */
-    _compress(value) {
-        const jsonString = JSON.stringify(value);
-        return gzipSync(jsonString, { level: COMPRESSION_CONFIG.COMPRESSION_LEVEL });
-    }
-
-    /**
-     * Decompress a value using zlib gunzip
-     * @param {Buffer} compressed - Compressed data
-     * @returns {*} Original value
-     * @private
-     */
-    _decompress(compressed) {
-        const decompressed = gunzipSync(compressed);
-        return JSON.parse(decompressed.toString());
-    }
-
-    /**
      * Estimate the size of an object in bytes
      * @private
      */
@@ -269,17 +206,9 @@ export class SearchCache {
 
         // Calculate total memory usage
         let totalSize = 0;
-        let compressedCount = 0;
         for (const entry of this.cache.values()) {
             totalSize += entry.size || 0;
-            if (entry.compressed) compressedCount++;
         }
-
-        // Calculate compression ratio
-        const compressionRatio =
-            this.stats.totalOriginalSize > 0
-                ? ((this.stats.totalCompressedSize / this.stats.totalOriginalSize) * 100).toFixed(1)
-                : 100;
 
         return {
             ...this.stats,
@@ -287,10 +216,7 @@ export class SearchCache {
             size: this.cache.size,
             maxSize: this.maxSize,
             totalMemoryBytes: totalSize,
-            totalMemoryMB: (totalSize / 1024 / 1024).toFixed(2),
-            currentCompressedEntries: compressedCount,
-            compressionRatio: compressionRatio + '%',
-            compressionSavingsMB: (this.stats.compressionSavings / 1024 / 1024).toFixed(2)
+            totalMemoryMB: (totalSize / 1024 / 1024).toFixed(2)
         };
     }
 
@@ -303,8 +229,11 @@ export class SearchCache {
         const now = Date.now();
         let pruned = 0;
 
-        for (const [key, entry] of this.cache.entries()) {
-            if (now - entry.timestamp > this.ttlMs) {
+        // SC-M01: Snapshot keys before iterating to avoid Map mutation during iteration
+        const keys = [...this.cache.keys()];
+        for (const key of keys) {
+            const entry = this.cache.get(key);
+            if (entry && now - entry.timestamp > this.ttlMs) {
                 this.cache.delete(key);
                 pruned++;
             }
@@ -338,7 +267,7 @@ export class SearchCache {
             try {
                 const result = await searchFn(query);
                 if (result) {
-                    this.set(query, result, true);
+                    this.set(query, result);
                     warmed++;
                 }
             } catch (error) {

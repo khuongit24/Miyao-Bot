@@ -6,6 +6,7 @@
 
 import logger from './logger.js';
 import crypto from 'crypto';
+import { isIP } from 'net';
 
 /**
  * Required environment variables that MUST be present
@@ -223,9 +224,8 @@ export function validateEnvironment() {
     // IP Whitelist validation
     if (process.env.METRICS_ALLOWED_IPS) {
         const ips = process.env.METRICS_ALLOWED_IPS.split(',');
-        const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$|^::1$|^[0-9a-fA-F:]+$/;
         for (const ip of ips) {
-            if (!ipRegex.test(ip.trim())) {
+            if (isIP(ip.trim()) === 0) {
                 warnings.push(`Invalid IP address in METRICS_ALLOWED_IPS: ${ip.trim()}`);
             }
         }

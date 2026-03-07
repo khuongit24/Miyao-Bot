@@ -18,10 +18,15 @@ import {
  * Check if user is in a voice channel
  * @param {CommandInteraction} interaction - Discord interaction
  * @throws {UserNotInVoiceError} If user is not in a voice channel
+ * @throws {Error} If used in DM context (no member)
  * @returns {{ voiceChannel: VoiceChannel, member: GuildMember }}
  */
 export function requireVoiceChannel(interaction) {
+    // FIX-MW-H01: Guard against null member in DM context
     const member = interaction.member;
+    if (!member) {
+        throw new UserNotInVoiceError('Command chỉ dùng trong server');
+    }
     const voiceChannel = member.voice.channel;
 
     if (!voiceChannel) {
@@ -40,7 +45,7 @@ export function requireVoiceChannel(interaction) {
 export function checkVoicePermissions(interaction, voiceChannel) {
     const permissions = voiceChannel.permissionsFor(interaction.client.user);
 
-    if (!permissions.has(['Connect', 'Speak'])) {
+    if (!permissions.has(['ViewChannel', 'Connect', 'Speak'])) {
         throw new VoiceChannelPermissionError(voiceChannel.name);
     }
 }
@@ -57,7 +62,11 @@ export function requireSameVoiceChannel(interaction, queue) {
         return true; // No queue means no restriction
     }
 
+    // FIX-MW-H01: Guard against null member in DM context
     const member = interaction.member;
+    if (!member) {
+        throw new UserNotInVoiceError('Command chỉ dùng trong server');
+    }
 
     if (!member.voice.channel) {
         throw new UserNotInVoiceError();

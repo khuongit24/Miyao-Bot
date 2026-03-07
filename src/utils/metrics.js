@@ -6,11 +6,14 @@
 import { VERSION, ENVIRONMENT } from './version.js';
 import logger from './logger.js';
 
+const MAX_BY_COMMAND_ENTRIES = 1000;
+
 class MetricsTracker {
     constructor() {
         this.startTime = Date.now();
 
         // Command metrics
+        // FIX-PB03: byCommand is bounded by registered slash command count (~30-50 entries)
         this.commands = {
             total: 0,
             successful: 0,
@@ -32,6 +35,7 @@ class MetricsTracker {
         };
 
         // Error metrics
+        // FIX-PB03: byType is bounded by fixed error type constants ('command', 'discord_client', 'general')
         this.errors = {
             total: 0,
             byType: new Map(),
@@ -61,6 +65,9 @@ class MetricsTracker {
             }
         };
 
+        // Store initial CPU usage for delta calculation
+        this._lastCpuUsage = process.cpuUsage();
+
         // Start periodic system metrics collection
         this.startSystemMetrics();
     }
@@ -77,13 +84,22 @@ class MetricsTracker {
         }
 
         // Track by command
-        const stats = this.commands.byCommand.get(commandName) || { total: 0, success: 0, failed: 0 };
+        const stats = this.commands.byCommand.get(commandName) || { total: 0, success: 0, failed: 0, lastUsed: 0 };
         stats.total++;
         if (success) {
             stats.success++;
         } else {
             stats.failed++;
         }
+        stats.lastUsed = Date.now();
+
+        // Prune least-recent entries when map exceeds limit
+        if (!this.commands.byCommand.has(commandName) && this.commands.byCommand.size >= MAX_BY_COMMAND_ENTRIES) {
+            this._pruneByCommand();
+        }
+
+        // Re-insert to keep Map ordered by recent use
+        this.commands.byCommand.delete(commandName);
         this.commands.byCommand.set(commandName, stats);
 
         this.commands.lastCommand = {
@@ -97,6 +113,24 @@ class MetricsTracker {
         if (responseTime > 0) {
             this.trackResponseTime(responseTime);
         }
+    }
+
+    /**
+     * Prune least-recent entries from byCommand Map
+     * @private
+     */
+    _pruneByCommand() {
+        const toRemove = Math.floor(this.commands.byCommand.size / 4);
+        let removed = 0;
+        // Map iterates in insertion order; oldest entries are first
+        for (const key of this.commands.byCommand.keys()) {
+            if (removed >= toRemove) break;
+            this.commands.byCommand.delete(key);
+            removed++;
+        }
+        logger.debug(`MetricsTracker: pruned ${removed} least-recent byCommand entries`, {
+            remaining: this.commands.byCommand.size
+        });
     }
 
     /**
@@ -142,6 +176,7 @@ class MetricsTracker {
 
         this.errors.lastError = {
             message: error.message || String(error),
+            stack: error.stack ? error.stack.split('\n').slice(0, 5).join('\n') : undefined,
             type,
             time: Date.now()
         };
@@ -180,10 +215,15 @@ class MetricsTracker {
                 rss: Math.round(mem.rss / 1024 / 1024) // MB
             };
 
-            const cpu = process.cpuUsage();
+            const cpu = process.cpuUsage(this._lastCpuUsage);
+            this._lastCpuUsage = process.cpuUsage();
+            // Convert microseconds delta to percentage over the 60s interval
+            const intervalMs = 60000;
+            const userPercent = (cpu.user / 1000 / intervalMs) * 100;
+            const systemPercent = (cpu.system / 1000 / intervalMs) * 100;
             this.system.cpu = {
-                user: Math.round(cpu.user / 1000), // milliseconds
-                system: Math.round(cpu.system / 1000) // milliseconds
+                user: Math.round(userPercent * 10) / 10, // percentage
+                system: Math.round(systemPercent * 10) / 10 // percentage
             };
 
             // Log if memory usage is high
@@ -194,7 +234,7 @@ class MetricsTracker {
                     rss: this.system.memory.rss
                 });
             }
-        }, 60000); // Every minute
+        }, 60000).unref(); // Every minute — unref to prevent blocking process exit
     }
 
     /**

@@ -9,9 +9,12 @@ import {
     ButtonStyle
 } from 'discord.js';
 import logger from '../utils/logger.js';
-import fs from 'fs';
+import { COLORS } from '../config/design-system.js';
+import { HELP_CATEGORY_OPTIONS } from '../config/help-categories.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import FeedbackSubmission from '../database/models/FeedbackSubmission.js';
+import BugReport from '../database/models/BugReport.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,43 +39,18 @@ export async function handleShowHelpMenu(interaction, client) {
         const selectMenu = new StringSelectMenuBuilder()
             .setCustomId('help_category')
             .setPlaceholder('📂 Chọn danh mục lệnh...')
-            .addOptions([
-                { label: 'Trang chủ', description: 'Giới thiệu về Miyao Music Bot', value: 'home', emoji: '🏠' },
-                { label: 'Phát nhạc', description: 'Play, pause, skip, stop...', value: 'playback', emoji: '🎶' },
-                { label: 'Hàng đợi', description: 'Queue, shuffle, loop, move...', value: 'queue', emoji: '📋' },
-                {
-                    label: 'Âm thanh & Filters',
-                    description: 'Volume, filters, autoplay',
-                    value: 'control',
-                    emoji: '🎛️'
-                },
-                {
-                    label: 'Khám phá',
-                    description: 'Discover, trending, lyrics, similar',
-                    value: 'discovery',
-                    emoji: '🔍'
-                },
-                {
-                    label: 'Playlist & Favorites',
-                    description: 'Quản lý danh sách phát cá nhân',
-                    value: 'playlist',
-                    emoji: '❤️'
-                },
-                { label: 'Thống kê', description: 'Mystats, serverstats, leaderboard', value: 'stats', emoji: '📊' },
-                { label: 'Cài đặt', description: 'Cài đặt cá nhân và server', value: 'settings', emoji: '⚙️' },
-                { label: 'Tips & Tricks', description: 'Mẹo sử dụng hiệu quả', value: 'tips', emoji: '💡' }
-            ]);
+            .addOptions(HELP_CATEGORY_OPTIONS);
 
         // Build action buttons
         const buttons = new ActionRowBuilder().addComponents(
             new ButtonBuilder()
                 .setCustomId('help_feedback')
-                .setLabel('Góp ý')
+                .setLabel('Gửi góp ý')
                 .setStyle(ButtonStyle.Primary)
-                .setEmoji('📝'),
+                .setEmoji('✉️'),
             new ButtonBuilder()
                 .setCustomId('help_report')
-                .setLabel('Báo lỗi')
+                .setLabel('Báo cáo lỗi')
                 .setStyle(ButtonStyle.Danger)
                 .setEmoji('🐛'),
             new ButtonBuilder()
@@ -85,7 +63,7 @@ export async function handleShowHelpMenu(interaction, client) {
         // Create embed using home category from help.js
         const homeCategory = categories.home;
         const embed = new EmbedBuilder()
-            .setColor(client.config?.bot?.color || '#5865F2')
+            .setColor(client.config?.bot?.color || COLORS.PRIMARY)
             .setTitle(`${homeCategory.emoji} ${homeCategory.title}`)
             .setDescription(homeCategory.description)
             .setThumbnail(client.user.displayAvatarURL())
@@ -177,7 +155,7 @@ export async function handleShowAllCommands(interaction, client) {
 
         // Build embed with all commands
         const embed = new EmbedBuilder()
-            .setColor(client.config?.bot?.color || '#5865F2')
+            .setColor(client.config?.bot?.color || COLORS.PRIMARY)
             .setAuthor({
                 name: `${client.user.username} - Tất cả lệnh`,
                 iconURL: client.user.displayAvatarURL()
@@ -234,9 +212,14 @@ export async function handleShowAllCommands(interaction, client) {
                 .setEmoji('🏠'),
             new ButtonBuilder()
                 .setCustomId('help_feedback')
-                .setLabel('Góp ý')
+                .setLabel('Gửi góp ý')
                 .setStyle(ButtonStyle.Primary)
-                .setEmoji('📝')
+                .setEmoji('✉️'),
+            new ButtonBuilder()
+                .setCustomId('help_report')
+                .setLabel('Báo cáo lỗi')
+                .setStyle(ButtonStyle.Danger)
+                .setEmoji('🐛')
         );
 
         await interaction.update({
@@ -267,14 +250,14 @@ export async function handleHelpCategory(interaction, client) {
 
         if (!category) {
             return await interaction.reply({
-                content: '❌ Category không tồn tại!',
+                content: '❌ Danh mục không tồn tại!',
                 ephemeral: true
             });
         }
 
         // Create embed for selected category
         const embed = new EmbedBuilder()
-            .setColor(client.config.bot.color)
+            .setColor(client.config?.bot?.color || COLORS.PRIMARY)
             .setTitle(`${category.emoji} ${category.title}`)
             .setDescription(category.description)
             .setThumbnail(client.user.displayAvatarURL())
@@ -451,32 +434,25 @@ export async function handleFeedbackSubmit(interaction, client) {
             });
         }
 
-        // Check for spam (same user submitting too frequently)
-        const feedbackDir = path.join(__dirname, '..', '..', 'feedback');
-        if (!fs.existsSync(feedbackDir)) {
-            fs.mkdirSync(feedbackDir, { recursive: true });
+        if (subject.length > 100) {
+            return interaction.reply({
+                content: '❌ Tiêu đề không được vượt quá 100 ký tự!',
+                ephemeral: true
+            });
         }
 
-        const feedbackFile = path.join(feedbackDir, 'feedbacks.json');
-        let feedbacks = [];
-
-        if (fs.existsSync(feedbackFile)) {
-            try {
-                const data = fs.readFileSync(feedbackFile, 'utf8');
-                feedbacks = JSON.parse(data);
-            } catch (parseError) {
-                logger.warn('Failed to parse feedbacks.json, creating new file');
-                feedbacks = [];
-            }
+        if (content.length > 2000) {
+            return interaction.reply({
+                content: '❌ Nội dung không được vượt quá 2000 ký tự!',
+                ephemeral: true
+            });
         }
 
         // Check last submission from this user (rate limit: 1 per minute)
-        const userLastFeedback = feedbacks
-            .filter(f => f.user.id === interaction.user.id)
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+        const userLastFeedback = await FeedbackSubmission.getLastByUser(interaction.user.id);
 
         if (userLastFeedback) {
-            const timeSinceLastFeedback = Date.now() - new Date(userLastFeedback.timestamp).getTime();
+            const timeSinceLastFeedback = Date.now() - new Date(userLastFeedback.created_at).getTime();
             if (timeSinceLastFeedback < 60000) {
                 // 1 minute cooldown
                 const remainingTime = Math.ceil((60000 - timeSinceLastFeedback) / 1000);
@@ -487,35 +463,19 @@ export async function handleFeedbackSubmit(interaction, client) {
             }
         }
 
-        // Create feedback entry
-        const feedback = {
+        const feedbackId = await FeedbackSubmission.create({
             type: 'FEEDBACK',
-            timestamp: new Date().toISOString(),
-            user: {
-                id: interaction.user.id,
-                tag: interaction.user.tag,
-                username: interaction.user.username
-            },
-            guild: {
-                id: interaction.guildId || 'DM',
-                name: interaction.guild?.name || 'Direct Message'
-            },
+            userId: interaction.user.id,
+            userTag: interaction.user.tag,
+            username: interaction.user.username,
+            guildId: interaction.guildId || 'DM',
+            guildName: interaction.guild?.name || 'Direct Message',
             subject,
             content,
             contact
-        };
+        });
 
-        // Generate ID (max existing ID + 1)
-        const maxId = feedbacks.length > 0 ? Math.max(...feedbacks.map(f => f.id || 0)) : 0;
-        feedback.id = maxId + 1;
-
-        feedbacks.push(feedback);
-
-        // Save with error handling
-        try {
-            fs.writeFileSync(feedbackFile, JSON.stringify(feedbacks, null, 2));
-        } catch (writeError) {
-            logger.error('Failed to write feedbacks.json', writeError);
+        if (!feedbackId) {
             return interaction.reply({
                 content: '❌ Không thể lưu feedback! Vui lòng thử lại sau.',
                 ephemeral: true
@@ -524,7 +484,7 @@ export async function handleFeedbackSubmit(interaction, client) {
 
         // Send confirmation
         const embed = new EmbedBuilder()
-            .setColor('#00FF00')
+            .setColor(COLORS.SUCCESS)
             .setTitle('✅ Góp ý đã được gửi!')
             .setDescription(
                 `Cảm ơn **${interaction.user.username}** đã gửi góp ý cho Miyao Bot!\n\n` +
@@ -533,7 +493,7 @@ export async function handleFeedbackSubmit(interaction, client) {
                     'Bạn có thể theo dõi tiến trình tại [GitHub](https://github.com/khuongit24).'
             )
             .addFields([
-                { name: '📝 Feedback ID', value: `#${feedback.id}`, inline: true },
+                { name: '📝 Feedback ID', value: `#${feedbackId}`, inline: true },
                 { name: '📅 Thời gian', value: new Date().toLocaleString('vi-VN'), inline: true }
             ])
             .setFooter({ text: `${client.config.bot.footer} • Cảm ơn bạn đã đóng góp!` })
@@ -545,7 +505,7 @@ export async function handleFeedbackSubmit(interaction, client) {
         });
 
         logger.info(
-            `Feedback #${feedback.id} received from ${interaction.user.tag} (${interaction.user.id}): "${subject}"`
+            `Feedback #${feedbackId} received from ${interaction.user.tag} (${interaction.user.id}): "${subject}"`
         );
     } catch (error) {
         logger.error('Feedback submit handler error', error);
@@ -611,32 +571,10 @@ export async function handleBugReportSubmit(interaction, client) {
             });
         }
 
-        // Setup directory
-        const feedbackDir = path.join(__dirname, '..', '..', 'feedback');
-        if (!fs.existsSync(feedbackDir)) {
-            fs.mkdirSync(feedbackDir, { recursive: true });
-        }
-
-        const bugReportFile = path.join(feedbackDir, 'bug-reports.json');
-        let bugReports = [];
-
-        if (fs.existsSync(bugReportFile)) {
-            try {
-                const data = fs.readFileSync(bugReportFile, 'utf8');
-                bugReports = JSON.parse(data);
-            } catch (parseError) {
-                logger.warn('Failed to parse bug-reports.json, creating new file');
-                bugReports = [];
-            }
-        }
-
+        // FIX-EV-C01: Migrated from JSON file to database to eliminate read/write race conditions
         // Check for duplicate bug reports (same user, similar title, within 5 minutes)
-        const userRecentBugs = bugReports.filter(b => {
-            const timeDiff = Date.now() - new Date(b.timestamp).getTime();
-            return b.user.id === interaction.user.id && timeDiff < 300000; // 5 minutes
-        });
-
-        const isDuplicate = userRecentBugs.some(b => b.title.toLowerCase() === title.toLowerCase());
+        const recentBugs = await BugReport.getRecentByUser(interaction.user.id, 300000);
+        const isDuplicate = recentBugs.some(b => b.title.toLowerCase() === title.toLowerCase());
 
         if (isDuplicate) {
             return interaction.reply({
@@ -646,14 +584,11 @@ export async function handleBugReportSubmit(interaction, client) {
         }
 
         // Rate limit check (1 per minute)
-        const userLastBug = bugReports
-            .filter(b => b.user.id === interaction.user.id)
-            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+        const lastBug = await BugReport.getLastByUser(interaction.user.id);
 
-        if (userLastBug) {
-            const timeSinceLastBug = Date.now() - new Date(userLastBug.timestamp).getTime();
+        if (lastBug) {
+            const timeSinceLastBug = Date.now() - new Date(lastBug.created_at).getTime();
             if (timeSinceLastBug < 60000) {
-                // 1 minute cooldown
                 const remainingTime = Math.ceil((60000 - timeSinceLastBug) / 1000);
                 return interaction.reply({
                     content: `⏳ Vui lòng đợi ${remainingTime}s trước khi gửi bug report tiếp theo!`,
@@ -662,39 +597,23 @@ export async function handleBugReportSubmit(interaction, client) {
             }
         }
 
-        // Create bug report entry
-        const bugReport = {
-            type: 'BUG_REPORT',
-            timestamp: new Date().toISOString(),
-            user: {
-                id: interaction.user.id,
-                tag: interaction.user.tag,
-                username: interaction.user.username
-            },
-            guild: {
-                id: interaction.guildId || 'DM',
-                name: interaction.guild?.name || 'Direct Message'
-            },
+        // Create bug report in database (atomic — no race condition)
+        const bugReportId = await BugReport.create({
+            userId: interaction.user.id,
+            userTag: interaction.user.tag,
+            username: interaction.user.username,
+            guildId: interaction.guildId || 'DM',
+            guildName: interaction.guild?.name || 'Direct Message',
             title,
             steps,
             expected,
             actual,
             contact,
             status: 'OPEN',
-            severity: 'MEDIUM' // Default severity
-        };
+            severity: 'MEDIUM'
+        });
 
-        // Generate ID (max existing ID + 1)
-        const maxId = bugReports.length > 0 ? Math.max(...bugReports.map(b => b.id || 0)) : 0;
-        bugReport.id = maxId + 1;
-
-        bugReports.push(bugReport);
-
-        // Save with error handling
-        try {
-            fs.writeFileSync(bugReportFile, JSON.stringify(bugReports, null, 2));
-        } catch (writeError) {
-            logger.error('Failed to write bug-reports.json', writeError);
+        if (!bugReportId) {
             return interaction.reply({
                 content: '❌ Không thể lưu bug report! Vui lòng thử lại sau.',
                 ephemeral: true
@@ -703,17 +622,17 @@ export async function handleBugReportSubmit(interaction, client) {
 
         // Send confirmation
         const embed = new EmbedBuilder()
-            .setColor('#FF6B6B')
+            .setColor(COLORS.SUCCESS)
             .setTitle('🐛 Báo cáo lỗi đã được gửi!')
             .setDescription(
                 `Cảm ơn **${interaction.user.username}** đã báo cáo lỗi!\n\n` +
                     `**Lỗi:** ${title}\n\n` +
                     'Chúng mình sẽ kiểm tra và sửa lỗi này càng sớm càng tốt. ' +
-                    'Bạn có thể theo dõi tiến trình tại [GitHub Issues](https://github.com/khuongit24/issues).'
+                    'Bạn có thể theo dõi tiến trình tại [GitHub Issues](https://github.com/khuongit24/Miyao-Bot/issues).'
             )
             .addFields([
-                { name: '🐛 Bug ID', value: `#${bugReport.id}`, inline: true },
-                { name: '📊 Status', value: '🔴 OPEN', inline: true },
+                { name: '🐛 Bug ID', value: `#${bugReportId}`, inline: true },
+                { name: '📊 Trạng thái', value: '🔴 Đang mở', inline: true },
                 { name: '📅 Thời gian', value: new Date().toLocaleString('vi-VN'), inline: true }
             ])
             .setFooter({ text: `${client.config.bot.footer} • Cảm ơn bạn đã giúp cải thiện bot!` })
@@ -725,7 +644,7 @@ export async function handleBugReportSubmit(interaction, client) {
         });
 
         logger.warn(
-            `Bug Report #${bugReport.id} received from ${interaction.user.tag} (${interaction.user.id}): "${title}"`
+            `Bug Report #${bugReportId} received from ${interaction.user.tag} (${interaction.user.id}): "${title}"`
         );
     } catch (error) {
         logger.error('Bug report submit handler error', error);

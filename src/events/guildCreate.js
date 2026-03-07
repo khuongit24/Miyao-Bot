@@ -5,11 +5,15 @@
  */
 
 import { EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, PermissionFlagsBits } from 'discord.js';
+import { COLORS } from '../config/design-system.js';
 import logger from '../utils/logger.js';
 
 export default {
     name: 'guildCreate',
     async execute(guild, client) {
+        // Skip unavailable guilds (e.g. during outage)
+        if (!guild.available) return;
+
         logger.info(`Bot joined new guild: ${guild.name} (${guild.id})`, {
             memberCount: guild.memberCount,
             ownerId: guild.ownerId
@@ -26,7 +30,7 @@ export default {
 
             // Create welcome embed
             const embed = new EmbedBuilder()
-                .setColor(client.config.bot.color || '#00FF00')
+                .setColor(COLORS.PRIMARY)
                 .setTitle('👋 Xin chào! Cảm ơn bạn đã thêm Miyao Bot')
                 .setDescription(
                     'Miyao Bot là một music bot mạnh mẽ với nhiều tính năng:\n\n' +
@@ -37,35 +41,50 @@ export default {
                         '🔍 **Discovery** - Khám phá nhạc mới dựa trên lịch sử nghe\n' +
                         '📊 **Statistics** - Xem thống kê nghe nhạc của bạn\n' +
                         '🎯 **Autoplay** - Tự động phát nhạc liên tục\n\n' +
-                        '**Bắt đầu ngay:**\n' +
-                        '• Sử dụng `/help` để xem tất cả lệnh\n' +
-                        '• Sử dụng `/play <tên bài hát>` để phát nhạc\n' +
-                        '• Sử dụng `/settings` để cấu hình bot (chỉ Admin)'
+                        '━━━━━━━━━━━━━━━━━━━━━━\n' +
+                        '⚡ **Bắt đầu nhanh (3 bước):**\n\n' +
+                        '**1.** Vào một kênh thoại (voice channel)\n' +
+                        '**2.** Gõ `/play <tên bài hát hoặc URL>`\n' +
+                        '**3.** Thưởng thức! Dùng `/help` để khám phá thêm\n\n' +
+                        '🔧 *Admin có thể dùng `/settings` để cấu hình bot.*'
                 )
                 .setThumbnail(client.user.displayAvatarURL())
-                .setFooter({
-                    text: `Miyao Bot v${client.config.bot.version || '1.6.0'} • Phát triển bởi ${client.config.bot.author || 'Miyao Team'}`
-                })
+                .setFooter({ text: client.config.bot.footer })
                 .setTimestamp();
 
             // Create quick action buttons
-            const row = new ActionRowBuilder().addComponents(
+            const buttons = [
                 new ButtonBuilder()
-                    .setLabel('📚 Hướng dẫn')
+                    .setLabel('Hướng dẫn')
                     .setStyle(ButtonStyle.Link)
-                    .setURL('https://github.com/yourusername/miyao-bot/wiki') // Update with actual URL
+                    .setURL('https://github.com/khuongit24/Miyao-Bot')
                     .setEmoji('📚'),
                 new ButtonBuilder()
-                    .setLabel('🆘 Support Server')
+                    .setLabel('GitHub')
                     .setStyle(ButtonStyle.Link)
-                    .setURL(client.config.bot.supportServer || 'https://discord.gg/yourinvite') // Update with actual URL
-                    .setEmoji('🆘'),
+                    .setURL('https://github.com/khuongit24/Miyao-Bot')
+                    .setEmoji('⭐'),
                 new ButtonBuilder()
-                    .setLabel('⭐ GitHub')
+                    .setLabel('Báo lỗi')
                     .setStyle(ButtonStyle.Link)
-                    .setURL('https://github.com/yourusername/miyao-bot') // Update with actual URL
-                    .setEmoji('⭐')
-            );
+                    .setURL('https://github.com/khuongit24/Miyao-Bot/issues')
+                    .setEmoji('🐛')
+            ];
+
+            // Only add support server button if a real invite URL is configured
+            if (client.config.bot.supportServer) {
+                buttons.splice(
+                    1,
+                    0,
+                    new ButtonBuilder()
+                        .setLabel('Support Server')
+                        .setStyle(ButtonStyle.Link)
+                        .setURL(client.config.bot.supportServer)
+                        .setEmoji('🆘')
+                );
+            }
+
+            const row = new ActionRowBuilder().addComponents(...buttons);
 
             // Send welcome message
             await channel.send({ embeds: [embed], components: [row] });
@@ -89,20 +108,24 @@ export default {
  * Priority: system channel > general channel > first text channel with permissions
  */
 async function findWelcomeChannel(guild) {
+    const me = guild.members.me;
+    if (!me) {
+        // Bot member not cached yet — cannot check permissions
+        return null;
+    }
+
     // Try system channel first
-    if (
-        guild.systemChannel &&
-        guild.systemChannel.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages)
-    ) {
+    if (guild.systemChannel && guild.systemChannel.permissionsFor(me).has(PermissionFlagsBits.SendMessages)) {
         return guild.systemChannel;
     }
 
-    // Try to find "general" channel
+    // Try to find common welcome/general channel names
+    const commonNames = ['general', 'chat', 'welcome', 'lobby', 'main', 'bot', 'commands', 'bot-commands'];
     const generalChannel = guild.channels.cache.find(
         channel =>
             channel.isTextBased() &&
-            (channel.name.toLowerCase().includes('general') || channel.name.toLowerCase().includes('chat')) &&
-            channel.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages)
+            commonNames.some(name => channel.name.toLowerCase().includes(name)) &&
+            channel.permissionsFor(me).has(PermissionFlagsBits.SendMessages)
     );
 
     if (generalChannel) {
@@ -113,7 +136,7 @@ async function findWelcomeChannel(guild) {
     const firstChannel = guild.channels.cache
         .filter(channel => channel.isTextBased())
         .sort((a, b) => a.position - b.position)
-        .find(channel => channel.permissionsFor(guild.members.me).has(PermissionFlagsBits.SendMessages));
+        .find(channel => channel.permissionsFor(me).has(PermissionFlagsBits.SendMessages));
 
     return firstChannel;
 }

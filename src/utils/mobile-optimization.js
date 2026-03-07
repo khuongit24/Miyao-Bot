@@ -45,9 +45,7 @@ export function splitEmbedDescription(embed, maxLength = MOBILE_LIMITS.EMBED_DES
         return [new EmbedBuilder(embed)];
     }
 
-    const embeds = [];
-    let partIndex = 1;
-    const estimatedParts = Math.ceil(description.length / maxLength);
+    const parts = [];
 
     // Check if description has newlines
     if (description.includes('\n')) {
@@ -60,17 +58,7 @@ export function splitEmbedDescription(embed, maxLength = MOBILE_LIMITS.EMBED_DES
 
             // If adding this line would exceed the limit
             if (testDesc.length > maxLength && currentDesc) {
-                // Save current embed
-                const newEmbed = new EmbedBuilder(embed).setDescription(currentDesc);
-
-                // Update title to show part number
-                if (embed.data?.title || embed.title) {
-                    const originalTitle = embed.data?.title || embed.title;
-                    newEmbed.setTitle(`${originalTitle} (${partIndex}/${estimatedParts})`);
-                }
-
-                embeds.push(newEmbed);
-                partIndex++;
+                parts.push(currentDesc);
 
                 // Start new embed with current line
                 currentDesc = line;
@@ -82,30 +70,28 @@ export function splitEmbedDescription(embed, maxLength = MOBILE_LIMITS.EMBED_DES
 
         // Add remaining content
         if (currentDesc) {
-            const newEmbed = new EmbedBuilder(embed).setDescription(currentDesc);
-
-            if (embed.data?.title || embed.title) {
-                const originalTitle = embed.data?.title || embed.title;
-                newEmbed.setTitle(`${originalTitle} (${partIndex}/${estimatedParts})`);
-            }
-
-            embeds.push(newEmbed);
+            parts.push(currentDesc);
         }
     } else {
         // No newlines - split by maxLength chunks
         for (let i = 0; i < description.length; i += maxLength) {
             const chunk = description.slice(i, i + maxLength);
-            const newEmbed = new EmbedBuilder(embed).setDescription(chunk);
-
-            // Update title to show part number
-            if (embed.data?.title || embed.title) {
-                const originalTitle = embed.data?.title || embed.title;
-                newEmbed.setTitle(`${originalTitle} (${partIndex}/${estimatedParts})`);
-            }
-
-            embeds.push(newEmbed);
-            partIndex++;
+            parts.push(chunk);
         }
+    }
+
+    const embeds = [];
+    const totalParts = parts.length;
+    const originalTitle = embed.data?.title || embed.title;
+
+    for (let index = 0; index < parts.length; index++) {
+        const newEmbed = new EmbedBuilder(embed).setDescription(parts[index]);
+
+        if (originalTitle) {
+            newEmbed.setTitle(`${originalTitle} (${index + 1}/${totalParts})`);
+        }
+
+        embeds.push(newEmbed);
     }
 
     return embeds.length > 0 ? embeds : [new EmbedBuilder(embed)];

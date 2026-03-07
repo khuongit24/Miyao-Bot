@@ -1,19 +1,27 @@
+/**
+ * @file ErrorEmbeds.js
+ * @description Standardized error embed builders using the design system
+ * @version 1.9.0 — Unified colors, removed dead code, graceful expiry handling
+ */
+
 import { EmbedBuilder } from 'discord.js';
-import { MiyaoError, getErrorColor, getErrorEmoji, formatErrorForUser } from '../../utils/errors.js';
+import { formatErrorForUser } from '../../utils/errors.js';
+import { COLORS, ICONS } from '../../config/design-system.js';
+import { safeAddFields } from './EmbedUtils.js';
 import logger from '../../utils/logger.js';
 
 /**
  * Create a standard error embed
  * @param {string} message - Error message to display
  * @param {Object} config - Bot configuration
- * @returns {EmbedBuilder} Discord embed
+ * @returns {EmbedBuilder}
  */
 export function createErrorEmbed(message, config) {
     const errorMessage = message ? String(message) : 'Đã xảy ra lỗi không xác định';
 
     return new EmbedBuilder()
-        .setColor('#FF0000')
-        .setTitle('❌ Lỗi')
+        .setColor(COLORS.ERROR)
+        .setTitle(`${ICONS.ERROR} Lỗi`)
         .setDescription(errorMessage)
         .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
         .setTimestamp();
@@ -23,103 +31,54 @@ export function createErrorEmbed(message, config) {
  * Create a warning embed
  * @param {string} message - Warning message to display
  * @param {Object} config - Bot configuration
- * @returns {EmbedBuilder} Discord embed
+ * @returns {EmbedBuilder}
  */
 export function createWarningEmbed(message, config) {
     return new EmbedBuilder()
-        .setColor('#FFA500')
-        .setTitle('⚠️ Cảnh báo')
+        .setColor(COLORS.WARNING)
+        .setTitle(`${ICONS.WARNING} Cảnh báo`)
         .setDescription(message)
         .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
         .setTimestamp();
 }
 
 /**
- * Create a permission error embed
- * @param {Object} config - Bot configuration
- * @returns {EmbedBuilder} Discord embed
- */
-export function createPermissionErrorEmbed(config) {
-    return new EmbedBuilder()
-        .setColor('#FF0000')
-        .setTitle('🔒 Không có quyền')
-        .setDescription('Bạn không có quyền sử dụng lệnh này.')
-        .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
-        .setTimestamp();
-}
-
-/**
- * Create a voice channel required embed
- * @param {Object} config - Bot configuration
- * @returns {EmbedBuilder} Discord embed
- */
-export function createVoiceChannelRequiredEmbed(config) {
-    return new EmbedBuilder()
-        .setColor('#FF0000')
-        .setTitle('🎤 Yêu cầu kênh thoại')
-        .setDescription('Bạn cần tham gia kênh thoại để sử dụng lệnh này.')
-        .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
-        .setTimestamp();
-}
-
-/**
- * Create a bot not in voice channel embed
- * @param {Object} config - Bot configuration
- * @returns {EmbedBuilder} Discord embed
- */
-export function createBotNotInVoiceEmbed(config) {
-    return new EmbedBuilder()
-        .setColor('#FF0000')
-        .setTitle('🤖 Bot không ở trong kênh thoại')
-        .setDescription('Bot hiện không ở trong kênh thoại nào.')
-        .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
-        .setTimestamp();
-}
-
-/**
- * Create a same voice channel required embed
- * @param {Object} config - Bot configuration
- * @returns {EmbedBuilder} Discord embed
- */
-export function createSameVoiceChannelRequiredEmbed(config) {
-    return new EmbedBuilder()
-        .setColor('#FF0000')
-        .setTitle('🎤 Khác kênh thoại')
-        .setDescription('Bạn cần ở cùng kênh thoại với bot để sử dụng lệnh này.')
-        .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
-        .setTimestamp();
-}
-
-/**
- * Send a formatted error response to an interaction
+ * Send a formatted error response to an interaction.
+ * Handles replied, deferred, fresh, and EXPIRED interaction states gracefully.
  * @param {Object} interaction - Discord interaction
  * @param {Error} error - Error to handle
  * @param {Object} config - Bot configuration
- * @param {boolean} ephemeral - Whether to send ephemeral message (default: false)
+ * @param {boolean} [ephemeral=true] - Whether to send ephemeral message
  */
-export async function sendErrorResponse(interaction, error, config, ephemeral = false) {
+export async function sendErrorResponse(interaction, error, config, ephemeral = true) {
+    // BUG-082: Guard against missing interaction or channel
+    if (!interaction) {
+        logger.warn('sendErrorResponse called with null/undefined interaction', { error: error?.message });
+        return;
+    }
+
     try {
-        // Format the error for user
         const errorInfo = formatErrorForUser(error);
 
         const embed = new EmbedBuilder()
-            .setColor(errorInfo.color || '#FF0000')
-            .setTitle(errorInfo.title || '❌ Lỗi')
+            .setColor(errorInfo.color || COLORS.ERROR)
+            .setTitle(errorInfo.title || `${ICONS.ERROR} Lỗi`)
             .setDescription(errorInfo.description || 'Đã xảy ra lỗi không xác định')
             .setFooter({ text: config?.bot?.footer || 'Miyao Music Bot' })
             .setTimestamp();
 
         // Add suggestions if available
-        if (errorInfo.suggestions && errorInfo.suggestions.length > 0) {
+        if (errorInfo.suggestions?.length > 0) {
             const suggestionsText = errorInfo.suggestions.map(s => `• ${s}`).join('\n');
-            embed.addFields({
-                name: '💡 Gợi ý',
-                value: suggestionsText,
-                inline: false
-            });
+            safeAddFields(embed, [
+                {
+                    name: `${ICONS.TIP} Gợi ý`,
+                    value: suggestionsText,
+                    inline: false
+                }
+            ]);
         }
 
-        // Determine how to respond based on interaction state
         const replyOptions = { embeds: [embed], ephemeral };
 
         if (interaction.replied) {
@@ -130,7 +89,6 @@ export async function sendErrorResponse(interaction, error, config, ephemeral = 
             await interaction.reply(replyOptions);
         }
 
-        // Log the error
         logger.warn('Error response sent', {
             errorCode: errorInfo.title,
             errorMessage: errorInfo.description,
@@ -138,6 +96,14 @@ export async function sendErrorResponse(interaction, error, config, ephemeral = 
             guildId: interaction.guildId
         });
     } catch (responseError) {
+        // Handle expired / unknown interactions silently
+        if (responseError.code === 10062 || responseError.code === 40060) {
+            logger.debug('Interaction expired before error response could be sent', {
+                originalError: error?.message,
+                userId: interaction.user?.id
+            });
+            return;
+        }
         logger.error('Failed to send error response', {
             originalError: error?.message,
             responseError: responseError.message
@@ -145,12 +111,26 @@ export async function sendErrorResponse(interaction, error, config, ephemeral = 
     }
 }
 
+/**
+ * Create an OAuth authentication error embed for YouTube playback failures
+ * @param {string} trackTitle - Title of the track that failed
+ * @returns {EmbedBuilder}
+ */
+export function createOAuthErrorEmbed(trackTitle) {
+    return new EmbedBuilder()
+        .setColor(COLORS.ERROR)
+        .setDescription(
+            `${ICONS.ERROR} **YouTube yêu cầu xác thực**\n\n` +
+                `Không thể phát **${trackTitle}** và các bài hát tiếp theo.\n` +
+                `YouTube yêu cầu xác thực OAuth để phát nhạc. ` +
+                `Vui lòng kiểm tra cấu hình OAuth của Lavalink.\n\n` +
+                `${ICONS.WARNING} Các bài hát còn lại sẽ bị bỏ qua cho đến khi OAuth được sửa.`
+        );
+}
+
 export default {
     createErrorEmbed,
     createWarningEmbed,
-    createPermissionErrorEmbed,
-    createVoiceChannelRequiredEmbed,
-    createBotNotInVoiceEmbed,
-    createSameVoiceChannelRequiredEmbed,
-    sendErrorResponse
+    sendErrorResponse,
+    createOAuthErrorEmbed
 };

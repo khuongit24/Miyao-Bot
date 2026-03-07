@@ -2,8 +2,10 @@
  * Error Handling System
  * Comprehensive error taxonomy with user-friendly messages
  * @module errors
- * @version 1.8.2 - Enhanced UX with emojis and better suggestions
+ * @version 1.11.2 - Enhanced UX with emojis and better suggestions
  */
+
+import { COLORS } from '../config/design-system.js';
 
 /**
  * Error type emojis for visual identification
@@ -218,7 +220,7 @@ export class InvalidTimeError extends ValidationError {
         this.suggestions = [
             '📝 Định dạng: MM:SS hoặc HH:MM:SS',
             '💡 Ví dụ: 1:30, 02:45, 1:23:45',
-            '🔢 Hoặc số giây: 90 (= 1 phút 30 giây)'
+            '🔢 Ví dụ: /seek 1:30 để tua đến phút 1:30'
         ];
     }
 }
@@ -284,7 +286,7 @@ export class NoSearchResultsError extends ResourceNotFoundError {
 }
 
 export class TrackNotFoundError extends ResourceNotFoundError {
-    constructor(identifier = '') {
+    constructor() {
         super('Không tìm thấy bài hát này', 'track');
         this.code = 'TRACK_NOT_FOUND';
         this.emoji = ERROR_TYPE_EMOJIS.track;
@@ -400,7 +402,7 @@ export class PlayerError extends InternalError {
 }
 
 export class QueueFullError extends InternalError {
-    constructor(maxSize = 1000) {
+    constructor(maxSize = 100) {
         super(`Hàng đợi đã đầy (tối đa ${maxSize} bài)`);
         this.code = 'QUEUE_FULL';
         this.severity = 'warning';
@@ -459,15 +461,15 @@ export const ErrorSeverity = {
 export function getErrorColor(severity) {
     switch (severity) {
         case ErrorSeverity.INFO:
-            return '#3498db'; // Blue
+            return COLORS.INFO;
         case ErrorSeverity.WARNING:
-            return '#f39c12'; // Orange
+            return COLORS.WARNING;
         case ErrorSeverity.ERROR:
-            return '#e74c3c'; // Red
+            return COLORS.ERROR;
         case ErrorSeverity.CRITICAL:
-            return '#c0392b'; // Dark red
+            return COLORS.SEVERITY.critical;
         default:
-            return '#95a5a6'; // Gray
+            return COLORS.MUTED;
     }
 }
 
@@ -492,7 +494,7 @@ export function getErrorEmoji(severity) {
 /**
  * Wrap async function with error handling
  */
-export function withErrorHandling(fn, context = 'operation') {
+export function withErrorHandling(fn, _context = 'operation') {
     return async function (...args) {
         try {
             return await fn.apply(this, args);

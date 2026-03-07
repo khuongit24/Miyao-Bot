@@ -95,25 +95,57 @@ export function measureSync(fn, name = 'Operation') {
  * Simple cache implementation with TTL
  */
 export class SimpleCache {
+    static MAX_ENTRIES_HARD_CAP = 10000;
+
     constructor(maxSize = 100, ttl = 5 * 60 * 1000) {
         this.cache = new Map();
-        this.maxSize = maxSize;
+        // Enforce hard cap so callers cannot create unbounded caches
+        this.maxSize = Math.max(1, Math.min(maxSize, SimpleCache.MAX_ENTRIES_HARD_CAP));
         this.ttl = ttl;
         this.hits = 0;
         this.misses = 0;
     }
 
     set(key, value) {
-        // Evict oldest entry if cache is full
+        // If key already exists, just update it in place (no eviction needed)
+        if (this.cache.has(key)) {
+            this.cache.delete(key); // delete + re-set to refresh Map ordering
+            this.cache.set(key, {
+                value,
+                expires: Date.now() + this.ttl
+            });
+            return;
+        }
+
+        // Evict expired entries first, then oldest valid entries if still over limit
         if (this.cache.size >= this.maxSize) {
-            const firstKey = this.cache.keys().next().value;
-            this.cache.delete(firstKey);
+            this._evict();
         }
 
         this.cache.set(key, {
             value,
             expires: Date.now() + this.ttl
         });
+    }
+
+    /**
+     * Evict entries to make room. Removes expired entries first,
+     * then oldest valid entries until size < maxSize.
+     * @private
+     */
+    _evict() {
+        const now = Date.now();
+        // Pass 1: remove expired entries
+        for (const [k, entry] of this.cache.entries()) {
+            if (now > entry.expires) {
+                this.cache.delete(k);
+            }
+        }
+        // Pass 2: if still at capacity, remove oldest valid entries
+        while (this.cache.size >= this.maxSize) {
+            const firstKey = this.cache.keys().next().value;
+            this.cache.delete(firstKey);
+        }
     }
 
     get(key) {
@@ -136,7 +168,13 @@ export class SimpleCache {
     }
 
     has(key) {
-        return this.get(key) !== null;
+        const entry = this.cache.get(key);
+        if (!entry) return false;
+        if (Date.now() > entry.expires) {
+            this.cache.delete(key);
+            return false;
+        }
+        return true;
     }
 
     delete(key) {
@@ -255,12 +293,19 @@ export function getMemoryUsage() {
  * Performance metrics collector
  */
 export class MetricsCollector {
-    constructor() {
+    constructor(maxMetrics = 200) {
         this.metrics = new Map();
+        this.maxMetrics = maxMetrics;
     }
 
     record(name, value) {
         if (!this.metrics.has(name)) {
+            // Enforce max metric names to prevent unbounded growth
+            if (this.metrics.size >= this.maxMetrics) {
+                const oldestKey = this.metrics.keys().next().value;
+                this.metrics.delete(oldestKey);
+            }
+
             this.metrics.set(name, {
                 count: 0,
                 total: 0,

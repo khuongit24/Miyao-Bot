@@ -32,6 +32,8 @@ const BLACKLIST_CONFIG = {
 export class NodeHealthMonitor extends EventEmitter {
     constructor() {
         super();
+        // FIX-PB03: All three Maps below are bounded by Lavalink node count (typically 1-5 nodes).
+        // No size limit needed — entries are inherently capped by the finite node pool.
         this.nodeStats = new Map();
         this.healthCheckInterval = null;
         this.unhealthyThresholds = {
@@ -41,9 +43,11 @@ export class NodeHealthMonitor extends EventEmitter {
         };
 
         // Blacklist Map: nodeName -> { blacklistedAt: timestamp, duration: ms, reason: string }
+        // Bounded by node count + has periodic cleanup interval
         this.blacklist = new Map();
 
         // Failure counter Map: nodeName -> { count: number, lastFailure: timestamp }
+        // Bounded by node count
         this.failureCounters = new Map();
 
         // Blacklist cleanup interval
@@ -59,11 +63,15 @@ export class NodeHealthMonitor extends EventEmitter {
         this.healthCheckInterval = setInterval(() => {
             this._performHealthCheck(shoukaku);
         }, intervalMs);
+        // NM-M01: Prevent health check interval from blocking Node.js exit
+        if (this.healthCheckInterval.unref) this.healthCheckInterval.unref();
 
         // Start blacklist cleanup interval
         this.blacklistCleanupInterval = setInterval(() => {
             this._cleanupExpiredBlacklist();
         }, BLACKLIST_CONFIG.CLEANUP_INTERVAL_MS);
+        // NM-M01: Prevent blacklist cleanup interval from blocking Node.js exit
+        if (this.blacklistCleanupInterval.unref) this.blacklistCleanupInterval.unref();
 
         logger.info('NodeHealthMonitor started', {
             healthCheckIntervalMs: intervalMs,
@@ -85,6 +93,9 @@ export class NodeHealthMonitor extends EventEmitter {
             this.blacklistCleanupInterval = null;
         }
 
+        // BUG-052: Mark monitoring as stopped so getReport() can indicate stale data
+        this.stopped = true;
+        this.stoppedAt = Date.now();
         logger.info('NodeHealthMonitor stopped');
     }
 
@@ -93,49 +104,55 @@ export class NodeHealthMonitor extends EventEmitter {
      * @private
      */
     _performHealthCheck(shoukaku) {
-        for (const [name, node] of shoukaku.nodes) {
-            // Shoukaku v4 state: 0=DISCONNECTED, 1=CONNECTING, 2=CONNECTED, 3=RECONNECTING
-            const isConnected = node.state === 2; // CONNECTED state in v4
-            const stats = {
-                name,
-                connected: isConnected,
-                players: node.stats?.players || 0,
-                playingPlayers: node.stats?.playingPlayers || 0,
-                cpu: (node.stats?.cpu?.lavalinkLoad || 0) * 100, // Convert to percentage
-                memory: node.stats?.memory?.used || 0,
-                memoryAllocated: node.stats?.memory?.allocated || 0,
-                uptime: node.stats?.uptime || 0,
-                timestamp: Date.now()
-            };
+        try {
+            if (!shoukaku?.nodes) return;
+            for (const [name, node] of shoukaku.nodes) {
+                // Shoukaku v4 state: 0=DISCONNECTED, 1=CONNECTING, 2=CONNECTED, 3=RECONNECTING
+                const isConnected = node.state === 1; // 1 = CONNECTED in Shoukaku v4.3.0
+                const stats = {
+                    name,
+                    connected: isConnected,
+                    players: node.stats?.players || 0,
+                    playingPlayers: node.stats?.playingPlayers || 0,
+                    cpu: (node.stats?.cpu?.lavalinkLoad || 0) * 100, // Convert to percentage
+                    memory: node.stats?.memory?.used || 0,
+                    memoryAllocated: node.stats?.memory?.allocated || 0,
+                    uptime: node.stats?.uptime || 0,
+                    timestamp: Date.now()
+                };
 
-            // Calculate memory percentage
-            if (stats.memoryAllocated > 0) {
-                stats.memoryPercent = (stats.memory / stats.memoryAllocated) * 100;
-            } else {
-                stats.memoryPercent = 0;
-            }
+                // Calculate memory percentage
+                if (stats.memoryAllocated > 0) {
+                    stats.memoryPercent = (stats.memory / stats.memoryAllocated) * 100;
+                } else {
+                    stats.memoryPercent = 0;
+                }
 
-            const previousStats = this.nodeStats.get(name);
-            this.nodeStats.set(name, stats);
+                const previousStats = this.nodeStats.get(name);
 
-            // Check health status
-            const healthIssues = this._checkHealthIssues(stats);
+                // Check health status
+                const healthIssues = this._checkHealthIssues(stats);
 
-            if (healthIssues.length > 0) {
-                // Node is unhealthy
-                if (!previousStats || !previousStats.unhealthy) {
-                    stats.unhealthy = true;
+                // BUG-015: Always set unhealthy flag before storing, and only emit on transitions
+                const wasUnhealthy = previousStats?.unhealthy || false;
+                stats.unhealthy = healthIssues.length > 0;
+
+                this.nodeStats.set(name, stats);
+
+                if (stats.unhealthy && !wasUnhealthy) {
+                    // Transition: healthy → unhealthy
                     this.emit('unhealthy', { ...stats, issues: healthIssues });
                     logger.warn(`Node ${name} is unhealthy`, { issues: healthIssues, stats });
+                } else if (!stats.unhealthy && wasUnhealthy) {
+                    // Transition: unhealthy → healthy
+                    this.emit('healthy', stats);
+                    logger.info(`Node ${name} is now healthy`, stats);
                 }
-            } else if (previousStats?.unhealthy) {
-                // Node recovered
-                stats.unhealthy = false;
-                this.emit('healthy', stats);
-                logger.info(`Node ${name} is now healthy`, stats);
-            }
 
-            this.emit('statsUpdated', stats);
+                this.emit('statsUpdated', stats);
+            }
+        } catch (error) {
+            logger.error('Health check failed', { error: error?.message || String(error) });
         }
     }
 
@@ -204,14 +221,14 @@ export class NodeHealthMonitor extends EventEmitter {
         if (!bestNode && shoukaku && shoukaku.nodes) {
             // State 2 = CONNECTED in Shoukaku v4
             bestNode = [...shoukaku.nodes.values()].find(node => {
-                return node.state === 2 && !this.isBlacklisted(node.name);
+                return node.state === 1 && !this.isBlacklisted(node.name); // 1 = CONNECTED in Shoukaku v4.3.0
             });
         }
 
         // Last resort: If all nodes are blacklisted, try to find any connected node
         // This prevents complete service outage when all nodes have issues
         if (!bestNode && shoukaku && shoukaku.nodes) {
-            const anyConnected = [...shoukaku.nodes.values()].find(node => node.state === 2);
+            const anyConnected = [...shoukaku.nodes.values()].find(node => node.state === 1); // 1 = CONNECTED in Shoukaku v4.3.0
             if (anyConnected) {
                 logger.warn('All nodes blacklisted, using any available node as last resort', {
                     node: anyConnected.name
@@ -467,7 +484,10 @@ export class NodeHealthMonitor extends EventEmitter {
             totalPlayingPlayers: nodes.reduce((sum, n) => sum + (n.playingPlayers || 0), 0),
             averageCpu: nodes.length > 0 ? nodes.reduce((sum, n) => sum + (n.cpu || 0), 0) / nodes.length : 0,
             nodes: nodes,
-            blacklist: blacklisted
+            blacklist: blacklisted,
+            // BUG-052: Mark data as stale when monitoring is stopped
+            stale: !!this.stopped,
+            stoppedAt: this.stoppedAt || null
         };
     }
 }

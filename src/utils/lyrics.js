@@ -1,16 +1,92 @@
 /**
  * Lyrics Service
- * Fetch lyrics from LRCLIB API with caching and intelligent fallback
+ * Fetch lyrics from LRCLIB API with caching and intelligent fallback.
+ *
+ * @module lyrics
+ * @version 1.9.0 - Added HTTP timeout (security fix H3), improved JSDoc
  */
 
-import logger from '../utils/logger.js';
+import logger from './logger.js';
 
 const LRCLIB_API_BASE = 'https://lrclib.net/api';
 const USER_AGENT = 'Miyao Music Bot (https://github.com/khuongit24/miyao-bot)';
 
-// In-memory cache for lyrics (TTL: 1 hour)
+/**
+ * HTTP request timeout in milliseconds.
+ * Security fix H3: Prevents hung API calls from blocking the bot.
+ * @type {number}
+ */
+const HTTP_TIMEOUT_MS = 5000;
+
+// FIX-UTL-H01: Per-request AbortControllers instead of a singleton.
+// Track active controllers so shutdown can abort them all.
+const _activeLyricsControllers = new Set();
+
+/**
+ * Create a per-request AbortController, register it in the active set,
+ * and return it.  Callers must call `_releaseController(controller)` when done.
+ * @returns {AbortController}
+ */
+function _createRequestController() {
+    const controller = new AbortController();
+    _activeLyricsControllers.add(controller);
+    return controller;
+}
+
+/**
+ * Remove a controller from the active set (called after a fetch completes or fails).
+ * @param {AbortController} controller
+ */
+function _releaseController(controller) {
+    _activeLyricsControllers.delete(controller);
+}
+
+/**
+ * Create a composite AbortSignal that aborts when any of the given signals abort.
+ * Uses AbortSignal.any() on Node 20+ with manual fallback for Node 18.
+ * P2-13: Node 18 compatibility fix
+ * @param {AbortSignal[]} signals
+ * @returns {AbortSignal}
+ */
+function _compositeSignal(signals) {
+    if (typeof AbortSignal.any === 'function') {
+        return AbortSignal.any(signals);
+    }
+    // Manual composition fallback for Node 18
+    const controller = new AbortController();
+    for (const signal of signals) {
+        if (signal.aborted) {
+            controller.abort(signal.reason);
+            return controller.signal;
+        }
+        signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
+    }
+    return controller.signal;
+}
+
+/**
+ * Cancel all pending lyrics fetch requests.
+ * Called during graceful shutdown to prevent hanging requests.
+ */
+export function cancelPendingLyricsRequests() {
+    for (const controller of _activeLyricsControllers) {
+        controller.abort();
+    }
+    _activeLyricsControllers.clear();
+    logger.debug('Cancelled all pending lyrics requests');
+}
+
+/**
+ * Maximum allowed response size in bytes (1MB).
+ * Prevents oversized responses from consuming memory.
+ * @type {number}
+ */
+const MAX_RESPONSE_SIZE = 1024 * 1024;
+
+// In-memory cache for lyrics (TTL: 1 hour, max 500 entries)
 const lyricsCache = new Map();
 const CACHE_TTL = 60 * 60 * 1000; // 1 hour
+const MAX_LYRICS_CACHE_SIZE = 500; // FIX-PB03: Prevent unbounded growth between hourly cleanups
 
 /**
  * Generate cache key
@@ -43,19 +119,38 @@ async function tryExactMatch(trackName, artistName, albumName = '', duration = n
 
     const url = `${LRCLIB_API_BASE}/get?${params.toString()}`;
 
-    const response = await fetch(url, {
-        headers: { 'User-Agent': USER_AGENT }
-    });
+    // FIX-UTL-H01: Per-request AbortController
+    const controller = _createRequestController();
+    try {
+        const response = await fetch(url, {
+            headers: { 'User-Agent': USER_AGENT },
+            signal: _compositeSignal([AbortSignal.timeout(HTTP_TIMEOUT_MS), controller.signal]),
+            redirect: 'error'
+        });
 
-    if (response.status === 404) {
-        return null;
+        if (response.status === 404) {
+            return null;
+        }
+
+        if (!response.ok) {
+            throw new Error(`LRCLIB API error: ${response.status} ${response.statusText}`);
+        }
+
+        // Enforce response size limit before parsing JSON
+        const contentLength = parseInt(response.headers.get('content-length'), 10);
+        if (contentLength && contentLength > MAX_RESPONSE_SIZE) {
+            throw new Error(`LRCLIB response too large: ${contentLength} bytes (max ${MAX_RESPONSE_SIZE})`);
+        }
+
+        const text = await response.text();
+        if (text.length > MAX_RESPONSE_SIZE) {
+            throw new Error(`LRCLIB response too large: ${text.length} chars (max ${MAX_RESPONSE_SIZE})`);
+        }
+
+        return JSON.parse(text);
+    } finally {
+        _releaseController(controller);
     }
-
-    if (!response.ok) {
-        throw new Error(`LRCLIB API error: ${response.status} ${response.statusText}`);
-    }
-
-    return await response.json();
 }
 
 /**
@@ -70,90 +165,109 @@ async function trySearchMatch(query, originalTrack, originalArtist, duration = n
     const params = new URLSearchParams({ q: query });
     const url = `${LRCLIB_API_BASE}/search?${params.toString()}`;
 
-    const response = await fetch(url, {
-        headers: { 'User-Agent': USER_AGENT }
-    });
+    // FIX-UTL-H01: Per-request AbortController
+    const controller = _createRequestController();
+    try {
+        const response = await fetch(url, {
+            headers: { 'User-Agent': USER_AGENT },
+            signal: _compositeSignal([AbortSignal.timeout(HTTP_TIMEOUT_MS), controller.signal]),
+            redirect: 'error'
+        });
 
-    if (!response.ok) {
-        return null;
-    }
-
-    const results = await response.json();
-
-    if (!results || results.length === 0) {
-        return null;
-    }
-
-    // Score and find best match
-    const originalTrackLower = originalTrack.toLowerCase();
-    const originalArtistLower = originalArtist.toLowerCase();
-    const durationSec = duration ? Math.round(duration / 1000) : null;
-
-    let bestMatch = null;
-    let bestScore = -1;
-
-    for (const result of results) {
-        let score = 0;
-
-        const resultTrack = (result.trackName || '').toLowerCase();
-        const resultArtist = (result.artistName || '').toLowerCase();
-
-        // Track name similarity
-        if (resultTrack === originalTrackLower) {
-            score += 50;
-        } else if (resultTrack.includes(originalTrackLower) || originalTrackLower.includes(resultTrack)) {
-            score += 30;
-        } else if (calculateSimilarity(resultTrack, originalTrackLower) > 0.7) {
-            score += 20;
+        if (!response.ok) {
+            return null;
         }
 
-        // Artist similarity
-        if (resultArtist === originalArtistLower) {
-            score += 40;
-        } else if (resultArtist.includes(originalArtistLower) || originalArtistLower.includes(resultArtist)) {
-            score += 25;
-        } else if (calculateSimilarity(resultArtist, originalArtistLower) > 0.6) {
-            score += 15;
+        // Enforce response size limit before parsing JSON
+        const contentLength = parseInt(response.headers.get('content-length'), 10);
+        if (contentLength && contentLength > MAX_RESPONSE_SIZE) {
+            throw new Error(`LRCLIB search response too large: ${contentLength} bytes (max ${MAX_RESPONSE_SIZE})`);
         }
 
-        // Duration match (±5 seconds tolerance)
-        if (durationSec && result.duration) {
-            const diff = Math.abs(result.duration - durationSec);
-            if (diff <= 5) {
+        const rawText = await response.text();
+        if (rawText.length > MAX_RESPONSE_SIZE) {
+            throw new Error(`LRCLIB search response too large: ${rawText.length} chars (max ${MAX_RESPONSE_SIZE})`);
+        }
+
+        const results = JSON.parse(rawText);
+
+        if (!results || results.length === 0) {
+            return null;
+        }
+
+        // Score and find best match
+        const originalTrackLower = originalTrack.toLowerCase();
+        const originalArtistLower = originalArtist.toLowerCase();
+        const durationSec = duration ? Math.round(duration / 1000) : null;
+
+        let bestMatch = null;
+        let bestScore = -1;
+
+        for (const result of results) {
+            let score = 0;
+
+            const resultTrack = (result.trackName || '').toLowerCase();
+            const resultArtist = (result.artistName || '').toLowerCase();
+
+            // Track name similarity
+            if (resultTrack === originalTrackLower) {
+                score += 50;
+            } else if (resultTrack.includes(originalTrackLower) || originalTrackLower.includes(resultTrack)) {
+                score += 30;
+            } else if (calculateSimilarity(resultTrack, originalTrackLower) > 0.7) {
                 score += 20;
-            } else if (diff <= 15) {
-                score += 10;
+            }
+
+            // Artist similarity
+            if (resultArtist === originalArtistLower) {
+                score += 40;
+            } else if (resultArtist.includes(originalArtistLower) || originalArtistLower.includes(resultArtist)) {
+                score += 25;
+            } else if (calculateSimilarity(resultArtist, originalArtistLower) > 0.6) {
+                score += 15;
+            }
+
+            // Duration match (±5 seconds tolerance)
+            if (durationSec && result.duration) {
+                const diff = Math.abs(result.duration - durationSec);
+                if (diff <= 5) {
+                    score += 20;
+                } else if (diff <= 15) {
+                    score += 10;
+                }
+            }
+
+            // Prefer results with synced lyrics
+            if (result.syncedLyrics) {
+                score += 5;
+            }
+
+            // Must have some lyrics
+            if (!result.plainLyrics && !result.syncedLyrics && !result.instrumental) {
+                continue;
+            }
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestMatch = result;
             }
         }
 
-        // Prefer results with synced lyrics
-        if (result.syncedLyrics) {
-            score += 5;
+        // Require minimum confidence
+        if (bestScore >= 30) {
+            logger.debug('Search match found', {
+                query,
+                matchedTrack: bestMatch?.trackName,
+                matchedArtist: bestMatch?.artistName,
+                score: bestScore
+            });
+            return bestMatch;
         }
 
-        // Must have some lyrics
-        if (!result.plainLyrics && !result.syncedLyrics && !result.instrumental) {
-            continue;
-        }
-
-        if (score > bestScore) {
-            bestScore = score;
-            bestMatch = result;
-        }
+        return null;
+    } finally {
+        _releaseController(controller);
     }
-
-    // Require minimum confidence
-    if (bestScore >= 30) {
-        logger.debug('Search match found', {
-            query,
-            matchedTrack: bestMatch?.trackName,
-            matchedArtist: bestMatch?.artistName,
-            score: bestScore
-        });
-        return bestMatch;
-    }
-
-    return null;
 }
 
 /**
@@ -163,22 +277,30 @@ function calculateSimilarity(str1, str2) {
     if (!str1 || !str2) return 0;
     if (str1 === str2) return 1;
 
-    const bigrams1 = new Set();
-    const bigrams2 = new Set();
+    // Use multiset (Map) instead of Set to preserve duplicate bigrams
+    // for an accurate Dice coefficient calculation
+    const getBigramCounts = str => {
+        const counts = new Map();
+        for (let i = 0; i < str.length - 1; i++) {
+            const bigram = str.substring(i, i + 2);
+            counts.set(bigram, (counts.get(bigram) || 0) + 1);
+        }
+        return counts;
+    };
 
-    for (let i = 0; i < str1.length - 1; i++) {
-        bigrams1.add(str1.substring(i, i + 2));
-    }
-    for (let i = 0; i < str2.length - 1; i++) {
-        bigrams2.add(str2.substring(i, i + 2));
-    }
+    const bigrams1 = getBigramCounts(str1);
+    const bigrams2 = getBigramCounts(str2);
 
     let intersection = 0;
-    for (const bigram of bigrams1) {
-        if (bigrams2.has(bigram)) intersection++;
+    for (const [bigram, count1] of bigrams1) {
+        const count2 = bigrams2.get(bigram) || 0;
+        intersection += Math.min(count1, count2);
     }
 
-    return (2 * intersection) / (bigrams1.size + bigrams2.size);
+    const size1 = str1.length - 1;
+    const size2 = str2.length - 1;
+
+    return (2 * intersection) / (size1 + size2);
 }
 
 /**
@@ -255,6 +377,11 @@ export async function getLyrics(trackName, artistName, albumName = '', duration 
         }
 
         // Cache the result (including null to avoid repeated API calls)
+        // FIX-PB03: Evict oldest entry if cache exceeds max size
+        if (lyricsCache.size >= MAX_LYRICS_CACHE_SIZE) {
+            const oldestKey = lyricsCache.keys().next().value;
+            lyricsCache.delete(oldestKey);
+        }
         lyricsCache.set(cacheKey, { data, timestamp: Date.now() });
 
         if (data) {
@@ -299,7 +426,7 @@ setInterval(() => {
     if (removed > 0) {
         logger.debug('Lyrics cache cleanup', { removed, remaining: lyricsCache.size });
     }
-}, CACHE_TTL);
+}, CACHE_TTL).unref();
 
 /**
  * Search for lyrics by keyword
@@ -313,21 +440,42 @@ export async function searchLyrics(query) {
 
         logger.debug('Searching lyrics', { query });
 
-        const response = await fetch(url, {
-            headers: {
-                'User-Agent': USER_AGENT
+        // FIX-UTL-H01: Per-request AbortController
+        const controller = _createRequestController();
+        try {
+            const response = await fetch(url, {
+                headers: {
+                    'User-Agent': USER_AGENT
+                },
+                signal: _compositeSignal([AbortSignal.timeout(HTTP_TIMEOUT_MS), controller.signal]),
+                redirect: 'error'
+            });
+
+            if (!response.ok) {
+                throw new Error(`LRCLIB API error: ${response.status} ${response.statusText}`);
             }
-        });
 
-        if (!response.ok) {
-            throw new Error(`LRCLIB API error: ${response.status} ${response.statusText}`);
+            // Enforce response size limit before parsing JSON
+            const cl = parseInt(response.headers.get('content-length'), 10);
+            if (cl && cl > MAX_RESPONSE_SIZE) {
+                throw new Error(`LRCLIB search response too large: ${cl} bytes (max ${MAX_RESPONSE_SIZE})`);
+            }
+
+            const bodyText = await response.text();
+            if (bodyText.length > MAX_RESPONSE_SIZE) {
+                throw new Error(
+                    `LRCLIB search response too large: ${bodyText.length} chars (max ${MAX_RESPONSE_SIZE})`
+                );
+            }
+
+            const data = JSON.parse(bodyText);
+
+            logger.debug('Lyrics search completed', { results: data.length });
+
+            return data;
+        } finally {
+            _releaseController(controller);
         }
-
-        const data = await response.json();
-
-        logger.debug('Lyrics search completed', { results: data.length });
-
-        return data;
     } catch (error) {
         logger.error('Failed to search lyrics', error);
         return [];
@@ -545,7 +693,7 @@ export function cleanTrackName(title) {
     });
 
     // Remove feat./ft. at the end only (keep collaborators in title)
-    cleaned = cleaned.replace(/\s*[\(\[]?(?:feat\.?|ft\.?|featuring)\s+.+?[\)\]]?\s*$/gi, '');
+    cleaned = cleaned.replace(/\s*[([]?(?:feat\.?|ft\.?|featuring)\s+.+?[)\]]?\s*$/gi, '');
 
     // Clean up multiple spaces
     cleaned = cleaned.replace(/\s+/g, ' ');
@@ -564,7 +712,10 @@ export function cleanArtistName(artist) {
     let cleaned = artist;
 
     // Remove featuring/collaboration parts
-    cleaned = cleaned.replace(/\s*(?:feat\.?|ft\.?|featuring|&|,|x|×|vs\.?|with)\s+.*/gi, '');
+    // Note: '&' is intentionally excluded — it's too ambiguous (e.g. "Simon & Garfunkel")
+    // 'x'/'×' are also excluded as they appear in legitimate artist names
+    cleaned = cleaned.replace(/\s*(?:feat\.?|ft\.?|featuring|vs\.?|with)\s+.*/gi, '');
+    cleaned = cleaned.replace(/\s*,\s+.*/g, '');
 
     // Remove "- Topic" suffix from YouTube auto-generated channels
     cleaned = cleaned.replace(/\s*-\s*Topic$/i, '');

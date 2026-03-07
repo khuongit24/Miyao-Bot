@@ -10,6 +10,9 @@ import logger from '../utils/logger.js';
 
 class PerformanceProfiler {
     constructor() {
+        // FIX-PB03: Developer tool — not used in production.
+        // marks is self-cleaning (entries deleted after measure()).
+        // measures and hotPaths grow with unique label count — acceptable for profiling sessions.
         this.marks = new Map();
         this.measures = new Map();
         this.hotPaths = new Map();

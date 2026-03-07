@@ -1,18 +1,40 @@
+/**
+ * Helper Utilities
+ * Common utility functions for formatting, parsing, configuration, and display.
+ *
+ * @module helpers
+ * @version 1.9.0 - Permission functions extracted to permissions.js
+ */
+
 import fs from 'fs';
+import fsPromises from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import logger from './logger.js';
 import { VERSION } from './version.js';
+import { hasPermission, checkDJPermission, checkDJCommandPermission } from './permissions.js';
+import { PLATFORM_EMOJIS } from './constants.js';
+
+// Re-export permission functions for backward compatibility
+export { hasPermission, checkDJPermission, checkDJCommandPermission };
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 /**
- * Load configuration from config file
+ * Load configuration from config file.
+ * Falls back to example config if config.json is not found.
+ * Injects version info from the centralized version system.
+ *
+ * @returns {Object} Parsed configuration object with version info injected
+ * @throws {Error} Exits process with code 1 if configuration cannot be loaded
+ *
+ * @example
+ * const config = loadConfig();
+ * console.log(config.bot.version); // "1.9.0"
  */
 export function loadConfig() {
     try {
-        // Config is now inside src/config
         const configPath = path.join(__dirname, '..', 'config', 'config.json');
 
         let config;
@@ -38,9 +60,63 @@ export function loadConfig() {
 }
 
 /**
- * Format duration from milliseconds to HH:MM:SS
+ * Async version of loadConfig for runtime reloads.
+ * FIX-UTL-M09: Uses async readFile instead of readFileSync to avoid blocking the event loop.
+ * For startup/initial load, use the synchronous loadConfig() instead.
+ *
+ * @returns {Promise<Object>} Parsed configuration object with version info injected
+ * @throws {Error} If configuration cannot be loaded
+ *
+ * @example
+ * const config = await loadConfigAsync();
+ */
+export async function loadConfigAsync() {
+    try {
+        const configPath = path.join(__dirname, '..', 'config', 'config.json');
+
+        let config;
+        try {
+            await fsPromises.access(configPath);
+            const raw = await fsPromises.readFile(configPath, 'utf-8');
+            config = JSON.parse(raw);
+        } catch (accessErr) {
+            if (accessErr.code === 'ENOENT' || accessErr.code === 'ERR_FS_FILE_TOO_LARGE') {
+                logger.warn('config.json not found, using example config (async)');
+                const examplePath = path.join(__dirname, '..', 'config', 'config.example.json');
+                const raw = await fsPromises.readFile(examplePath, 'utf-8');
+                config = JSON.parse(raw);
+            } else {
+                throw accessErr;
+            }
+        }
+
+        // Inject version info from centralized version system
+        config.bot.version = VERSION.full;
+        config.bot.footer = VERSION.footer;
+        config.bot.versionDetailed = VERSION.detailed;
+
+        logger.info('Configuration reloaded successfully (async)');
+        return config;
+    } catch (error) {
+        logger.error('Failed to load configuration (async)', error);
+        throw error;
+    }
+}
+
+/**
+ * Format duration from milliseconds to human-readable time string.
+ * Uses HH:MM:SS format for durations ≥ 1 hour, MM:SS otherwise.
+ *
+ * @param {number} ms - Duration in milliseconds
+ * @returns {string} Formatted duration string (e.g., "3:45" or "1:02:30")
+ *
+ * @example
+ * formatDuration(90000);    // "1:30"
+ * formatDuration(3661000);  // "1:01:01"
+ * formatDuration(0);        // "0:00"
  */
 export function formatDuration(ms) {
+    ms = Math.max(0, ms || 0);
     const seconds = Math.floor(ms / 1000);
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
@@ -53,27 +129,46 @@ export function formatDuration(ms) {
 }
 
 /**
- * Format number with commas
+ * Format a number with comma separators for readability.
+ *
+ * @param {number} num - Number to format
+ * @returns {string} Formatted number string (e.g., "1,234,567")
+ *
+ * @example
+ * formatNumber(1234567); // "1,234,567"
+ * formatNumber(-1000);   // "-1,000"
+ * formatNumber(null);    // "0"
  */
 export function formatNumber(num) {
+    if (num === null || num === undefined || Number.isNaN(num)) return '0';
     return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 /**
- * Get progress bar with animated style
- * Enhanced with better visual representation and smooth animations
+ * Generate a visual progress bar for Discord embeds.
+ * Uses Unicode characters for a smooth, animated appearance.
+ *
+ * @param {number} current - Current position value
+ * @param {number} total - Total/maximum value
+ * @param {number} [length=30] - Character length of the progress bar
+ * @returns {string} Visual progress bar string with position indicator
+ *
+ * @example
+ * getProgressBar(30, 100, 20); // "━━━━━━🔘──────────────"
+ * getProgressBar(0, 100, 10);  // "🔘──────────"
+ * getProgressBar(0, 0, 10);    // "▬▬▬▬▬▬▬▬▬▬"
  */
 export function getProgressBar(current, total, length = 30) {
-    if (total === 0 || isNaN(total)) return '▬'.repeat(length);
+    if (!Number.isFinite(total) || total <= 0) return '▬'.repeat(length);
+    if (!Number.isFinite(current) || current < 0) current = 0;
 
     const progress = Math.min(Math.max(current / total, 0), 1);
     const filled = Math.round(length * progress);
     const empty = length - filled;
 
-    // Use better characters for enhanced visual experience
-    const filledChar = '━'; // Thick horizontal line
-    const emptyChar = '─'; // Thin horizontal line
-    const pointer = '🔘'; // Position indicator
+    const filledChar = '━';
+    const emptyChar = '─';
+    const pointer = '🔘';
 
     if (filled === 0) {
         return pointer + emptyChar.repeat(Math.max(0, length));
@@ -85,163 +180,93 @@ export function getProgressBar(current, total, length = 30) {
 }
 
 /**
- * Parse time string to milliseconds (e.g., "1:30" -> 90000)
+ * Parse a time string (MM:SS or HH:MM:SS) to milliseconds.
+ *
+ * @param {string} timeString - Time string in MM:SS or HH:MM:SS format
+ * @returns {number} Time in milliseconds, or 0 if format is invalid
+ *
+ * @example
+ * parseTime('1:30');    // 90000
+ * parseTime('1:00:00'); // 3600000
+ * parseTime('invalid'); // 0
  */
 export function parseTime(timeString) {
+    if (!timeString || typeof timeString !== 'string') return 0;
+
     const parts = timeString.split(':').map(Number);
 
-    if (parts.length === 2) {
+    // Guard against NaN parts (e.g. 'abc:def')
+    if (parts.some(p => isNaN(p))) return 0;
+
+    let result;
+    if (parts.length === 1) {
+        // SS (seconds only)
+        result = parts[0] * 1000;
+    } else if (parts.length === 2) {
         // MM:SS
-        return (parts[0] * 60 + parts[1]) * 1000;
+        result = (parts[0] * 60 + parts[1]) * 1000;
     } else if (parts.length === 3) {
         // HH:MM:SS
-        return (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+        result = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+    } else {
+        return 0;
     }
 
-    return 0;
+    // Guard against NaN or negative results
+    return isNaN(result) || result < 0 ? 0 : result;
 }
 
 /**
- * Check if user has permission
- */
-export function hasPermission(member, config) {
-    // Check if admin
-    if (member.permissions.has('Administrator')) {
-        return true;
-    }
-
-    // Check admin roles
-    if (config.permissions.adminRoles?.length > 0) {
-        const hasAdminRole = member.roles.cache.some(role => config.permissions.adminRoles.includes(role.id));
-        if (hasAdminRole) return true;
-    }
-
-    // Check DJ roles
-    if (config.permissions.djRoles?.length > 0) {
-        const hasDJRole = member.roles.cache.some(role => config.permissions.djRoles.includes(role.id));
-        if (hasDJRole) return true;
-    }
-
-    // Allow everyone if configured
-    return config.permissions.allowEveryone || false;
-}
-
-/**
- * Check if user has DJ permissions (for server-specific DJ role or admin)
- * @param {GuildMember} member - Discord guild member
- * @param {string} guildId - Guild ID
- * @returns {Promise<{allowed: boolean, reason: string}>}
- */
-export async function checkDJPermission(member, guildId) {
-    // Admin always allowed
-    if (member.permissions.has('Administrator')) {
-        return { allowed: true, reason: 'admin' };
-    }
-
-    // Get guild settings for DJ role
-    try {
-        const GuildSettings = (await import('../database/models/GuildSettings.js')).default;
-        const settings = GuildSettings.get(guildId);
-
-        // If no DJ role is set, everyone is allowed
-        if (!settings.djRoleId) {
-            return { allowed: true, reason: 'no_dj_role_set' };
-        }
-
-        // Check if user has DJ role
-        if (member.roles.cache.has(settings.djRoleId)) {
-            return { allowed: true, reason: 'has_dj_role' };
-        }
-
-        // User doesn't have DJ role
-        return {
-            allowed: false,
-            reason: 'missing_dj_role',
-            roleId: settings.djRoleId
-        };
-    } catch (error) {
-        // If error checking, allow by default
-        logger.error('Error checking DJ permission', error);
-        return { allowed: true, reason: 'error_default_allow' };
-    }
-}
-
-/**
- * Check if command requires DJ role and verify permission
- * @param {Interaction} interaction - Discord interaction
- * @param {string[]} djCommands - List of commands that require DJ role
- * @returns {Promise<{allowed: boolean, embed?: EmbedBuilder}>}
- */
-export async function checkDJCommandPermission(interaction, djCommands = []) {
-    const { EmbedBuilder } = await import('discord.js');
-
-    const commandName = interaction.commandName;
-
-    // If command is not in DJ commands list, allow
-    if (!djCommands.includes(commandName)) {
-        return { allowed: true };
-    }
-
-    const permission = await checkDJPermission(interaction.member, interaction.guildId);
-
-    if (permission.allowed) {
-        return { allowed: true };
-    }
-
-    // User doesn't have permission
-    const embed = new EmbedBuilder()
-        .setColor('#FF0000')
-        .setTitle('❌ Không có quyền')
-        .setDescription(
-            `Lệnh \`/${commandName}\` yêu cầu vai trò DJ!\n\n` +
-                '• Liên hệ admin để được cấp vai trò DJ\n' +
-                '• Hoặc admin có thể tắt yêu cầu DJ role trong `/settings server dj-role`'
-        )
-        .setTimestamp();
-
-    return { allowed: false, embed };
-}
-
-/**
- * Truncate string
+ * Truncate a string to a maximum length, appending "..." if truncated.
+ *
+ * @param {string} str - String to truncate
+ * @param {number} [maxLength=50] - Maximum allowed length including ellipsis
+ * @returns {string} Original or truncated string
+ *
+ * @example
+ * truncate('Hello World', 8);  // "Hello..."
+ * truncate('Short', 50);       // "Short"
  */
 export function truncate(str, maxLength = 50) {
+    if (!str) return '';
     if (str.length <= maxLength) return str;
     return str.substring(0, maxLength - 3) + '...';
 }
 
 /**
- * Get platform icon
+ * Get the platform emoji icon for a music source.
+ * Handles various source name formats and variations.
+ * v1.11.0: Unified with PLATFORM_EMOJIS — YouTube=🔴, Spotify=💚, etc.
+ *
+ * @param {string|null|undefined} sourceName - Name of the music platform/source
+ * @returns {string} Platform emoji icon (defaults to '🎵' for unknown sources)
+ *
+ * @example
+ * getPlatformIcon('youtube');    // '🔴'
+ * getPlatformIcon('Spotify');    // '💚'
+ * getPlatformIcon(null);         // '🎵'
  */
 export function getPlatformIcon(sourceName) {
-    const icons = {
-        youtube: '🎥',
-        spotify: '🎵',
-        soundcloud: '🔊',
-        twitch: '🎮',
-        bandcamp: '🎸',
-        deezer: '🎶',
-        applemusic: '🍎',
-        jiosaavn: '🇮🇳',
-        yandexmusic: '🔵',
-        http: '🌐'
-    };
-
-    // Handle source name variations
     const normalizedSource = (sourceName || '').toLowerCase();
 
-    // Check for spotify variants
-    if (normalizedSource.includes('spotify')) return '🎵';
-    if (normalizedSource.includes('youtube')) return '🎥';
-    if (normalizedSource.includes('soundcloud')) return '🔊';
-    if (normalizedSource.includes('deezer')) return '🎶';
-    if (normalizedSource.includes('apple')) return '🍎';
+    // Check for platform name variations (e.g., "spotify_search" → "spotify")
+    for (const [platform, emoji] of Object.entries(PLATFORM_EMOJIS)) {
+        if (platform !== 'search' && platform !== 'unknown' && normalizedSource.includes(platform.split('_')[0])) {
+            return emoji;
+        }
+    }
 
-    return icons[normalizedSource] || '🎵';
+    return PLATFORM_EMOJIS[normalizedSource] || PLATFORM_EMOJIS.unknown || '🎵';
 }
 
 /**
- * Sleep function
+ * Async sleep/delay utility.
+ *
+ * @param {number} ms - Duration to sleep in milliseconds
+ * @returns {Promise<void>} Resolves after the specified duration
+ *
+ * @example
+ * await sleep(1000); // Wait 1 second
  */
 export function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -249,14 +274,16 @@ export function sleep(ms) {
 
 export default {
     loadConfig,
+    loadConfigAsync,
     formatDuration,
     formatNumber,
     getProgressBar,
     parseTime,
-    hasPermission,
-    checkDJPermission,
-    checkDJCommandPermission,
     truncate,
     getPlatformIcon,
-    sleep
+    sleep,
+    // Re-exported from permissions.js for backward compatibility
+    hasPermission,
+    checkDJPermission,
+    checkDJCommandPermission
 };

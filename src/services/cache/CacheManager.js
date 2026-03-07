@@ -129,9 +129,16 @@ function validateBudgets(budgets) {
         total += percentage;
     }
 
-    // Allow small floating point error (0.99 to 1.01)
-    if (total < 0.99 || total > 1.01) {
+    // Allow small floating point error (0.99 to 1.001) — reject over-allocation above 100.1%
+    if (total < 0.99 || total > 1.001) {
         errors.push(`Budget percentages must sum to 1.0 (got ${total.toFixed(4)})`);
+    }
+
+    // Normalize budgets to sum exactly to 1.0 to prevent drift
+    if (errors.length === 0 && total !== 1.0) {
+        for (const name of Object.keys(budgets)) {
+            budgets[name] = budgets[name] / total;
+        }
     }
 
     return {
@@ -140,221 +147,8 @@ function validateBudgets(budgets) {
     };
 }
 
-/**
- * Individual cache namespace with LRU eviction
- */
-class CacheNamespace {
-    /**
-     * Create a new cache namespace
-     * @param {string} name - Namespace name
-     * @param {number} budgetBytes - Memory budget in bytes
-     * @param {number} ttlMs - Default TTL in milliseconds
-     */
-    constructor(name, budgetBytes, ttlMs) {
-        this.name = name;
-        this.budgetBytes = budgetBytes;
-        this.ttlMs = ttlMs;
-        this.cache = new Map(); // LRU via Map insertion order
-        this.currentSizeBytes = 0;
-        this.stats = {
-            hits: 0,
-            misses: 0,
-            evictions: 0,
-            sets: 0
-        };
-    }
-
-    /**
-     * Set a value in the cache
-     * @param {string} key - Cache key
-     * @param {*} value - Value to cache
-     * @param {number} ttlMs - Optional custom TTL
-     * @returns {boolean} Success
-     */
-    set(key, value, ttlMs = null) {
-        // Remove existing entry first (for size tracking and LRU update)
-        if (this.cache.has(key)) {
-            const existing = this.cache.get(key);
-            this.currentSizeBytes -= existing.size;
-            this.cache.delete(key);
-        }
-
-        const size = this._estimateSize(value);
-
-        // Evict entries if over budget
-        while (this.currentSizeBytes + size > this.budgetBytes && this.cache.size > 0) {
-            this._evictLRU();
-        }
-
-        const entry = {
-            value,
-            timestamp: Date.now(),
-            ttl: ttlMs || this.ttlMs,
-            size
-        };
-
-        this.cache.set(key, entry);
-        this.currentSizeBytes += size;
-        this.stats.sets++;
-
-        return true;
-    }
-
-    /**
-     * Get a value from the cache
-     * @param {string} key - Cache key
-     * @returns {*} Cached value or null
-     */
-    get(key) {
-        const entry = this.cache.get(key);
-
-        if (!entry) {
-            this.stats.misses++;
-            return null;
-        }
-
-        // Check if expired
-        if (Date.now() - entry.timestamp > entry.ttl) {
-            this.cache.delete(key);
-            this.currentSizeBytes -= entry.size;
-            this.stats.misses++;
-            return null;
-        }
-
-        // Move to end (most recently used)
-        this.cache.delete(key);
-        this.cache.set(key, entry);
-
-        this.stats.hits++;
-        return entry.value;
-    }
-
-    /**
-     * Check if a key exists (without affecting LRU)
-     * @param {string} key - Cache key
-     * @returns {boolean}
-     */
-    has(key) {
-        const entry = this.cache.get(key);
-        if (!entry) return false;
-
-        // Check if expired
-        if (Date.now() - entry.timestamp > entry.ttl) {
-            this.cache.delete(key);
-            this.currentSizeBytes -= entry.size;
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Delete a key from the cache
-     * @param {string} key - Cache key
-     * @returns {boolean}
-     */
-    delete(key) {
-        const entry = this.cache.get(key);
-        if (entry) {
-            this.currentSizeBytes -= entry.size;
-            return this.cache.delete(key);
-        }
-        return false;
-    }
-
-    /**
-     * Clear all entries
-     */
-    clear() {
-        this.cache.clear();
-        this.currentSizeBytes = 0;
-    }
-
-    /**
-     * Get namespace statistics
-     * @returns {Object}
-     */
-    getStats() {
-        const hitRate =
-            this.stats.hits + this.stats.misses > 0
-                ? ((this.stats.hits / (this.stats.hits + this.stats.misses)) * 100).toFixed(2)
-                : 0;
-
-        return {
-            name: this.name,
-            ...this.stats,
-            hitRate: `${hitRate}%`,
-            size: this.cache.size,
-            currentSizeBytes: this.currentSizeBytes,
-            currentSizeMB: (this.currentSizeBytes / 1024 / 1024).toFixed(2),
-            budgetBytes: this.budgetBytes,
-            budgetMB: (this.budgetBytes / 1024 / 1024).toFixed(2),
-            usagePercent: ((this.currentSizeBytes / this.budgetBytes) * 100).toFixed(1)
-        };
-    }
-
-    /**
-     * Evict least recently used entry
-     * @private
-     */
-    _evictLRU() {
-        const firstKey = this.cache.keys().next().value;
-        if (firstKey !== undefined) {
-            const entry = this.cache.get(firstKey);
-            this.currentSizeBytes -= entry.size;
-            this.cache.delete(firstKey);
-            this.stats.evictions++;
-        }
-    }
-
-    /**
-     * Prune expired entries
-     * @returns {number} Number of entries pruned
-     */
-    pruneExpired() {
-        const now = Date.now();
-        let pruned = 0;
-
-        for (const [key, entry] of this.cache.entries()) {
-            if (now - entry.timestamp > entry.ttl) {
-                this.currentSizeBytes -= entry.size;
-                this.cache.delete(key);
-                pruned++;
-            }
-        }
-
-        return pruned;
-    }
-
-    /**
-     * Estimate size of a value in bytes
-     * @private
-     */
-    _estimateSize(value) {
-        try {
-            return JSON.stringify(value).length * 2; // UTF-16
-        } catch {
-            return 1000; // Default estimate
-        }
-    }
-
-    /**
-     * Force evict a percentage of entries
-     * @param {number} percentage - Percentage to evict (0-1)
-     * @returns {number} Number of entries evicted
-     */
-    forceEvict(percentage) {
-        const targetCount = Math.ceil(this.cache.size * percentage);
-        let evicted = 0;
-
-        while (evicted < targetCount && this.cache.size > 0) {
-            this._evictLRU();
-            evicted++;
-        }
-
-        return evicted;
-    }
-}
+// Import CacheNamespace from extracted module (v1.9.0)
+import { CacheNamespace } from './CacheNamespace.js';
 
 /**
  * Unified Cache Manager
@@ -423,6 +217,7 @@ class CacheManager extends EventEmitter {
         this.cleanupInterval = setInterval(() => {
             this._periodicCleanup();
         }, this.config.cleanupIntervalMs);
+        this.cleanupInterval.unref();
 
         logger.info('CacheManager started');
     }
@@ -639,26 +434,46 @@ class CacheManager extends EventEmitter {
      * @private
      */
     _globalEviction() {
-        // Sort namespaces by usage percentage (highest first)
-        const sortedNamespaces = [...this.namespaces.values()].sort((a, b) => {
-            const aUsage = a.currentSizeBytes / a.budgetBytes;
-            const bUsage = b.currentSizeBytes / b.budgetBytes;
-            return bUsage - aUsage;
-        });
+        // Calculate how much each namespace is over its budget
+        const totalOver = [...this.namespaces.values()].reduce(
+            (sum, ns) => sum + Math.max(0, ns.currentSizeBytes - ns.budgetBytes),
+            0
+        );
 
-        // Evict from namespaces that are over their budget first
+        // Proportional eviction: evict from each namespace based on how over-budget it is
         let totalEvicted = 0;
-        for (const ns of sortedNamespaces) {
-            if (ns.currentSizeBytes > 0) {
-                const evicted = ns.forceEvict(this.config.evictionPercentage);
+        for (const ns of this.namespaces.values()) {
+            const over = Math.max(0, ns.currentSizeBytes - ns.budgetBytes);
+            if (over > 0 && totalOver > 0) {
+                const proportion = over / totalOver;
+                const evicted = ns.forceEvict(Math.min(1, proportion * 0.3));
                 totalEvicted += evicted;
 
-                logger.debug(`Global eviction from ${ns.name}: ${evicted} entries`);
+                logger.debug(
+                    `Global eviction from ${ns.name}: ${evicted} entries (proportion: ${(proportion * 100).toFixed(1)}%)`
+                );
             }
+        }
 
-            // Check if we're back under budget
-            if (this.getTotalMemoryUsage() <= this.config.totalBudgetBytes * 0.9) {
-                break;
+        // If still over budget after proportional eviction, fall back to evicting from largest consumers
+        if (this.getTotalMemoryUsage() > this.config.totalBudgetBytes * 0.9) {
+            const sortedNamespaces = [...this.namespaces.values()].sort((a, b) => {
+                const aUsage = a.currentSizeBytes / a.budgetBytes;
+                const bUsage = b.currentSizeBytes / b.budgetBytes;
+                return bUsage - aUsage;
+            });
+
+            for (const ns of sortedNamespaces) {
+                if (ns.currentSizeBytes > 0) {
+                    const evicted = ns.forceEvict(this.config.evictionPercentage);
+                    totalEvicted += evicted;
+
+                    logger.debug(`Fallback eviction from ${ns.name}: ${evicted} entries`);
+                }
+
+                if (this.getTotalMemoryUsage() <= this.config.totalBudgetBytes * 0.9) {
+                    break;
+                }
             }
         }
 

@@ -6,13 +6,22 @@
  */
 
 import logger from './logger.js';
+import { COLORS } from '../config/design-system.js';
+
+/**
+ * FIX-UTL-H02: Hard upper bound on retry delay.
+ * Even if a caller passes a larger maxDelay, the delay is always capped here.
+ * Prevents unbounded exponential backoff (e.g., 2^10 * 1000 = 1024 s).
+ * @type {number}
+ */
+const MAX_RETRY_DELAY = 30000; // 30 seconds
 
 /**
  * Retry configuration
  * @typedef {Object} RetryOptions
  * @property {number} maxRetries - Maximum number of retry attempts (default: 3)
  * @property {number} initialDelay - Initial delay in ms (default: 1000)
- * @property {number} maxDelay - Maximum delay in ms (default: 8000)
+ * @property {number} maxDelay - Maximum delay in ms (default: 8000, hard cap: 30000)
  * @property {number} factor - Backoff multiplier (default: 2)
  * @property {Function} shouldRetry - Function to determine if error should be retried
  */
@@ -81,7 +90,16 @@ export async function retryWithBackoff(fn, options = {}) {
             }
 
             // Calculate delay with exponential backoff
-            const delay = Math.min(config.initialDelay * Math.pow(config.factor, attempt), config.maxDelay);
+            // FIX-UTL-H02: Enforce hard cap (MAX_RETRY_DELAY) to prevent unbounded growth
+            // FIX-UTL-M07: Enforce minimum 100ms floor to prevent ~0ms delays
+            const delay = Math.max(
+                Math.min(
+                    config.initialDelay * Math.pow(config.factor, attempt),
+                    config.maxDelay || MAX_RETRY_DELAY,
+                    MAX_RETRY_DELAY
+                ),
+                100
+            );
 
             logger.warn(`Retry attempt ${attempt + 1}/${config.maxRetries} after ${delay}ms`, {
                 error: error.message,
@@ -152,12 +170,13 @@ export async function withFallback(primaryFn, fallbackFn, options = {}) {
  *   async () => fetchFromNode3()
  * ], { name: 'Lavalink search' });
  */
-export async function raceToSuccess(fns, options = {}) {
+export function raceToSuccess(fns, options = {}) {
     const { name = 'Operation' } = options;
     const errors = [];
 
     return new Promise((resolve, reject) => {
         let completed = 0;
+        let settled = false;
         const total = fns.length;
 
         if (total === 0) {
@@ -168,14 +187,18 @@ export async function raceToSuccess(fns, options = {}) {
         fns.forEach((fn, index) => {
             fn()
                 .then(result => {
+                    if (settled) return;
+                    settled = true;
                     logger.debug(`${name} succeeded via option ${index + 1}`);
                     resolve(result);
                 })
                 .catch(error => {
+                    if (settled) return;
                     errors.push({ index, error });
                     completed++;
 
                     if (completed === total) {
+                        settled = true;
                         logger.error(`${name} failed on all ${total} attempts`, {
                             errors: errors.map(e => e.error.message)
                         });
@@ -203,7 +226,17 @@ export async function raceToSuccess(fns, options = {}) {
  * );
  */
 export async function withTimeout(fn, timeoutMs, message = 'Operation timed out') {
-    return Promise.race([fn(), new Promise((_, reject) => setTimeout(() => reject(new Error(message)), timeoutMs))]);
+    let timer;
+    try {
+        return await Promise.race([
+            fn(),
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+            })
+        ]);
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 /**
@@ -249,9 +282,13 @@ export async function staleWhileRevalidate(fetchFn, getStaleFn, options = {}) {
                 }
             }
 
-            logger.info(`${name} using stale data`, {
-                age: staleData.timestamp ? Math.round((Date.now() - staleData.timestamp) / 1000) + 's' : 'unknown'
-            });
+            if (staleData && staleData.timestamp) {
+                logger.info(`${name} using stale data`, {
+                    age: Math.round((Date.now() - staleData.timestamp) / 1000) + 's'
+                });
+            } else {
+                logger.info(`${name} using stale data`, { age: 'unknown' });
+            }
 
             return { data: staleData, isStale: true };
         } catch (staleError) {
@@ -281,7 +318,8 @@ export function isMusicSystemAvailable(musicManager) {
 
     // Check for at least one connected node
     for (const [, node] of musicManager.shoukaku.nodes) {
-        if (node.state === 2) {
+        if (node.state === 1) {
+            // 1 = CONNECTED in Shoukaku v4.3.0
             // CONNECTED state in Shoukaku v4
             return true;
         }
@@ -314,7 +352,7 @@ export function getDegradedModeMessage(feature = 'music playback') {
                 inline: false
             }
         ],
-        color: 0xff0000,
+        color: parseInt(COLORS.ERROR.replace('#', ''), 16),
         timestamp: new Date()
     };
 }

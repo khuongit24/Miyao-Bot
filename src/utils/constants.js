@@ -67,8 +67,19 @@ export const PLAYBACK = {
     AUTO_LEAVE_EMPTY_DELAY: 5 * 60 * 1000, // 5 minutes
     RECONNECT_TRIES: 3,
     RECONNECT_DELAY: 1000, // 1 second
+    TRACK_PLAY_MAX_RETRIES: 10,
     SEEK_BACKWARD_STEP: 10 * 1000, // 10 seconds
     SEEK_FORWARD_STEP: 30 * 1000 // 30 seconds
+};
+
+// Music manager runtime tuning
+export const MUSIC_MANAGER = {
+    DISCONNECT_COOLDOWN_MS: 10 * 1000,
+    DISCONNECT_STALE_MS: 60 * 1000,
+    HEALTH_MONITOR_INTERVAL_MS: 30 * 1000,
+    SEARCH_TIMEOUT_MS: 10 * 1000,
+    LAVALINK_RECONNECT_DELAY_MS: 5 * 1000,
+    MIN_RECONNECT_INTERVAL_SECONDS: 1
 };
 
 // Cache settings
@@ -102,6 +113,30 @@ export const AUTOPLAY = {
     MAX_CANDIDATES: 5
 };
 
+// Auto-play preference settings
+export const AUTOPLAY_PREF = {
+    /** Number of confirmations required to suggest auto-play */
+    CONFIRM_THRESHOLD: 5,
+    /** Time window for confirmation counting (days) */
+    WINDOW_DAYS: 30,
+    /** Instant skip detection threshold (ms) */
+    INSTANT_SKIP_THRESHOLD_MS: 3000,
+    /** Suggestion message auto-dismiss timeout (ms) */
+    SUGGESTION_TIMEOUT_MS: 120_000, // 2 minutes
+    /** Confidence floor — below this, auto-play is auto-disabled */
+    CONFIDENCE_FLOOR: 0.3
+};
+
+// Auto-play suggestion UX/runtime limits
+export const AUTOPLAY_SUGGESTION = {
+    MAX_AUTOPLAY_SUGGESTIONS: 300,
+    MAX_SKIP_PROMPTS: 200,
+    TRACK_CLEANUP_INTERVAL_MS: 5 * 60 * 1000,
+    TRACK_TTL_MS: 10 * 60 * 1000,
+    ACCEPT_MESSAGE_DELETE_DELAY_MS: 10_000,
+    DISMISS_MESSAGE_DELETE_DELAY_MS: 5_000
+};
+
 // Reconnection settings (exponential backoff)
 export const RECONNECTION = {
     /** Initial backoff delay in ms */
@@ -114,6 +149,50 @@ export const RECONNECTION = {
     MAX_RETRIES: 5,
     /** Jitter factor (0-1) to add randomness to delays */
     JITTER_FACTOR: 0.1
+};
+
+// Voice state event timers
+export const VOICE_STATE = {
+    RECONNECT_DELAY_MS: 3000,
+    DEFAULT_LEAVE_EMPTY_DELAY_MS: 5 * 60 * 1000
+};
+
+// Discovery / recommendation shared patterns
+export const DISCOVERY = {
+    /** Patterns to skip (shorts, compilations, non-music content) */
+    SKIP_PATTERNS: [
+        /#shorts?/i,
+        /\bshorts?\b/i,
+        /compilation/i,
+        /mix\s*20\d{2}/i,
+        /\d+\s*hour/i,
+        /playlist/i,
+        /best\s*of\s*20\d{2}/i,
+        /top\s*\d+/i,
+        /reaction/i,
+        /behind\s*the\s*scenes/i,
+        /interview/i,
+        /making\s*of/i,
+        /tutorial/i,
+        /cover\s*by/i,
+        /karaoke/i,
+        /instrumental\s*version/i,
+        /slowed\s*\+?\s*reverb/i,
+        /sped\s*up/i,
+        /8d\s*audio/i,
+        /top\s*\d+\s*(songs?|hits?|tracks?)/i
+    ]
+};
+
+// Trending command constraints
+export const TRENDING = {
+    MIN_TRACK_DURATION_MS: 60_000,
+    MAX_TRACK_DURATION_MS: 15 * 60 * 1000,
+    SERVER_FETCH_MULTIPLIER: 2,
+    MAX_TRACKS_PER_ARTIST: 2,
+    MAX_DISPLAY_TRACKS: 10,
+    FALLBACK_CACHE_MAX_SIZE: 50,
+    FALLBACK_CACHE_TTL_MS: 5 * 60 * 1000
 };
 
 // Lavalink settings
@@ -146,6 +225,7 @@ export const DATABASE = {
     BACKUP_INTERVAL: 24 * 60 * 60 * 1000, // 24 hours
     VACUUM_INTERVAL: 7 * 24 * 60 * 60 * 1000, // 7 days
     MAX_QUERY_TIME: 100, // milliseconds
+    WAL_CHECKPOINT_INTERVAL: 5 * 60 * 1000, // 5 minutes
 
     // History Batcher settings
     HISTORY_BATCH_SIZE: 100, // Max entries before force flush
@@ -198,17 +278,75 @@ export const ERROR_CODES = {
     RATE_LIMITED: 3004
 };
 
-// Feature flags
 export const FEATURES = {
     DATABASE_ENABLED: true,
     CACHE_PERSISTENCE: true,
     METRICS_ENABLED: true,
     HISTORY_ENABLED: true,
     PLAYLISTS_ENABLED: true,
-    AUTO_PLAY: true, // Autoplay feature is enabled
-    LYRICS: true, // Lyrics feature is now available
-    QUIZ_MODE: false // Not implemented yet
+    AUTO_PLAY: true,
+    LYRICS: true
 };
+
+// ============================================================
+// SEARCH SOURCES (v1.11.0)
+// ============================================================
+
+/**
+ * Search prefix map — used by MusicManager to build search queries.
+ * Each prefix corresponds to a Lavalink search source.
+ */
+export const SEARCH_PREFIXES = Object.freeze({
+    YOUTUBE: 'ytsearch',
+    YOUTUBE_MUSIC: 'ytmsearch',
+    SOUNDCLOUD: 'scsearch',
+    DEEZER: 'dzsearch'
+});
+
+/**
+ * Source priority for text query search fallback.
+ * When primary source fails, try the next in order.
+ * Only includes sources with keyword search support.
+ * Deezer is added dynamically if DEEZER_ENABLED=true.
+ */
+export const SOURCE_PRIORITY = Object.freeze([
+    SEARCH_PREFIXES.YOUTUBE,
+    SEARCH_PREFIXES.YOUTUBE_MUSIC,
+    SEARCH_PREFIXES.SOUNDCLOUD
+]);
+
+/**
+ * Human-readable platform names for UI display.
+ */
+export const PLATFORM_NAMES = Object.freeze({
+    youtube: 'YouTube',
+    youtube_music: 'YouTube Music',
+    spotify: 'Spotify',
+    soundcloud: 'SoundCloud',
+    bandcamp: 'Bandcamp',
+    deezer: 'Deezer',
+    twitch: 'Twitch',
+    vimeo: 'Vimeo',
+    http: 'Luồng HTTP',
+    unknown: 'Không rõ nguồn'
+});
+
+/**
+ * Platform emoji map for embeds.
+ */
+export const PLATFORM_EMOJIS = Object.freeze({
+    youtube: '🔴',
+    youtube_music: '🔴',
+    spotify: '💚',
+    soundcloud: '🔊',
+    bandcamp: '🎸',
+    deezer: '💜',
+    twitch: '🟣',
+    vimeo: '🔵',
+    http: '🌐',
+    search: '🔍',
+    unknown: '🎵'
+});
 
 // Logging
 export const LOG_LEVELS = {
@@ -219,14 +357,25 @@ export const LOG_LEVELS = {
     VERBOSE: 'verbose'
 };
 
-export default {
+// BUG-U05: Freeze all exported constant objects to prevent mutation
+// Note: SEARCH_PREFIXES, SOURCE_PRIORITY, PLATFORM_NAMES, PLATFORM_EMOJIS are already frozen via Object.freeze() at declaration
+[
     TIME,
     MEMORY,
     QUEUE,
     VOLUME,
     PLAYBACK,
     CACHE,
+    PLAYLIST_RESOLUTION,
+    AUTOPLAY,
+    AUTOPLAY_PREF,
+    AUTOPLAY_SUGGESTION,
+    RECONNECTION,
+    VOICE_STATE,
+    TRENDING,
+    DISCOVERY,
     LAVALINK,
+    MUSIC_MANAGER,
     RATE_LIMIT,
     DATABASE,
     DISCORD,
@@ -234,4 +383,34 @@ export default {
     ERROR_CODES,
     FEATURES,
     LOG_LEVELS
+].forEach(obj => Object.freeze(obj));
+
+export default {
+    TIME,
+    MEMORY,
+    QUEUE,
+    VOLUME,
+    PLAYBACK,
+    CACHE,
+    PLAYLIST_RESOLUTION,
+    AUTOPLAY,
+    AUTOPLAY_PREF,
+    AUTOPLAY_SUGGESTION,
+    RECONNECTION,
+    VOICE_STATE,
+    TRENDING,
+    DISCOVERY,
+    LAVALINK,
+    MUSIC_MANAGER,
+    RATE_LIMIT,
+    DATABASE,
+    DISCORD,
+    PROGRESS_BAR,
+    ERROR_CODES,
+    FEATURES,
+    LOG_LEVELS,
+    SEARCH_PREFIXES,
+    SOURCE_PRIORITY,
+    PLATFORM_NAMES,
+    PLATFORM_EMOJIS
 };

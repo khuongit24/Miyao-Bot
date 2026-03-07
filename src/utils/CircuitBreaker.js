@@ -141,8 +141,21 @@ export class CircuitBreaker {
      */
     onFailure(error) {
         this.stats.failedCalls++;
+
+        if (this.state === CircuitState.HALF_OPEN) {
+            this.transitionTo(CircuitState.OPEN);
+            return;
+        }
+
+        // If enough time has passed since the last failure, reset the count
+        // so that old, stale failures don't accumulate toward the threshold.
+        const now = Date.now();
+        if (this.lastFailureTime && now - this.lastFailureTime >= this.resetTimeout) {
+            this.failures = 0;
+        }
+
         this.failures++;
-        this.lastFailureTime = Date.now();
+        this.lastFailureTime = now;
         this.successes = 0; // Reset success count in half-open
 
         logger.warn(`CircuitBreaker [${this.name}] failure`, {
@@ -179,8 +192,16 @@ export class CircuitBreaker {
 
             logger.info(`CircuitBreaker [${this.name}] state change: ${oldState} → ${newState}`);
 
-            // Call the state change callback
-            this.onStateChange(oldState, newState, this.stats);
+            // Call the state change callback (wrapped in try-catch to prevent throwing)
+            try {
+                this.onStateChange(oldState, newState, this.stats);
+            } catch (callbackError) {
+                logger.error(`CircuitBreaker [${this.name}] onStateChange callback error`, {
+                    error: callbackError.message,
+                    oldState,
+                    newState
+                });
+            }
         }
     }
 

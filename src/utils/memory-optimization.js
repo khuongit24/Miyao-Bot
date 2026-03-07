@@ -11,7 +11,7 @@ import logger from './logger.js';
  * String Optimization - Reduce string concatenation overhead
  */
 export class StringBuilder {
-    constructor(initialCapacity = 100) {
+    constructor(_initialCapacity = 100) {
         this.parts = [];
         this.length = 0;
     }
@@ -120,20 +120,26 @@ export class MemoryMonitor {
     }
 
     detectLeak(windowSize = 10) {
-        if (this.history.length < windowSize) {
-            return { hasLeak: false, message: 'Not enough data' };
+        // FIX-UTL-M08: Require minimum 10 samples to avoid false alerts with few data points
+        const minSamples = Math.max(windowSize, 10);
+        if (this.history.length < minSamples) {
+            return { hasLeak: false, message: 'Not enough data (minimum 10 samples required)' };
         }
 
         const recent = this.history.slice(-windowSize);
         const trend = this.calculateTrend(recent.map(s => s.heapUsed));
+        const latestHeap = recent[recent.length - 1].heapUsed;
+        const minHeapForLeak = 200 * 1024 * 1024; // 200MB minimum
 
-        // If memory consistently growing over time
-        if (trend > 0.1) {
-            // Growing more than 10% over window
+        // Only flag leak if:
+        // 1. Heap > 200MB AND growth > 15%, OR
+        // 2. Very high growth > 25% regardless of size (indicates aggressive leak)
+        if (trend > 0.25 || (latestHeap > minHeapForLeak && trend > 0.15)) {
             return {
                 hasLeak: true,
-                confidence: 'high',
+                confidence: trend > 0.25 ? 'high' : 'medium',
                 trend: (trend * 100).toFixed(2) + '%',
+                heapMB: Math.round(latestHeap / 1024 / 1024),
                 message: 'Potential memory leak detected'
             };
         }
@@ -146,6 +152,9 @@ export class MemoryMonitor {
 
         const first = values[0];
         const last = values[values.length - 1];
+
+        // Guard against division by zero
+        if (first === 0) return 0;
 
         return (last - first) / first;
     }
@@ -209,6 +218,7 @@ export class IdleCleanupManager {
         this.lastActivity = Date.now();
         this.cleanupCallbacks = [];
         this.checkInterval = null;
+        this._isCleaningUp = false;
     }
 
     registerCleanup(name, callback) {
@@ -226,21 +236,29 @@ export class IdleCleanupManager {
     async runCleanup() {
         if (!this.isIdle()) return;
 
+        // Guard against concurrent cleanup runs (e.g., overlapping interval ticks)
+        if (this._isCleaningUp) return;
+        this._isCleaningUp = true;
+
         logger.info('Running idle cleanup...');
 
-        for (const { name, callback } of this.cleanupCallbacks) {
-            try {
-                await callback();
-                logger.debug(`Idle cleanup completed: ${name}`);
-            } catch (error) {
-                logger.error(`Idle cleanup failed: ${name}`, error);
+        try {
+            for (const { name, callback } of this.cleanupCallbacks) {
+                try {
+                    await callback();
+                    logger.debug(`Idle cleanup completed: ${name}`);
+                } catch (error) {
+                    logger.error(`Idle cleanup failed: ${name}`, error);
+                }
             }
-        }
 
-        // Force garbage collection if available
-        if (global.gc) {
-            global.gc();
-            logger.debug('Forced garbage collection');
+            // Force garbage collection if available
+            if (typeof global.gc === 'function') {
+                global.gc();
+                logger.debug('Forced garbage collection');
+            }
+        } finally {
+            this._isCleaningUp = false;
         }
     }
 

@@ -4,6 +4,7 @@
  */
 
 import logger from './logger.js';
+import { sanitizeForLog } from './sanitize.js';
 
 /**
  * Validation result object
@@ -46,14 +47,14 @@ export function validateSearchQuery(query) {
 
     // Check for suspicious patterns
     const suspiciousPatterns = [
-        /<script[^>]*>.*?<\/script>/gi, // Script tags
-        /javascript:/gi, // JavaScript protocol
-        /on\w+\s*=/gi, // Event handlers
-        /data:text\/html/gi, // Data URIs
-        /<iframe/gi, // Iframes
-        /eval\s*\(/gi, // Eval calls
-        /expression\s*\(/gi, // CSS expressions
-        /vbscript:/gi // VBScript
+        /<script[^>]*>.*?<\/script>/i, // Script tags
+        /javascript:/i, // JavaScript protocol
+        /on\w+\s*=/i, // Event handlers
+        /data:text\/html/i, // Data URIs
+        /<iframe/i, // Iframes
+        /eval\s*\(/i, // Eval calls
+        /expression\s*\(/i, // CSS expressions
+        /vbscript:/i // VBScript
     ];
 
     for (const pattern of suspiciousPatterns) {
@@ -286,9 +287,68 @@ export function validateURL(url) {
             /^192\.168\.\d+\.\d+$/,
             /^10\.\d+\.\d+\.\d+$/,
             /^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/,
-            /^\[::[01]\]$/, // IPv6 localhost
-            /^\[::1\]$/ // IPv6 localhost
+            /^0\.0\.0\.0$/, // Unspecified IPv4
+            /^0+\.0+\.0+\.0+$/, // Zero-padded variants
+            /^\[::[01]?\]$/, // IPv6 localhost (::, ::0, ::1)
+            /^\[::1\]$/, // IPv6 localhost
+            /^\[::ffff:\d+\.\d+\.\d+\.\d+\]$/, // IPv6-mapped IPv4
+            /^\[0:0:0:0:0:0:0:[01]\]$/, // Full IPv6 localhost
+            /^\[0:0:0:0:0:ffff:[\d.]+\]$/, // Full IPv6-mapped IPv4 (BUG-U06: anchored)
+            /^\[fd[0-9a-f]{2}:[^\]]*\]$/i, // IPv6 ULA (private) (BUG-U06: anchored)
+            /^\[fe80:[^\]]*\]$/i, // IPv6 link-local (BUG-U06: anchored)
+            /^\[fc[0-9a-f]{2}:[^\]]*\]$/i // IPv6 ULA (private) (BUG-U06: anchored)
         ];
+
+        // Check for decimal IP notation bypass (e.g., http://2130706433 = 127.0.0.1)
+        if (/^\d+$/.test(hostname)) {
+            const decimalIp = parseInt(hostname, 10);
+            // 127.0.0.0/8 = 2130706432-2147483647, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 0.0.0.0
+            if (
+                decimalIp === 0 ||
+                (decimalIp >= 0x7f000000 && decimalIp <= 0x7fffffff) || // 127.x.x.x
+                (decimalIp >= 0x0a000000 && decimalIp <= 0x0affffff) || // 10.x.x.x
+                (decimalIp >= 0xac100000 && decimalIp <= 0xac1fffff) || // 172.16-31.x.x
+                (decimalIp >= 0xc0a80000 && decimalIp <= 0xc0a8ffff) // 192.168.x.x
+            ) {
+                logger.warn('Attempt to access private URL via decimal IP', { url, decimalIp });
+                return {
+                    valid: false,
+                    error: 'Không được phép truy cập URL nội bộ'
+                };
+            }
+        }
+
+        // Check for octal/hex encoded IP octets (e.g., 0177.0.0.1, 0x7f.0.0.1)
+        if (/^[0-9a-fx.]+$/i.test(hostname) && hostname.includes('.')) {
+            const octets = hostname.split('.');
+            if (octets.length === 4) {
+                const parsed_octets = octets.map(o => {
+                    if (o.startsWith('0x') || o.startsWith('0X')) return parseInt(o, 16);
+                    if (o.startsWith('0') && o.length > 1) return parseInt(o, 8);
+                    return parseInt(o, 10);
+                });
+                if (parsed_octets.every(o => !isNaN(o) && o >= 0 && o <= 255)) {
+                    const normalizedIp = parsed_octets.join('.');
+                    // Re-check normalized IP against private patterns
+                    const privateIpPatterns = [
+                        /^127\.\d+\.\d+\.\d+$/,
+                        /^192\.168\.\d+\.\d+$/,
+                        /^10\.\d+\.\d+\.\d+$/,
+                        /^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/,
+                        /^0\.0\.0\.0$/
+                    ];
+                    for (const p of privateIpPatterns) {
+                        if (p.test(normalizedIp)) {
+                            logger.warn('Attempt to access private URL via encoded IP', { url, normalizedIp });
+                            return {
+                                valid: false,
+                                error: 'Không được phép truy cập URL nội bộ'
+                            };
+                        }
+                    }
+                }
+            }
+        }
 
         for (const pattern of privatePatterns) {
             if (pattern.test(hostname)) {
@@ -368,36 +428,9 @@ export function validateFilterName(filterName, validFilters) {
     };
 }
 
-/**
- * Sanitize text for logging (remove sensitive data)
- * @param {string} text - Text to sanitize
- * @returns {string} Sanitized text
- */
-export function sanitizeForLog(text) {
-    if (!text || typeof text !== 'string') return '';
-
-    return (
-        text
-            // Mask Discord tokens
-            .replace(/([A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,})/g, '[REDACTED_TOKEN]')
-            // Mask API keys (various formats)
-            .replace(/([a-zA-Z0-9_-]{32,})/g, match => {
-                // Only mask if it looks like an API key (has specific patterns)
-                if (/^[A-Za-z0-9_-]{32,}$/.test(match) && !/^https?:/.test(match)) {
-                    return '[REDACTED_KEY]';
-                }
-                return match;
-            })
-            // Mask email addresses
-            .replace(/([a-zA-Z0-9._-]+)@([a-zA-Z0-9._-]+\.[a-zA-Z0-9_-]+)/g, '$1***@$2')
-            // Mask IP addresses (partial)
-            .replace(/(\d{1,3}\.\d{1,3})\.\d{1,3}\.\d{1,3}/g, '$1.***.**')
-            // Mask credit card numbers
-            .replace(/\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/g, '[REDACTED_CC]')
-            // Mask passwords in URLs
-            .replace(/:\/\/([^:]+):([^@]+)@/g, '://$1:[REDACTED]@')
-    );
-}
+// sanitizeForLog is now in sanitize.js to break circular dependency with logger.js
+// Re-exported here for backward compatibility.
+export { sanitizeForLog };
 
 /**
  * Validate generic string input

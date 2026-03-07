@@ -129,8 +129,11 @@ async function main() {
     console.log('\n═══════════════════════════════════════');
     console.log('✨ Deployment complete!');
 
-    // Explicitly exit to prevent hanging (REST client may keep process alive)
-    process.exit(0);
+    // Defer exit so libuv can finish closing async handles before the process
+    // terminates. Calling process.exit(0) synchronously while the REST client
+    // still has pending UV_HANDLE_CLOSING handles triggers an assertion crash
+    // on Windows (src\win\async.c line 76).
+    setImmediate(() => process.exit(0));
 }
 
 main();

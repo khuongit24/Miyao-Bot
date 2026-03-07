@@ -133,25 +133,36 @@ class LoadTester {
 
     /**
      * Simulate database operations
+     * NOTE: Uses DatabaseManager's raw query/execute API.
+     * Legacy high-level methods (getGuildSettings, getPlaylistsByGuild, etc.)
+     * were removed; domain logic now lives in services.
      */
     async simulateDatabaseLoad(db, guildCount) {
         profiler.mark('load-test:database');
 
         const operations = [
-            // Read operations
-            () => db.getGuildSettings('test-guild-123'),
-            () => db.getPlaylistsByGuild('test-guild-123'),
-            () => db.getUserFavorites('test-user-123'),
-            () => db.getHistory('test-guild-123', 10),
+            // Read operations (using current DatabaseManager API)
+            () => db.queryOne('SELECT * FROM guild_settings WHERE guild_id = ?', ['test-guild-123']),
+            () => db.query('SELECT * FROM playlists WHERE guild_id = ?', ['test-guild-123']),
+            () =>
+                db.query('SELECT * FROM play_history WHERE guild_id = ? ORDER BY played_at DESC LIMIT 10', [
+                    'test-guild-123'
+                ]),
+            () => db.getStats(),
 
             // Write operations
-            () => db.updateGuildSettings('test-guild-123', { volume: 50 }),
             () =>
-                db.addToHistory('test-guild-123', 'test-user-123', {
-                    title: 'Test Track',
-                    url: 'https://youtube.com/watch?v=test',
-                    duration: 180000
-                })
+                db.execute(
+                    `INSERT INTO guild_settings (guild_id, volume) VALUES (?, ?) 
+                 ON CONFLICT(guild_id) DO UPDATE SET volume = excluded.volume`,
+                    ['test-guild-123', 50]
+                ),
+            () =>
+                db.execute(
+                    `INSERT OR IGNORE INTO play_history (guild_id, user_id, title, url, duration, played_at) 
+                 VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+                    ['test-guild-123', 'test-user-123', 'Test Track', 'https://youtube.com/watch?v=test', 180000]
+                )
         ];
 
         try {

@@ -1,10 +1,10 @@
 import winston from 'winston';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { sanitizeForLog } from './input-validator.js';
+import { sanitizeForLog } from './sanitize.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const projectRoot = __dirname.replace(/[/\\]src[/\\]utils$/, '');
 
 // Sanitize format - removes sensitive data
 const sanitizeFormat = winston.format(info => {
@@ -57,7 +57,7 @@ const fileFormat = winston.format.combine(
 
 // Create logger
 const logger = winston.createLogger({
-    level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+    level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
     format: fileFormat,
     defaultMeta: { service: 'miyao-bot' },
     transports: [
@@ -67,14 +67,14 @@ const logger = winston.createLogger({
         }),
         // File transport - all logs
         new winston.transports.File({
-            filename: path.join(process.cwd(), 'Miyao.log'),
+            filename: path.join(projectRoot, 'logs', 'Miyao.log'),
             maxsize: 10485760, // 10MB
             maxFiles: 5,
             tailable: true
         }),
         // File transport - errors only
         new winston.transports.File({
-            filename: path.join(process.cwd(), 'Miyao-error.log'),
+            filename: path.join(projectRoot, 'logs', 'Miyao-error.log'),
             level: 'error',
             maxsize: 10485760, // 10MB
             maxFiles: 3,
@@ -83,12 +83,18 @@ const logger = winston.createLogger({
     ],
     exceptionHandlers: [
         new winston.transports.File({
-            filename: path.join(process.cwd(), 'Miyao-exceptions.log')
+            filename: path.join(process.cwd(), 'Miyao-exceptions.log'),
+            maxsize: 5242880, // 5MB
+            maxFiles: 3,
+            tailable: true
         })
     ],
     rejectionHandlers: [
         new winston.transports.File({
-            filename: path.join(process.cwd(), 'Miyao-rejections.log')
+            filename: path.join(process.cwd(), 'Miyao-rejections.log'),
+            maxsize: 5242880, // 5MB
+            maxFiles: 3,
+            tailable: true
         })
     ]
 });
@@ -113,13 +119,34 @@ logger.music = (action, details) => {
 
 // Override error method to handle Error objects
 const originalError = logger.error.bind(logger);
+
+/**
+ * Recursively serialize Error objects within metadata so JSON.stringify won't produce {}
+ * @param {*} obj
+ * @returns {*}
+ */
+function serializeErrors(obj) {
+    if (obj instanceof Error) {
+        return { name: obj.name, message: obj.message, stack: obj.stack, ...(obj.code ? { code: obj.code } : {}) };
+    }
+    if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        const result = {};
+        for (const key of Object.keys(obj)) {
+            result[key] = serializeErrors(obj[key]);
+        }
+        return result;
+    }
+    return obj;
+}
+
 logger.error = (message, error) => {
     if (error instanceof Error) {
         originalError(message, {
             error: {
                 name: error.name,
                 message: error.message,
-                stack: error.stack
+                stack: error.stack,
+                ...(error.code ? { code: error.code } : {})
             }
         });
     } else if (typeof message === 'object' && message instanceof Error) {
@@ -130,6 +157,9 @@ logger.error = (message, error) => {
                 stack: message.stack
             }
         });
+    } else if (error && typeof error === 'object') {
+        // Handle Error objects nested inside metadata (e.g., { error: new Error(...) })
+        originalError(message, serializeErrors(error));
     } else {
         originalError(message, error);
     }
