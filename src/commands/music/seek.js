@@ -1,6 +1,15 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { createSuccessEmbed, createErrorEmbed } from '../../UI/embeds/MusicEmbeds.js';
-import { parseTime } from '../../utils/helpers.js';
+import { createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse, createErrorEmbed } from '../../UI/embeds/ErrorEmbeds.js';
+import { requireCurrentTrack } from '../../middleware/queueCheck.js';
+import {
+    UserNotInVoiceError,
+    DifferentVoiceChannelError,
+    InvalidTimeError,
+    InvalidPositionError
+} from '../../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
+import { parseTime, formatDuration } from '../../utils/helpers.js';
 import logger from '../../utils/logger.js';
 
 export default {
@@ -8,90 +17,93 @@ export default {
         .setName('seek')
         .setDescription('Tua đến thời điểm cụ thể')
         .addStringOption(option =>
-            option.setName('time').setDescription('Thời điểm (MM:SS hoặc HH:MM:SS)').setRequired(true)
+            option.setName('time').setDescription('Ví dụ: 1:30, 02:45, 1:23:45').setRequired(true)
         ),
 
     async execute(interaction, client) {
         try {
-            const queue = client.musicManager.getQueue(interaction.guildId);
+            await interaction.deferReply();
 
-            // Check if there's a queue
-            if (!queue || !queue.current) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Không có nhạc nào đang phát!', client.config)],
-                    ephemeral: true
-                });
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
             }
+
+            // Use middleware — requireCurrentTrack ensures queue.current is not null
+            const { queue } = requireCurrentTrack(client.musicManager, interaction.guildId);
 
             // Check if user is in the same voice channel
             const member = interaction.member;
-            if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Bạn phải ở trong cùng voice channel với bot!', client.config)],
-                    ephemeral: true
-                });
+            if (!member.voice.channel) {
+                throw new UserNotInVoiceError();
+            }
+            if (member.voice.channel.id !== queue.voiceChannelId) {
+                throw new DifferentVoiceChannelError();
             }
 
             // Check if track is seekable
             if (queue.current?.info?.isStream) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Không thể tua livestream!', client.config)],
-                    ephemeral: true
+                return interaction.editReply({
+                    embeds: [createErrorEmbed('Không thể tua livestream!', client.config)]
                 });
             }
 
             const timeString = interaction.options.getString('time');
-            const position = parseTime(timeString);
 
-            // Validate time format: MM:SS or HH:MM:SS with proper bounds
-            // Seconds: 00-59, Minutes: 00-59 (or any for hours format)
-            const isValidFormat = /^(?:(\d{1,2}):)?([0-5]?\d):([0-5]\d)$/.test(timeString.trim());
+            // Validate time format: SS, MM:SS, or HH:MM:SS
+            const isValidFormat = /^(?:(?:(\d{1,2}):)?([0-5]?\d):)?([0-5]?\d)$/.test(timeString.trim());
 
             if (!isValidFormat) {
-                return interaction.reply({
+                throw new InvalidTimeError(timeString);
+            }
+
+            const position = parseTime(timeString);
+            const trackLength = queue.current?.info?.length || 0;
+
+            // BUG-C19: Validate track has a known duration before seeking
+            if (trackLength <= 0) {
+                return interaction.editReply({
                     embeds: [
-                        createErrorEmbed(
-                            'Định dạng thời gian không hợp lệ! Sử dụng MM:SS hoặc HH:MM:SS\n*Ví dụ: 1:30, 02:45, 1:05:30*',
-                            client.config
-                        )
-                    ],
-                    ephemeral: true
+                        createErrorEmbed('Không thể tua bài hát này (không xác định được thời lượng)!', client.config)
+                    ]
                 });
             }
 
-            const trackLength = queue.current?.info?.length || 0;
-            if (position < 0 || position > trackLength) {
-                // Format duration nicely for user
-                const totalSeconds = Math.floor(trackLength / 1000);
-                const minutes = Math.floor(totalSeconds / 60);
-                const seconds = totalSeconds % 60;
-                const formattedDuration = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+            // BUG-C19: Use >= to prevent seeking to exactly the end of track
+            if (position < 0 || position >= trackLength) {
+                // Since InvalidPositionError expects index/max for queue usually,
+                // but here we are validating time in track.
+                // We can construct a custom Validation Error or use InvalidPositionError with custom message if allowed?
+                // InvalidPositionError constructor takes (position, max).
+                // It says "Position X is out of range".
+                // Here we dealing with Time.
+                // Maybe stick to createErrorEmbed for custom message about duration.
 
-                return interaction.reply({
+                const formattedDuration = formatDuration(trackLength);
+                return interaction.editReply({
                     embeds: [
                         createErrorEmbed(
                             `Thời điểm không hợp lệ! Bài hát chỉ dài **${formattedDuration}**.`,
                             client.config
                         )
-                    ],
-                    ephemeral: true
+                    ]
                 });
             }
 
             // Seek
             await queue.seek(position);
 
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [createSuccessEmbed('Tua nhạc', `Đã tua đến **${timeString}**`, client.config)]
             });
 
             logger.command('seek', interaction.user.id, interaction.guildId);
         } catch (error) {
-            logger.error('Seek command error', error);
-            await interaction.reply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi tua nhạc!', client.config)],
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

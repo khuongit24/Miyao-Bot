@@ -1,11 +1,15 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { createErrorEmbed, createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createSuccessEmbed, createErrorEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { requireQueueTracks, validateQueuePosition } from '../../middleware/queueCheck.js';
+import { UserNotInVoiceError, DifferentVoiceChannelError } from '../../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import logger from '../../utils/logger.js';
 
 export default {
     data: new SlashCommandBuilder()
         .setName('remove')
-        .setDescription('Xóa một bài khỏi hàng đợi theo vị trí')
+        .setDescription('Xóa bài hát khỏi hàng đợi — dùng /queue để xem vị trí')
         .addIntegerOption(option =>
             option
                 .setName('position')
@@ -16,50 +20,55 @@ export default {
 
     async execute(interaction, client) {
         try {
-            // Voice checks
+            await interaction.deferReply();
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
+            }
+
+            // Use middleware
+            const { queue } = requireQueueTracks(client.musicManager, interaction.guildId);
+
+            // Check if user is in the same voice channel
             const member = interaction.member;
-            const voiceChannel = member.voice.channel;
-            if (!voiceChannel) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Bạn phải ở trong voice channel để dùng lệnh này!', client.config)],
-                    ephemeral: true
-                });
+            if (!member.voice.channel) {
+                throw new UserNotInVoiceError();
             }
-            const queue = client.musicManager.getQueue(interaction.guildId);
-            if (queue && queue.voiceChannelId !== voiceChannel.id) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Bạn phải ở cùng voice channel với bot!', client.config)],
-                    ephemeral: true
-                });
-            }
-            if (!queue || queue.tracks.length === 0) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Hàng đợi trống! Không có bài nào để xóa.', client.config)],
-                    ephemeral: true
-                });
+            if (member.voice.channel.id !== queue.voiceChannelId) {
+                throw new DifferentVoiceChannelError();
             }
 
             const position = interaction.options.getInteger('position');
 
+            // BUG-C07: Re-validate position against current queue length before removing
             if (position < 1 || position > queue.tracks.length) {
-                return interaction.reply({
+                return interaction.editReply({
                     embeds: [
-                        createErrorEmbed(`Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.`, client.config)
-                    ],
-                    ephemeral: true
+                        createErrorEmbed(
+                            `Vị trí #${position} không hợp lệ! Hàng đợi hiện có ${queue.tracks.length} bài.\nDùng \`/queue\` để xem vị trí mới.`,
+                            client.config
+                        )
+                    ]
                 });
             }
 
-            const removed = queue.remove(position - 1);
+            // Validate position
+            const index = validateQueuePosition(queue, position, 'remove track');
+
+            // Remove track
+            const removed = queue.remove(index);
+
+            // queue.remove returns the removed track or null/false
             if (!removed) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Không thể xóa bài này, vui lòng thử lại!', client.config)],
-                    ephemeral: true
-                });
+                throw new Error('Không thể xóa bài này, vui lòng thử lại!');
             }
 
             const trackTitle = removed.info?.title || 'Unknown Track';
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [
                     createSuccessEmbed(
                         'Đã xóa bài',
@@ -71,11 +80,7 @@ export default {
 
             logger.command('remove', interaction.user.id, interaction.guildId);
         } catch (error) {
-            logger.error('Remove command error', error);
-            await interaction.reply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi xóa bài khỏi hàng đợi!', client.config)],
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

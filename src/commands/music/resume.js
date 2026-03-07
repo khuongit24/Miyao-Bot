@@ -1,14 +1,26 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { createSuccessEmbed, createErrorEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createWarningEmbed, sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import { requireQueue } from '../../middleware/queueCheck.js';
-import { UserNotInVoiceError, DifferentVoiceChannelError, NothingPlayingError } from '../../utils/errors.js';
+import { UserNotInVoiceError, DifferentVoiceChannelError } from '../../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import logger from '../../utils/logger.js';
 
 export default {
-    data: new SlashCommandBuilder().setName('resume').setDescription('Tiếp tục phát nhạc'),
+    data: new SlashCommandBuilder().setName('resume').setDescription('Tiếp tục phát bài hát đã tạm dừng'),
 
     async execute(interaction, client) {
         try {
+            await interaction.deferReply();
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
+            }
+
             // Use middleware for common checks
             const queue = requireQueue(client.musicManager, interaction.guildId);
 
@@ -23,40 +35,21 @@ export default {
 
             // Check if not paused
             if (!queue.paused) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Nhạc đang phát rồi!', client.config)],
-                    ephemeral: true
+                return interaction.editReply({
+                    embeds: [createWarningEmbed('Nhạc đang phát rồi!', client.config)]
                 });
             }
 
             // Resume
             await queue.resume();
 
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [createSuccessEmbed('Tiếp tục', 'Đã tiếp tục phát nhạc', client.config)]
             });
 
             logger.command('resume', interaction.user.id, interaction.guildId);
         } catch (error) {
-            // Handle middleware errors with user-friendly messages
-            if (error instanceof NothingPlayingError) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed(error.message, client.config)],
-                    ephemeral: true
-                });
-            }
-            if (error instanceof UserNotInVoiceError || error instanceof DifferentVoiceChannelError) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed(error.message, client.config)],
-                    ephemeral: true
-                });
-            }
-
-            logger.error('Resume command error', error);
-            await interaction.reply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi tiếp tục phát nhạc!', client.config)],
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

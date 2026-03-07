@@ -7,6 +7,8 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import History from '../../database/models/History.js';
 import { EnhancedStatisticsService, TrackStatistics } from '../../database/models/Statistics.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { COLORS } from '../../config/design-system.js';
 import logger from '../../utils/logger.js';
 import { formatDuration } from '../../utils/helpers.js';
 
@@ -74,26 +76,10 @@ export default {
                     await showOverview(interaction, client, guildId, period, periodNames[period]);
             }
 
-            logger.command('serverstats', {
-                userId: interaction.user.id,
-                guildId,
-                period,
-                view
-            });
+            logger.command('serverstats', interaction.user.id, guildId);
         } catch (error) {
             logger.error('Error in serverstats command', { error });
-
-            const errorEmbed = new EmbedBuilder()
-                .setColor('#FF0000')
-                .setTitle('❌ Lỗi')
-                .setDescription('Không thể tải thống kê server. Vui lòng thử lại sau.')
-                .setTimestamp();
-
-            if (interaction.deferred) {
-                await interaction.editReply({ embeds: [errorEmbed] });
-            } else {
-                await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
-            }
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };
@@ -106,27 +92,29 @@ async function showOverview(interaction, client, guildId, period, periodName) {
 
     if (!stats) {
         const embed = new EmbedBuilder()
-            .setColor('#FFA500')
+            .setColor(COLORS.WARNING)
             .setTitle('📊 Chưa Có Thống Kê')
             .setDescription('Chưa có ai nghe nhạc trong server này. Hãy bắt đầu phát nhạc!')
-            .setFooter({ text: 'Thống kê được cập nhật theo thời gian thực' })
+            .setFooter({ text: client.config.bot.footer })
             .setTimestamp();
 
-        return await interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
     }
 
     // Get additional data
-    const mostPlayed = History.getMostPlayed(guildId, 5, period);
-    const mostActive = History.getMostActiveUsers(guildId, 5, period);
-    const peakHours = History.getServerPeakHours(guildId);
+    const [mostPlayed, mostActive, peakHours] = await Promise.all([
+        History.getMostPlayed(guildId, 5, period),
+        History.getMostActiveUsers(guildId, 5, period),
+        History.getServerPeakHours(guildId)
+    ]);
 
     // Build embed
     const embed = new EmbedBuilder()
-        .setColor('#00D9FF')
+        .setColor(COLORS.INFO)
         .setTitle(`📊 Thống Kê ${interaction.guild.name}`)
         .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
         .setDescription(`**${periodName}**`)
-        .setFooter({ text: 'Thống kê được cập nhật theo thời gian thực' })
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     // Overall statistics
@@ -207,17 +195,19 @@ async function showTopTracks(interaction, client, guildId, period, periodName) {
 
     if (!tracks || tracks.length === 0) {
         const embed = new EmbedBuilder()
-            .setColor('#FFA500')
+            .setColor(COLORS.WARNING)
             .setTitle('🎵 Top Bài Hát')
             .setDescription(`Chưa có dữ liệu cho **${periodName}**`)
+            .setFooter({ text: client.config.bot.footer })
             .setTimestamp();
-        return await interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
     }
 
     const embed = new EmbedBuilder()
-        .setColor('#00D9FF')
+        .setColor(COLORS.INFO)
         .setTitle(`🎵 Top 10 Bài Hát - ${periodName}`)
         .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     const tracksList = tracks
@@ -243,17 +233,19 @@ async function showTopListeners(interaction, client, guildId, period, periodName
 
     if (!listeners || listeners.length === 0) {
         const embed = new EmbedBuilder()
-            .setColor('#FFA500')
+            .setColor(COLORS.WARNING)
             .setTitle('👥 Top Người Nghe')
             .setDescription(`Chưa có dữ liệu cho **${periodName}**`)
+            .setFooter({ text: client.config.bot.footer })
             .setTimestamp();
-        return await interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
     }
 
     const embed = new EmbedBuilder()
-        .setColor('#00D9FF')
+        .setColor(COLORS.INFO)
         .setTitle(`👥 Top 10 Người Nghe - ${periodName}`)
         .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     const listenersList = await Promise.all(
@@ -282,22 +274,23 @@ async function showTopListeners(interaction, client, guildId, period, periodName
  * Show peak usage hours with chart
  */
 async function showPeakHours(interaction, client, guildId, period, periodName) {
-    const hourlyData = EnhancedStatisticsService.getPeakUsageHours(guildId, period === 'all' ? 'month' : period);
+    const hourlyData = EnhancedStatisticsService.getPeakUsageHours(guildId, period);
 
     if (!hourlyData || hourlyData.every(h => h.play_count === 0)) {
         const embed = new EmbedBuilder()
-            .setColor('#FFA500')
+            .setColor(COLORS.WARNING)
             .setTitle('⏰ Giờ Cao Điểm')
             .setDescription(`Chưa có dữ liệu cho **${periodName}**`)
+            .setFooter({ text: client.config.bot.footer })
             .setTimestamp();
-        return await interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
     }
 
     const chart = EnhancedStatisticsService.generateActivityChart(hourlyData);
     const totalPlays = hourlyData.reduce((sum, h) => sum + h.play_count, 0);
 
     const embed = new EmbedBuilder()
-        .setColor('#00D9FF')
+        .setColor(COLORS.INFO)
         .setTitle(`⏰ Hoạt Động Theo Giờ - ${periodName}`)
         .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
         .setDescription(`\`\`\`\n${chart}\n\`\`\``)
@@ -306,7 +299,7 @@ async function showPeakHours(interaction, client, guildId, period, periodName) {
             value: `Tổng lượt phát: **${totalPlays}**\nDữ liệu từ: **${periodName}**`,
             inline: false
         })
-        .setFooter({ text: 'Biểu đồ hiển thị hoạt động theo múi giờ server' })
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -320,17 +313,19 @@ async function showTopArtists(interaction, client, guildId, period, periodName) 
 
     if (!artists || artists.length === 0) {
         const embed = new EmbedBuilder()
-            .setColor('#FFA500')
+            .setColor(COLORS.WARNING)
             .setTitle('🎤 Top Nghệ Sĩ')
             .setDescription(`Chưa có dữ liệu cho **${periodName}**`)
+            .setFooter({ text: client.config.bot.footer })
             .setTimestamp();
-        return await interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
     }
 
     const embed = new EmbedBuilder()
-        .setColor('#00D9FF')
+        .setColor(COLORS.INFO)
         .setTitle(`🎤 Top 10 Nghệ Sĩ - ${periodName}`)
         .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     const artistsList = artists

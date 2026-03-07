@@ -7,11 +7,16 @@ import {
     PermissionFlagsBits
 } from 'discord.js';
 import { createSuccessEmbed, createErrorEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { requireCurrentTrack } from '../../middleware/queueCheck.js';
+import { UserNotInVoiceError, DifferentVoiceChannelError } from '../../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import GuildSettings from '../../database/models/GuildSettings.js';
+import { COLORS } from '../../config/design-system.js';
 import logger from '../../utils/logger.js';
-
-// Store for active vote skip sessions
-const voteSkipSessions = new Map();
+import { detectInstantSkip, sendInstantSkipPrompt } from '../../events/autoPlaySuggestionHandler.js';
+import { getAutoPlayPreferenceService } from '../../services/AutoPlayPreferenceService.js';
+import { getVoteSkipManager } from '../../services/VoteSkipManager.js';
 
 export default {
     data: new SlashCommandBuilder()
@@ -23,23 +28,26 @@ export default {
 
     async execute(interaction, client) {
         try {
-            const queue = client.musicManager.getQueue(interaction.guildId);
-
-            // Check if there's a queue
-            if (!queue || !queue.current) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Không có nhạc nào đang phát!', client.config)],
-                    ephemeral: true
-                });
+            await interaction.deferReply();
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
             }
+
+            // Use middleware
+            const { queue, current } = requireCurrentTrack(client.musicManager, interaction.guildId);
 
             // Check if user is in the same voice channel
             const member = interaction.member;
-            if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Bạn phải ở trong cùng voice channel với bot!', client.config)],
-                    ephemeral: true
-                });
+            if (!member.voice.channel) {
+                throw new UserNotInVoiceError();
+            }
+            if (member.voice.channel.id !== queue.voiceChannelId) {
+                throw new DifferentVoiceChannelError();
             }
 
             const forceSkip = interaction.options.getBoolean('force') || false;
@@ -60,48 +68,66 @@ export default {
             if (forceSkip) {
                 const canForce = await canBypassVoteSkip(interaction, queue, guildSettings);
                 if (!canForce) {
-                    return interaction.reply({
+                    return interaction.editReply({
                         embeds: [
                             createErrorEmbed(
                                 'Bạn không có quyền force skip! Chỉ Admin, DJ, hoặc người yêu cầu bài hát mới có thể force skip.',
                                 client.config
                             )
-                        ],
-                        ephemeral: true
+                        ]
                     });
                 }
             }
 
             // Clear any existing vote skip session
-            voteSkipSessions.delete(interaction.guildId);
+            getVoteSkipManager().clearSession(interaction.guildId);
 
-            const skippedTrack = queue.current?.info?.title || 'Unknown Track';
+            const skippedTrack = current?.info?.title || 'Unknown Track';
 
             // Skip
             await queue.skip();
 
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [createSuccessEmbed('Đã bỏ qua', `Đã bỏ qua **${skippedTrack}**`, client.config)]
             });
 
             logger.command('skip', interaction.user.id, interaction.guildId);
+
+            // Confidence feedback loop: detect instant skips for auto-play preferences
+            try {
+                const trackUrl = current?.info?.uri || '';
+                const userId = interaction.user.id;
+                const isInstantSkip = trackUrl ? detectInstantSkip(userId, trackUrl) : null;
+                if (isInstantSkip) {
+                    const result = await getAutoPlayPreferenceService().recordInstantSkip(userId, trackUrl);
+                    if (result.autoDisabled) {
+                        sendInstantSkipPrompt(
+                            interaction.channel,
+                            userId,
+                            { url: trackUrl, title: current?.info?.title || 'Unknown' },
+                            client.config
+                        ).catch(() => {});
+                    }
+                }
+            } catch (skipDetectError) {
+                logger.debug('skip', `Instant skip detection error: ${skipDetectError.message}`);
+            }
         } catch (error) {
-            logger.error('Skip command error', error);
-            await interaction.reply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi bỏ qua bài hát!', client.config)],
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     },
 
     // Export for button handler
-    voteSkipSessions,
     canBypassVoteSkip,
     handleVoteSkipButton
 };
 
+// Named exports for static imports
+export { handleVoteSkipButton, canBypassVoteSkip };
+
 /**
  * Check if user can bypass vote skip
+ * FIX-CMD-C01: Added null safety on queue.current
  */
 async function canBypassVoteSkip(interaction, queue, guildSettings) {
     const member = interaction.member;
@@ -119,7 +145,8 @@ async function canBypassVoteSkip(interaction, queue, guildSettings) {
     }
 
     // Song requester can skip their own request
-    if (queue.current.requester === interaction.user.id) {
+    // FIX-CMD-C01: Guard against null queue.current (track can end between check and execution)
+    if (queue.current?.requester === interaction.user.id) {
         return true;
     }
 
@@ -146,46 +173,45 @@ async function handleVoteSkip(interaction, client, queue, guildSettings) {
     const requiredPercentage = guildSettings.voteSkipPercentage || 50;
     const requiredVotes = Math.ceil(membersInVoice * (requiredPercentage / 100));
 
+    const manager = getVoteSkipManager();
+
     // Check for existing session
-    let session = voteSkipSessions.get(interaction.guildId);
+    let session = manager.getSession(interaction.guildId);
 
     if (session) {
         // Check if session is still valid (same track)
-        if (session.trackUri !== queue.current.info.uri) {
+        // FIX-CMD-C01: Use optional chaining on queue.current
+        if (session.trackUri !== queue.current?.info?.uri) {
             // New track, reset session
             session = null;
-            voteSkipSessions.delete(interaction.guildId);
+            manager.clearSession(interaction.guildId);
         }
     }
 
     if (!session) {
         // Create new vote skip session
-        session = {
+        session = manager.createSession(interaction.guildId, {
             trackUri: queue.current?.info?.uri || '',
             trackTitle: queue.current?.info?.title || 'Unknown Track',
-            votes: new Set([interaction.user.id]),
-            required: requiredVotes,
-            createdAt: Date.now(),
-            messageId: null
-        };
-        voteSkipSessions.set(interaction.guildId, session);
+            initiatorId: interaction.user.id,
+            requiredVotes
+        });
     } else {
         // Add vote
         if (session.votes.has(interaction.user.id)) {
-            return interaction.reply({
-                embeds: [createErrorEmbed('Bạn đã vote skip rồi!', client.config)],
-                ephemeral: true
+            return interaction.editReply({
+                embeds: [createErrorEmbed('Bạn đã vote skip rồi!', client.config)]
             });
         }
         session.votes.add(interaction.user.id);
     }
 
     // Update required votes (in case members joined/left)
-    session.required = requiredVotes;
+    session.requiredVotes = requiredVotes;
 
     // Check if enough votes
-    if (session.votes.size >= session.required) {
-        voteSkipSessions.delete(interaction.guildId);
+    if (session.votes.size >= session.requiredVotes) {
+        manager.clearSession(interaction.guildId);
 
         const skippedTrack = queue.current?.info?.title || 'Unknown Track';
         await queue.skip();
@@ -193,22 +219,23 @@ async function handleVoteSkip(interaction, client, queue, guildSettings) {
         const successEmbed = new EmbedBuilder()
             .setColor(client.config.bot.color)
             .setTitle('⏭️ Vote Skip Thành Công!')
-            .setDescription(`Đã bỏ qua **${skippedTrack}**\n└ ${session.votes.size}/${session.required} phiếu bầu`)
+            .setDescription(`Đã bỏ qua **${skippedTrack}**\n└ ${session.votes.size}/${session.requiredVotes} phiếu bầu`)
+            .setFooter({ text: client.config.bot.footer })
             .setTimestamp();
 
-        return interaction.reply({ embeds: [successEmbed] });
+        return interaction.editReply({ embeds: [successEmbed] });
     }
 
     // Create vote skip embed with button
     const embed = new EmbedBuilder()
-        .setColor('#FFA500')
+        .setColor(COLORS.WARNING)
         .setTitle('🗳️ Vote Skip')
         .setDescription(
             `**${session.trackTitle}**\n\n` +
-            `📊 **Tiến độ:** ${session.votes.size}/${session.required} phiếu\n` +
-            `👥 **Thành viên trong voice:** ${membersInVoice}\n` +
-            `📈 **Yêu cầu:** ${requiredPercentage}% phiếu bầu\n\n` +
-            '*Nhấn nút bên dưới để vote skip!*'
+                `📊 **Tiến độ:** ${session.votes.size}/${session.requiredVotes} phiếu\n` +
+                `👥 **Thành viên trong voice:** ${membersInVoice}\n` +
+                `📈 **Yêu cầu:** ${requiredPercentage}% phiếu bầu\n\n` +
+                '*Nhấn nút bên dưới để vote skip!*'
         )
         .setFooter({ text: 'Vote sẽ hết hạn khi bài hát kết thúc' })
         .setTimestamp();
@@ -216,12 +243,12 @@ async function handleVoteSkip(interaction, client, queue, guildSettings) {
     const row = new ActionRowBuilder().addComponents(
         new ButtonBuilder()
             .setCustomId('vote_skip')
-            .setLabel(`Vote Skip (${session.votes.size}/${session.required})`)
+            .setLabel(`Vote Skip (${session.votes.size}/${session.requiredVotes})`)
             .setEmoji('⏭️')
             .setStyle(ButtonStyle.Primary)
     );
 
-    const reply = await interaction.reply({ embeds: [embed], components: [row], fetchReply: true });
+    const reply = await interaction.editReply({ embeds: [embed], components: [row] });
     session.messageId = reply.id;
 }
 
@@ -229,86 +256,103 @@ async function handleVoteSkip(interaction, client, queue, guildSettings) {
  * Handle vote skip button interaction
  */
 async function handleVoteSkipButton(interaction, client) {
-    const queue = client.musicManager.getQueue(interaction.guildId);
+    try {
+        const queue = client.musicManager.getQueue(interaction.guildId);
 
-    if (!queue || !queue.current) {
-        return interaction.reply({
-            embeds: [createErrorEmbed('Không có nhạc nào đang phát!', client.config)],
-            ephemeral: true
-        });
-    }
+        if (!queue || !queue.current) {
+            return interaction.reply({
+                embeds: [createErrorEmbed('Không có nhạc nào đang phát!', client.config)],
+                ephemeral: true
+            });
+        }
 
-    const member = interaction.member;
-    if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
-        return interaction.reply({
-            embeds: [createErrorEmbed('Bạn phải ở trong cùng voice channel với bot!', client.config)],
-            ephemeral: true
-        });
-    }
+        const member = interaction.member;
+        if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
+            return interaction.reply({
+                embeds: [createErrorEmbed('Bạn phải ở trong cùng voice channel với bot!', client.config)],
+                ephemeral: true
+            });
+        }
 
-    const session = voteSkipSessions.get(interaction.guildId);
+        const manager = getVoteSkipManager();
+        const session = manager.getSession(interaction.guildId);
 
-    if (!session || session.trackUri !== queue.current?.info?.uri) {
-        return interaction.reply({
-            embeds: [createErrorEmbed('Phiên vote skip này đã hết hạn!', client.config)],
-            ephemeral: true
-        });
-    }
+        if (!session || session.trackUri !== queue.current?.info?.uri) {
+            return interaction.reply({
+                embeds: [createErrorEmbed('Phiên vote skip này đã hết hạn!', client.config)],
+                ephemeral: true
+            });
+        }
 
-    if (session.votes.has(interaction.user.id)) {
-        return interaction.reply({
-            embeds: [createErrorEmbed('Bạn đã vote skip rồi!', client.config)],
-            ephemeral: true
-        });
-    }
+        if (session.votes.has(interaction.user.id)) {
+            return interaction.reply({
+                embeds: [createErrorEmbed('Bạn đã vote skip rồi!', client.config)],
+                ephemeral: true
+            });
+        }
 
-    // Add vote
-    session.votes.add(interaction.user.id);
+        // Add vote
+        session.votes.add(interaction.user.id);
 
-    // Recalculate required votes
-    const voiceChannel = interaction.guild.channels.cache.get(queue.voiceChannelId);
-    const membersInVoice = voiceChannel.members.filter(m => !m.user.bot).size;
-    const guildSettings = GuildSettings.get(interaction.guildId);
-    const requiredPercentage = guildSettings.voteSkipPercentage || 50;
-    session.required = Math.ceil(membersInVoice * (requiredPercentage / 100));
+        // Recalculate required votes
+        const voiceChannel = interaction.guild.channels.cache.get(queue.voiceChannelId);
+        const membersInVoice = voiceChannel.members.filter(m => !m.user.bot).size;
+        const guildSettings = GuildSettings.get(interaction.guildId);
+        const requiredPercentage = guildSettings.voteSkipPercentage || 50;
+        session.requiredVotes = Math.ceil(membersInVoice * (requiredPercentage / 100));
 
-    // Check if enough votes
-    if (session.votes.size >= session.required) {
-        voteSkipSessions.delete(interaction.guildId);
+        // Check if enough votes
+        if (session.votes.size >= session.requiredVotes) {
+            manager.clearSession(interaction.guildId);
 
-        const skippedTrack = queue.current?.info?.title || 'Unknown Track';
-        await queue.skip();
+            const skippedTrack = queue.current?.info?.title || 'Unknown Track';
+            await queue.skip();
 
-        const successEmbed = new EmbedBuilder()
-            .setColor(client.config.bot.color)
-            .setTitle('⏭️ Vote Skip Thành Công!')
-            .setDescription(`Đã bỏ qua **${skippedTrack}**\n└ ${session.votes.size}/${session.required} phiếu bầu`)
+            const successEmbed = new EmbedBuilder()
+                .setColor(client.config.bot.color)
+                .setTitle('⏭️ Vote Skip Thành Công!')
+                .setDescription(
+                    `Đã bỏ qua **${skippedTrack}**\n└ ${session.votes.size}/${session.requiredVotes} phiếu bầu`
+                )
+                .setFooter({ text: client.config.bot.footer })
+                .setTimestamp();
+
+            return interaction.update({ embeds: [successEmbed], components: [] });
+        }
+
+        // Update embed with new vote count
+        const embed = new EmbedBuilder()
+            .setColor(COLORS.WARNING)
+            .setTitle('🗳️ Vote Skip')
+            .setDescription(
+                `**${session.trackTitle}**\n\n` +
+                    `📊 **Tiến độ:** ${session.votes.size}/${session.requiredVotes} phiếu\n` +
+                    `👥 **Thành viên trong voice:** ${membersInVoice}\n` +
+                    `📈 **Yêu cầu:** ${requiredPercentage}% phiếu bầu\n\n` +
+                    '*Nhấn nút bên dưới để vote skip!*'
+            )
+            .setFooter({ text: 'Vote sẽ hết hạn khi bài hát kết thúc' })
             .setTimestamp();
 
-        return interaction.update({ embeds: [successEmbed], components: [] });
+        const row = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId('vote_skip')
+                .setLabel(`Vote Skip (${session.votes.size}/${session.requiredVotes})`)
+                .setEmoji('⏭️')
+                .setStyle(ButtonStyle.Primary)
+        );
+
+        await interaction.update({ embeds: [embed], components: [row] });
+    } catch (error) {
+        if (error.code === 10062) return;
+        logger.error('Error in handleVoteSkipButton', { error: error.message, guildId: interaction.guildId });
+        if (!interaction.replied && !interaction.deferred) {
+            await interaction
+                .reply({
+                    embeds: [createErrorEmbed('Đã xảy ra lỗi khi xử lý vote skip!', client.config)],
+                    ephemeral: true
+                })
+                .catch(() => {});
+        }
     }
-
-    // Update embed with new vote count
-    const embed = new EmbedBuilder()
-        .setColor('#FFA500')
-        .setTitle('🗳️ Vote Skip')
-        .setDescription(
-            `**${session.trackTitle}**\n\n` +
-            `📊 **Tiến độ:** ${session.votes.size}/${session.required} phiếu\n` +
-            `👥 **Thành viên trong voice:** ${membersInVoice}\n` +
-            `📈 **Yêu cầu:** ${requiredPercentage}% phiếu bầu\n\n` +
-            '*Nhấn nút bên dưới để vote skip!*'
-        )
-        .setFooter({ text: 'Vote sẽ hết hạn khi bài hát kết thúc' })
-        .setTimestamp();
-
-    const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-            .setCustomId('vote_skip')
-            .setLabel(`Vote Skip (${session.votes.size}/${session.required})`)
-            .setEmoji('⏭️')
-            .setStyle(ButtonStyle.Primary)
-    );
-
-    await interaction.update({ embeds: [embed], components: [row] });
 }

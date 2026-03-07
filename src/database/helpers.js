@@ -38,6 +38,10 @@ export const DatabaseConstants = {
 
     // Maintenance schedules (milliseconds)
     MAINTENANCE_INTERVALS: {
+        // NOTE: The `history_archive` table was created in migration 006 but archiving
+        // logic (DatabaseManager.scheduleHistoryArchiving) was never implemented.
+        // cleanupHistory() deletes old records instead of moving them to the archive.
+        // This interval constant is retained for potential future use. (FIX-LB01)
         HISTORY_ARCHIVE: 24 * 60 * 60 * 1000, // 1 day
         AUDIT_LOG_CLEANUP: 24 * 60 * 60 * 1000, // 1 day
         CACHE_CLEANUP: 60 * 60 * 1000, // 1 hour
@@ -51,6 +55,7 @@ export const DatabaseConstants = {
  * SQL date filter templates
  */
 export const DateFilters = {
+    TODAY: "AND played_at >= datetime('now', 'start of day')",
     HOUR: "AND played_at > datetime('now', '-1 hour')",
     DAY: "AND played_at > datetime('now', '-1 day')",
     WEEK: "AND played_at > datetime('now', '-7 days')",
@@ -59,13 +64,26 @@ export const DateFilters = {
 };
 
 /**
+ * Valid period values for date filtering
+ */
+export const VALID_PERIODS = new Set(['today', 'hour', 'day', 'week', 'month', 'year', 'all']);
+
+/**
  * Get SQL date filter for a given period
  * @param {string} period - Time period ('hour', 'day', 'week', 'month', 'year', 'all')
  * @returns {string} SQL date filter clause
+ * @throws {Error} If period is not a recognized value (FIX-DB-H01)
  */
-export function getDateFilter(period) {
+export function getDateFilter(period, dateColumn = 'played_at') {
     if (!period || period === 'all') return '';
-    return DateFilters[period.toUpperCase()] || '';
+
+    const normalizedPeriod = String(period).toLowerCase();
+    if (!VALID_PERIODS.has(normalizedPeriod)) {
+        throw new Error(`Invalid date filter period: "${period}". Valid values: ${[...VALID_PERIODS].join(', ')}`);
+    }
+
+    const filter = DateFilters[normalizedPeriod.toUpperCase()] || '';
+    return filter ? filter.replace(/played_at/g, dateColumn) : '';
 }
 
 /**
@@ -110,7 +128,11 @@ export function buildPagination(limit, offset = 0) {
  * @throws {Error} If column is not in allowed list
  */
 export function buildOrderBy(column, direction = 'DESC', allowedColumns = []) {
-    if (allowedColumns.length > 0 && !allowedColumns.includes(column)) {
+    if (!Array.isArray(allowedColumns) || allowedColumns.length === 0) {
+        throw new Error('buildOrderBy requires a non-empty allowedColumns array');
+    }
+
+    if (typeof column !== 'string' || !allowedColumns.includes(column)) {
         throw new Error(`Invalid ORDER BY column: ${column}`);
     }
 
@@ -199,7 +221,29 @@ export function executeTransaction(db, queries) {
  * @returns {{sql: string, params: Array}} Query object
  */
 export function buildUpsert(table, data, primaryKeys = ['id']) {
+    validateTableName(table);
+
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('buildUpsert requires a non-array data object');
+    }
+
     const columns = Object.keys(data);
+    if (columns.length === 0) {
+        throw new Error('buildUpsert requires at least one data column');
+    }
+
+    for (const column of columns) {
+        validateColumnName(column);
+    }
+
+    if (!Array.isArray(primaryKeys) || primaryKeys.length === 0) {
+        throw new Error('buildUpsert requires at least one primary key');
+    }
+
+    for (const primaryKey of primaryKeys) {
+        validateColumnName(primaryKey);
+    }
+
     const values = Object.values(data);
     const placeholders = columns.map(() => '?').join(', ');
 
@@ -223,7 +267,17 @@ export function buildUpsert(table, data, primaryKeys = ['id']) {
 export function bulkInsert(db, table, rows) {
     if (!rows || rows.length === 0) return 0;
 
+    validateTableName(table);
+
     const columns = Object.keys(rows[0]);
+    if (columns.length === 0) {
+        throw new Error('bulkInsert requires at least one column');
+    }
+
+    for (const column of columns) {
+        validateColumnName(column);
+    }
+
     const placeholders = columns.map(() => '?').join(', ');
     const sql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`;
 
@@ -304,8 +358,8 @@ export function formatBytes(bytes) {
     if (bytes === 0) return '0 B';
 
     const k = 1024;
-    const sizes = ['B', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
 
     return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
 }
@@ -332,6 +386,25 @@ export function validateTableName(tableName, allowedTables = []) {
 }
 
 /**
+ * Validate column name (prevent SQL injection in dynamic column names)
+ * @param {string} columnName - Column name to validate
+ * @param {string[]} allowedColumns - Optional list of allowed column names
+ * @returns {boolean} True if valid
+ * @throws {Error} If column name is invalid
+ */
+export function validateColumnName(columnName, allowedColumns = []) {
+    if (!/^[a-zA-Z0-9_]+$/.test(columnName)) {
+        throw new Error(`Invalid column name: ${columnName}`);
+    }
+
+    if (Array.isArray(allowedColumns) && allowedColumns.length > 0 && !allowedColumns.includes(columnName)) {
+        throw new Error(`Column not allowed: ${columnName}`);
+    }
+
+    return true;
+}
+
+/**
  * Query builder for complex WHERE clauses
  */
 export class QueryBuilder {
@@ -339,6 +412,9 @@ export class QueryBuilder {
         this.query = baseQuery;
         this.params = [];
         this.conditions = [];
+        this._orderBy = '';
+        this._limitClause = '';
+        this._limitParams = [];
     }
 
     where(column, operator, value) {
@@ -361,26 +437,60 @@ export class QueryBuilder {
         return this;
     }
 
-    orderBy(column, direction = 'DESC') {
-        this.query += ` ORDER BY ${column} ${direction}`;
+    orderBy(column, direction = 'DESC', allowedColumns = []) {
+        this._orderBy = ` ${buildOrderBy(column, direction, allowedColumns)}`;
         return this;
     }
 
     limit(limit, offset = 0) {
-        this.query += ` LIMIT ${limit}`;
-        if (offset > 0) {
-            this.query += ` OFFSET ${offset}`;
+        const safeLimit = Math.max(0, Number.parseInt(limit, 10) || 0);
+        const safeOffset = Math.max(0, Number.parseInt(offset, 10) || 0);
+
+        this._limitClause = ' LIMIT ?';
+        this._limitParams = [safeLimit];
+        if (safeOffset > 0) {
+            this._limitClause += ' OFFSET ?';
+            this._limitParams.push(safeOffset);
         }
         return this;
     }
 
     build() {
-        if (this.conditions.length > 0) {
-            this.query += ' WHERE ' + this.conditions.join(' AND ');
+        let sql = this.query;
+
+        const upperSql = sql.toUpperCase();
+        const orderByIndex = upperSql.indexOf(' ORDER BY ');
+        const limitIndex = upperSql.indexOf(' LIMIT ');
+        let clauseIndex = -1;
+
+        if (orderByIndex !== -1 && limitIndex !== -1) {
+            clauseIndex = Math.min(orderByIndex, limitIndex);
+        } else {
+            clauseIndex = orderByIndex !== -1 ? orderByIndex : limitIndex;
         }
+
+        let queryHead = clauseIndex !== -1 ? sql.slice(0, clauseIndex) : sql;
+        const queryTail = clauseIndex !== -1 ? sql.slice(clauseIndex) : '';
+
+        if (this.conditions.length > 0) {
+            const hasWhere = /\bWHERE\b/i.test(queryHead);
+            queryHead += (hasWhere ? ' AND ' : ' WHERE ') + this.conditions.join(' AND ');
+        }
+
+        // If orderBy() was called, strip any existing ORDER BY from queryTail
+        // to prevent duplicate ORDER BY clauses
+        let finalTail = queryTail;
+        if (this._orderBy) {
+            finalTail = finalTail.replace(/\s+ORDER\s+BY\s+[^)]*?(?=\s+LIMIT\b|\s*$)/i, '');
+        }
+
+        sql = queryHead + finalTail;
+        sql += this._orderBy;
+        sql += this._limitClause;
+
         return {
-            sql: this.query,
-            params: this.params
+            sql,
+            params: [...this.params, ...this._limitParams]
         };
     }
 }

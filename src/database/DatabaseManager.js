@@ -5,17 +5,18 @@
  */
 
 import Database from 'better-sqlite3';
-import { readFileSync, existsSync } from 'fs';
-import { join, dirname } from 'path';
+import { readFileSync, existsSync, mkdirSync } from 'fs';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import logger from '../utils/logger.js';
+import { DatabaseConstants } from './helpers.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 class DatabaseManager {
     constructor(dbPath = './data/miyao.db') {
-        this.dbPath = dbPath;
+        this.dbPath = dbPath === ':memory:' ? ':memory:' : resolve(dbPath);
         this.db = null;
         this.isReady = false;
     }
@@ -26,6 +27,16 @@ class DatabaseManager {
     async initialize() {
         try {
             logger.info('Initializing database...');
+
+            if (this.dbPath !== ':memory:') {
+                const dbDirectory = dirname(this.dbPath);
+                if (!existsSync(dbDirectory)) {
+                    mkdirSync(dbDirectory, { recursive: true });
+                    logger.info('Created database directory', { dbDirectory });
+                }
+            }
+
+            logger.info('Opening SQLite database', { dbPath: this.dbPath });
 
             // Create database connection
             this.db = new Database(this.dbPath, {
@@ -39,7 +50,10 @@ class DatabaseManager {
             this.db.pragma('foreign_keys = ON');
 
             // Run migrations
-            await this.runMigrations();
+            this.runMigrations();
+
+            // Self-heal critical schema drift (e.g. missing table but migration row exists)
+            this.ensureCriticalSchema();
 
             // Initialize audit log table
             const { AuditLog } = await import('./models/AuditLog.js');
@@ -55,10 +69,59 @@ class DatabaseManager {
         }
     }
 
+    ensureCriticalSchema() {
+        const criticalTables = [
+            { name: 'guild_settings', migration: '005_guild_settings_and_favorites.sql' },
+            { name: 'favorites', migration: '005_guild_settings_and_favorites.sql' }
+        ];
+
+        const missingTables = criticalTables.filter(({ name }) => {
+            const row = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
+            return !row;
+        });
+
+        if (missingTables.length === 0) {
+            return;
+        }
+
+        logger.warn('Detected missing critical database tables, attempting schema self-heal', {
+            missingTables: missingTables.map(t => t.name)
+        });
+
+        const migrationsDir = join(__dirname, 'migrations');
+        const repairMigrations = [...new Set(missingTables.map(t => t.migration))];
+
+        for (const migrationFile of repairMigrations) {
+            const migrationPath = join(migrationsDir, migrationFile);
+            if (!existsSync(migrationPath)) {
+                throw new Error(`Critical schema repair migration not found: ${migrationFile}`);
+            }
+
+            const sql = readFileSync(migrationPath, 'utf8');
+            this.db.exec(sql);
+            logger.info('Applied schema repair migration', { migrationFile });
+        }
+
+        const unresolvedTables = missingTables.filter(({ name }) => {
+            const row = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
+            return !row;
+        });
+
+        if (unresolvedTables.length > 0) {
+            throw new Error(
+                `Critical database tables still missing after repair: ${unresolvedTables.map(t => t.name).join(', ')}`
+            );
+        }
+
+        logger.info('Critical schema self-heal completed', {
+            repairedTables: missingTables.map(t => t.name)
+        });
+    }
+
     /**
      * Run pending migrations
      */
-    async runMigrations() {
+    runMigrations() {
         try {
             logger.info('Running database migrations...');
 
@@ -73,7 +136,11 @@ class DatabaseManager {
                 '004_playlists.sql', // Playlist tracks table
                 '005_guild_settings_and_favorites.sql', // Guild settings (DJ, 24/7) and favorites
                 '006_statistics_tables_and_archiving.sql', // Specialized stats tables, history archiving
-                '007_playlist_track_indexes.sql' // Additional playlist track indexes
+                '007_phase_0_optimizations.sql', // Phase 0 performance optimizations
+                '008_playlist_track_indexes.sql', // Additional playlist track indexes
+                '009_autoplay_preferences.sql', // Auto-play preference tracking
+                '010_feedback_storage.sql', // Feedback storage in database
+                '011_bug_report_storage.sql' // FIX-EV-C01: Bug report storage in database
             ];
 
             // Check if migrations table exists
@@ -85,31 +152,55 @@ class DatabaseManager {
             for (const migrationFile of migrations) {
                 const migrationPath = join(migrationsDir, migrationFile);
 
-                if (existsSync(migrationPath)) {
-                    const version = migrationFile.split('_')[0];
-
-                    // Check if migration already applied (only if migrations table exists)
-                    let existing = false;
-                    if (migrationsTableExists) {
-                        try {
-                            const result = this.db.prepare('SELECT 1 FROM migrations WHERE version = ?').get(version);
-                            existing = !!result;
-                        } catch (error) {
-                            // Table might have been created just now, ignore and proceed
-                            logger.debug('Could not check migration status (table might be new)', { version });
-                        }
+                if (!existsSync(migrationPath)) {
+                    const errorMessage = `Migration file not found: ${migrationFile}`;
+                    if (process.env.NODE_ENV === 'production') {
+                        logger.error(errorMessage);
+                        throw new Error(errorMessage);
                     }
+                    logger.warn(errorMessage);
+                    continue;
+                }
 
-                    if (!existing) {
-                        logger.info(`Applying migration: ${migrationFile}`);
-                        const sql = readFileSync(migrationPath, 'utf8');
-                        this.db.exec(sql);
-                        logger.info(`Migration ${migrationFile} completed`);
+                const version = migrationFile.split('_')[0];
+
+                // Check if migration already applied (only if migrations table exists)
+                let existing = false;
+                if (migrationsTableExists) {
+                    try {
+                        const result = this.db.prepare('SELECT 1 FROM migrations WHERE version = ?').get(version);
+                        existing = !!result;
+                    } catch {
+                        // Table might have been created just now, ignore and proceed
+                        logger.debug('Could not check migration status (table might be new)', { version });
+                    }
+                }
+
+                if (existing) {
+                    logger.debug(`Migration ${migrationFile} already applied, skipping`);
+                    continue;
+                }
+
+                logger.info(`Applying migration: ${migrationFile}`);
+                const sql = readFileSync(migrationPath, 'utf8');
+
+                // FIX-DB-H02: Wrap individual migration exec in try/catch.
+                // In production, re-throw so the bot does not run with an old schema.
+                // In development, log and continue to allow partial migration debugging.
+                try {
+                    this.db.exec(sql);
+                    logger.info(`Migration ${migrationFile} completed`);
+                } catch (migrationExecError) {
+                    if (process.env.NODE_ENV === 'production') {
+                        logger.error(`Migration ${migrationFile} failed in production — aborting`, {
+                            error: migrationExecError.message
+                        });
+                        throw migrationExecError;
                     } else {
-                        logger.debug(`Migration ${migrationFile} already applied, skipping`);
+                        logger.warn(`Migration ${migrationFile} failed (non-production, continuing)`, {
+                            error: migrationExecError.message
+                        });
                     }
-                } else {
-                    logger.warn(`Migration file not found: ${migrationFile}`);
                 }
             }
 
@@ -131,6 +222,27 @@ class DatabaseManager {
     }
 
     /**
+     * Log a deprecation warning when queries appear to use non-parameterized input.
+     * FIX-DB-H01: Encourage parameterized queries to prevent SQL injection.
+     * @private
+     */
+    _warnNonParameterized(sql, params, methodName) {
+        if (
+            params.length === 0 &&
+            /\bWHERE\b|\bVALUES\b|\bSET\b/i.test(sql) &&
+            !/^\s*(PRAGMA|CREATE|DROP|ALTER|ANALYZE|VACUUM|BEGIN|COMMIT|ROLLBACK|DELETE\s+FROM\s+\w+\s+WHERE\s+\w+\s*<\s*datetime)/i.test(
+                sql
+            )
+        ) {
+            logger.warn(
+                `[DEPRECATION] ${methodName}() called without parameters on a query with WHERE/VALUES/SET clauses. ` +
+                    'Use parameterized queries to prevent SQL injection. This will be enforced in a future version.',
+                { sqlPreview: sql.substring(0, 200) }
+            );
+        }
+    }
+
+    /**
      * Get raw database connection
      * @returns {Database} better-sqlite3 database instance
      */
@@ -147,6 +259,7 @@ class DatabaseManager {
      */
     query(sql, params = []) {
         this._checkReady();
+        this._warnNonParameterized(sql, params, 'query');
         try {
             const stmt = this.db.prepare(sql);
             return stmt.all(...params);
@@ -164,6 +277,7 @@ class DatabaseManager {
      */
     queryOne(sql, params = []) {
         this._checkReady();
+        this._warnNonParameterized(sql, params, 'queryOne');
         try {
             const stmt = this.db.prepare(sql);
             const result = stmt.get(...params);
@@ -182,6 +296,7 @@ class DatabaseManager {
      */
     execute(sql, params = []) {
         this._checkReady();
+        this._warnNonParameterized(sql, params, 'execute');
         try {
             const stmt = this.db.prepare(sql);
             return stmt.run(...params);
@@ -212,10 +327,57 @@ class DatabaseManager {
     }
 
     /**
+     * Perform WAL checkpoint (passive mode - doesn't block writers)
+     * Use this for periodic checkpoints during runtime
+     * @returns {Object} Checkpoint result { busy, log, checkpointed }
+     */
+    checkpoint() {
+        this._checkReady();
+        try {
+            const result = this.db.pragma('wal_checkpoint(PASSIVE)');
+            const info = result[0] || { busy: 0, log: 0, checkpointed: 0 };
+            logger.debug('WAL checkpoint (PASSIVE) completed', info);
+            return info;
+        } catch (error) {
+            logger.error('WAL checkpoint failed', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Force WAL checkpoint (TRUNCATE mode - waits for all readers, then truncates WAL)
+     * Use this before shutdown to ensure all data is written to main database
+     * @returns {Object} Checkpoint result { busy, log, checkpointed }
+     */
+    forceCheckpoint() {
+        this._checkReady();
+        try {
+            const result = this.db.pragma('wal_checkpoint(TRUNCATE)');
+            const info = result[0] || { busy: 0, log: 0, checkpointed: 0 };
+            logger.info('WAL checkpoint (TRUNCATE) completed', info);
+            return info;
+        } catch (error) {
+            logger.error('Forced WAL checkpoint failed', error);
+            throw error;
+        }
+    }
+
+    /**
      * Close database connection
+     * Performs WAL checkpoint before closing to ensure data integrity
      */
     close() {
         if (this.db) {
+            try {
+                // Force WAL checkpoint to merge all data into main database
+                // This prevents data loss when bot is restarted
+                this.db.pragma('wal_checkpoint(TRUNCATE)');
+                logger.info('Pre-close WAL checkpoint completed');
+            } catch (error) {
+                logger.error('Pre-close WAL checkpoint failed', { error: error.message });
+                // Continue with close even if checkpoint fails
+            }
+
             this.db.close();
             this.isReady = false;
             logger.info('Database connection closed');
@@ -226,7 +388,7 @@ class DatabaseManager {
      * Backup database
      * @param {string} backupPath - Path to backup file
      */
-    backup(backupPath) {
+    async backup(backupPath) {
         try {
             // Check if database is open
             if (!this.db || !this.db.open) {
@@ -235,7 +397,7 @@ class DatabaseManager {
 
             // Use better-sqlite3 backup method with string path
             // The backup() method expects a filename string, not a Database object
-            this.db.backup(backupPath);
+            await this.db.backup(backupPath);
 
             logger.info(`Database backed up to ${backupPath}`);
         } catch (error) {
@@ -250,6 +412,7 @@ class DatabaseManager {
      */
     getStats() {
         try {
+            // Get table names and index counts in a single query
             const tables = this.query(`
                 SELECT name, 
                        (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name=m.name) as index_count
@@ -257,13 +420,26 @@ class DatabaseManager {
                 WHERE type='table' AND name NOT LIKE 'sqlite_%'
             `);
 
+            // Build a single UNION ALL query to count all tables at once
+            // instead of N individual COUNT(*) queries (N+1 pattern)
             const stats = {};
-            for (const table of tables) {
-                const count = this.queryOne(`SELECT COUNT(*) as count FROM ${table.name}`);
-                stats[table.name] = {
-                    rows: count.count,
-                    indexes: table.index_count
-                };
+            if (tables.length > 0) {
+                const unionParts = tables.map(t => {
+                    const safeName = t.name.replace(/"/g, '""');
+                    return `SELECT '${t.name.replace(/'/g, "''")}' as tbl, COUNT(*) as cnt FROM "${safeName}"`;
+                });
+                const unionQuery = unionParts.join(' UNION ALL ');
+                const counts = this.query(unionQuery);
+
+                // Build index count lookup
+                const indexMap = Object.fromEntries(tables.map(t => [t.name, t.index_count]));
+
+                for (const row of counts) {
+                    stats[row.tbl] = {
+                        rows: row.cnt,
+                        indexes: indexMap[row.tbl] || 0
+                    };
+                }
             }
 
             return {
@@ -302,12 +478,19 @@ class DatabaseManager {
             const integrityResult = this.db.pragma('integrity_check');
             const foreignKeyResult = this.db.pragma('foreign_key_check');
 
-            const isHealthy = integrityResult[0]?.integrity_check === 'ok' && foreignKeyResult.length === 0;
+            // Parse integrity_check result — the column name varies between SQLite versions
+            const firstRow = integrityResult[0] || {};
+            const integrityValue = firstRow.integrity_check ?? firstRow[Object.keys(firstRow)[0]];
+            const integrityOk = String(integrityValue).toLowerCase() === 'ok';
+            const isHealthy = integrityOk && foreignKeyResult.length === 0;
 
             const result = {
                 healthy: isHealthy,
+                integrityOk,
+                foreignKeyOk: foreignKeyResult.length === 0,
                 integrityCheck: integrityResult,
-                foreignKeyIssues: foreignKeyResult
+                foreignKeyIssues: foreignKeyResult,
+                issues: integrityOk ? [] : integrityResult.map(r => Object.values(r)[0]).filter(v => v !== 'ok')
             };
 
             if (isHealthy) {
@@ -355,10 +538,17 @@ class DatabaseManager {
 
     /**
      * Cleanup old history entries (older than 30 days)
+     *
+     * NOTE (FIX-LB01): Migration 006 created a `history_archive` table intended for
+     * moving old records before deletion, but the archiving step was never implemented.
+     * This method simply deletes rows older than 30 days. The `history_archive` table
+     * remains as unused dead schema.
      */
     cleanupHistory() {
         try {
-            const result = this.execute("DELETE FROM history WHERE played_at < datetime('now', '-30 days')");
+            const result = this.execute("DELETE FROM history WHERE played_at < datetime('now', ?)", [
+                `-${DatabaseConstants.HISTORY_HOT_DATA_DAYS} days`
+            ]);
             if (result.changes > 0) {
                 logger.info(`Cleaned up ${result.changes} old history entries`);
             }
@@ -373,11 +563,30 @@ class DatabaseManager {
 // Export singleton instance
 let instance = null;
 
-export function getDatabaseManager(dbPath) {
+export function getDatabaseManager(dbPath = process.env.DATABASE_PATH || './data/miyao.db') {
+    const normalizedPath = dbPath === ':memory:' ? ':memory:' : resolve(dbPath);
     if (!instance) {
-        instance = new DatabaseManager(dbPath);
+        instance = new DatabaseManager(normalizedPath);
+    } else if (dbPath && instance.dbPath !== normalizedPath) {
+        if (process.env.NODE_ENV === 'test') {
+            logger.debug('Ignoring DatabaseManager path mismatch in test environment', {
+                existingPath: instance.dbPath,
+                requestedPath: normalizedPath
+            });
+            return instance;
+        }
+        throw new Error(
+            `DatabaseManager path mismatch: existing instance uses "${instance.dbPath}" but requested "${normalizedPath}"`
+        );
     }
     return instance;
+}
+
+export function resetDatabaseManager() {
+    if (instance && instance.isReady) {
+        instance.close();
+    }
+    instance = null;
 }
 
 export default DatabaseManager;

@@ -1,5 +1,9 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { createErrorEmbed, createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { requireQueueTracks, validateQueuePosition } from '../../middleware/queueCheck.js';
+import { UserNotInVoiceError, DifferentVoiceChannelError, ValidationError } from '../../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import logger from '../../utils/logger.js';
 
 export default {
@@ -7,61 +11,64 @@ export default {
         .setName('move')
         .setDescription('Di chuyển vị trí một bài trong hàng đợi')
         .addIntegerOption(option =>
-            option.setName('from').setDescription('Vị trí hiện tại (bắt đầu từ 1)').setMinValue(1).setRequired(true)
+            option
+                .setName('from')
+                .setDescription('Vị trí bài cần di chuyển (xem /queue)')
+                .setMinValue(1)
+                .setRequired(true)
         )
         .addIntegerOption(option =>
-            option.setName('to').setDescription('Vị trí mới (bắt đầu từ 1)').setMinValue(1).setRequired(true)
+            option.setName('to').setDescription('Vị trí đích muốn di chuyển đến').setMinValue(1).setRequired(true)
         ),
 
     async execute(interaction, client) {
         try {
+            await interaction.deferReply();
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
+            }
+
+            // Use middleware
+            const { queue } = requireQueueTracks(client.musicManager, interaction.guildId);
+
+            // Check if user is in the same voice channel
             const member = interaction.member;
-            const voiceChannel = member.voice.channel;
-            if (!voiceChannel) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Bạn phải ở trong voice channel để dùng lệnh này!', client.config)],
-                    ephemeral: true
-                });
+            if (!member.voice.channel) {
+                throw new UserNotInVoiceError();
             }
-            const queue = client.musicManager.getQueue(interaction.guildId);
-            if (queue && queue.voiceChannelId !== voiceChannel.id) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Bạn phải ở cùng voice channel với bot!', client.config)],
-                    ephemeral: true
-                });
+            if (member.voice.channel.id !== queue.voiceChannelId) {
+                throw new DifferentVoiceChannelError();
             }
+
             const from = interaction.options.getInteger('from');
             const to = interaction.options.getInteger('to');
 
-            if (!queue || queue.tracks.length === 0) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Không có hàng đợi hoặc hàng đợi trống!', client.config)],
-                    ephemeral: true
-                });
+            // FIX-LB06: Validate from !== to position
+            if (from === to) {
+                throw new ValidationError('Vị trí nguồn và đích giống nhau! Vui lòng chọn 2 vị trí khác nhau.');
             }
 
-            if (from < 1 || from > queue.tracks.length || to < 1 || to > queue.tracks.length) {
-                return interaction.reply({
-                    embeds: [
-                        createErrorEmbed(`Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.`, client.config)
-                    ],
-                    ephemeral: true
-                });
-            }
+            // Validate positions
+            const fromIndex = validateQueuePosition(queue, from, 'move track');
+            const toIndex = validateQueuePosition(queue, to, 'move destination');
 
             // Get track info before moving
-            const trackToMove = queue.tracks[from - 1];
+            const trackToMove = queue.tracks[fromIndex];
 
-            const ok = queue.move(from - 1, to - 1);
+            // Move track
+            const ok = queue.move(fromIndex, toIndex);
+
             if (!ok) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Không thể di chuyển bài, vui lòng thử lại!', client.config)],
-                    ephemeral: true
-                });
+                throw new Error('Không thể di chuyển bài, vui lòng thử lại!');
             }
 
             const trackTitle = trackToMove?.info?.title || 'Unknown Track';
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [
                     createSuccessEmbed(
                         'Đã di chuyển',
@@ -73,11 +80,7 @@ export default {
 
             logger.command('move', interaction.user.id, interaction.guildId);
         } catch (error) {
-            logger.error('Move command error', error);
-            await interaction.reply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi di chuyển bài!', client.config)],
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

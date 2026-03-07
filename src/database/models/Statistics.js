@@ -7,13 +7,40 @@
 
 import { getDatabaseManager } from '../DatabaseManager.js';
 import logger from '../../utils/logger.js';
-import { getDateFilter } from '../helpers.js';
+import { getDateFilter, escapeLikePattern } from '../helpers.js';
+
+function validateUpdateFields(modelName, updates, allowedFields) {
+    if (!updates || typeof updates !== 'object') {
+        throw new Error(`${modelName}.update requires a valid updates object`);
+    }
+
+    const keys = Object.keys(updates);
+    if (keys.length === 0) {
+        throw new Error(`${modelName}.update requires at least one field`);
+    }
+
+    const invalid = keys.filter(key => !allowedFields.has(key));
+    if (invalid.length > 0) {
+        throw new Error(`Invalid ${modelName}.update fields: ${invalid.join(', ')}`);
+    }
+
+    return keys;
+}
 
 /**
  * Guild Statistics Model
  * Server-wide metrics and activity tracking
  */
 export class GuildStatistics {
+    static ALLOWED_UPDATE_FIELDS = new Set([
+        'total_tracks_played',
+        'total_listening_time',
+        'unique_users',
+        'unique_tracks',
+        'peak_concurrent_listeners',
+        'last_activity_at'
+    ]);
+
     /**
      * Get statistics for a guild
      * @param {string} guildId - Discord guild ID
@@ -40,25 +67,18 @@ export class GuildStatistics {
         try {
             const db = getDatabaseManager();
 
-            // Check if exists
-            const existing = this.get(guildId);
+            const keys = validateUpdateFields('GuildStatistics', updates, this.ALLOWED_UPDATE_FIELDS);
+            const values = Object.values(updates);
 
-            if (existing) {
-                // Update existing
-                const fields = Object.keys(updates)
-                    .map(k => `${k} = ?`)
-                    .join(', ');
-                const values = [...Object.values(updates), guildId];
+            const insertFields = ['guild_id', ...keys];
+            const insertPlaceholders = insertFields.map(() => '?').join(', ');
+            const updateClause = keys.map(k => `${k} = excluded.${k}`).join(', ');
 
-                db.execute(`UPDATE guild_statistics SET ${fields} WHERE guild_id = ?`, values);
-            } else {
-                // Insert new
-                const fields = ['guild_id', ...Object.keys(updates)];
-                const placeholders = fields.map(() => '?').join(', ');
-                const values = [guildId, ...Object.values(updates)];
-
-                db.execute(`INSERT INTO guild_statistics (${fields.join(', ')}) VALUES (${placeholders})`, values);
-            }
+            db.execute(
+                `INSERT INTO guild_statistics (${insertFields.join(', ')}) VALUES (${insertPlaceholders}) ` +
+                    `ON CONFLICT(guild_id) DO UPDATE SET ${updateClause}`,
+                [guildId, ...values]
+            );
 
             return true;
         } catch (error) {
@@ -67,15 +87,30 @@ export class GuildStatistics {
         }
     }
 
+    /** Allowed column names for increment operations */
+    static ALLOWED_INCREMENT_FIELDS = new Set([
+        'total_tracks_played',
+        'total_listening_time',
+        'unique_users',
+        'unique_tracks',
+        'peak_concurrent_listeners'
+    ]);
+
     /**
      * Increment a counter field
      * @param {string} guildId - Discord guild ID
-     * @param {string} field - Field name to increment
+     * @param {string} field - Field name to increment (must be in ALLOWED_INCREMENT_FIELDS)
      * @param {number} amount - Amount to increment (default: 1)
      * @returns {boolean} Success
      */
     static increment(guildId, field, amount = 1) {
         try {
+            // Validate field against allowlist to prevent SQL injection
+            if (!this.ALLOWED_INCREMENT_FIELDS.has(field)) {
+                logger.error('Invalid field name for increment', { guildId, field });
+                return false;
+            }
+
             const db = getDatabaseManager();
 
             // Upsert with increment
@@ -160,6 +195,8 @@ export class GuildStatistics {
  * Per-user, per-guild metrics
  */
 export class UserStatistics {
+    static ALLOWED_UPDATE_FIELDS = new Set(['tracks_played', 'listening_time', 'first_played_at', 'last_played_at']);
+
     /**
      * Get statistics for a user in a guild
      * @param {string} userId - Discord user ID
@@ -196,7 +233,8 @@ export class UserStatistics {
     }
 
     /**
-     * Update user statistics
+     * Update user statistics (atomic upsert)
+     * FIX-DB-C02: Use INSERT ... ON CONFLICT DO UPDATE to avoid TOCTOU race condition
      * @param {string} userId - Discord user ID
      * @param {string} guildId - Discord guild ID
      * @param {Object} updates - Statistics to update
@@ -205,23 +243,19 @@ export class UserStatistics {
     static update(userId, guildId, updates) {
         try {
             const db = getDatabaseManager();
+            const keys = validateUpdateFields('UserStatistics', updates, this.ALLOWED_UPDATE_FIELDS);
 
-            const existing = this.get(userId, guildId);
+            // Build atomic upsert query
+            const allFields = ['user_id', 'guild_id', ...keys];
+            const placeholders = allFields.map(() => '?').join(', ');
+            const onConflictSet = keys.map(k => `${k} = excluded.${k}`).join(', ');
+            const values = [userId, guildId, ...keys.map(k => updates[k])];
 
-            if (existing) {
-                const fields = Object.keys(updates)
-                    .map(k => `${k} = ?`)
-                    .join(', ');
-                const values = [...Object.values(updates), userId, guildId];
-
-                db.execute(`UPDATE user_statistics SET ${fields} WHERE user_id = ? AND guild_id = ?`, values);
-            } else {
-                const fields = ['user_id', 'guild_id', ...Object.keys(updates)];
-                const placeholders = fields.map(() => '?').join(', ');
-                const values = [userId, guildId, ...Object.values(updates)];
-
-                db.execute(`INSERT INTO user_statistics (${fields.join(', ')}) VALUES (${placeholders})`, values);
-            }
+            db.execute(
+                `INSERT INTO user_statistics (${allFields.join(', ')}) VALUES (${placeholders})
+                ON CONFLICT(user_id, guild_id) DO UPDATE SET ${onConflictSet}, updated_at = CURRENT_TIMESTAMP`,
+                values
+            );
 
             return true;
         } catch (error) {
@@ -326,6 +360,14 @@ export class UserStatistics {
  * Track popularity and play metrics
  */
 export class TrackStatistics {
+    static ALLOWED_UPDATE_FIELDS = new Set([
+        'track_title',
+        'track_author',
+        'track_duration',
+        'total_plays',
+        'last_played_at'
+    ]);
+
     /**
      * Get statistics for a track
      * @param {string} trackUrl - Track URL
@@ -343,7 +385,8 @@ export class TrackStatistics {
     }
 
     /**
-     * Update track statistics
+     * Update track statistics (atomic upsert)
+     * FIX-DB-C02: Use INSERT ... ON CONFLICT DO UPDATE to avoid TOCTOU race condition
      * @param {string} trackUrl - Track URL
      * @param {Object} updates - Statistics to update
      * @returns {boolean} Success
@@ -351,23 +394,19 @@ export class TrackStatistics {
     static update(trackUrl, updates) {
         try {
             const db = getDatabaseManager();
+            const keys = validateUpdateFields('TrackStatistics', updates, this.ALLOWED_UPDATE_FIELDS);
 
-            const existing = this.get(trackUrl);
+            // Build atomic upsert query
+            const allFields = ['track_url', ...keys];
+            const placeholders = allFields.map(() => '?').join(', ');
+            const onConflictSet = keys.map(k => `${k} = excluded.${k}`).join(', ');
+            const values = [trackUrl, ...keys.map(k => updates[k])];
 
-            if (existing) {
-                const fields = Object.keys(updates)
-                    .map(k => `${k} = ?`)
-                    .join(', ');
-                const values = [...Object.values(updates), trackUrl];
-
-                db.execute(`UPDATE track_statistics SET ${fields} WHERE track_url = ?`, values);
-            } else {
-                const fields = ['track_url', ...Object.keys(updates)];
-                const placeholders = fields.map(() => '?').join(', ');
-                const values = [trackUrl, ...Object.values(updates)];
-
-                db.execute(`INSERT INTO track_statistics (${fields.join(', ')}) VALUES (${placeholders})`, values);
-            }
+            db.execute(
+                `INSERT INTO track_statistics (${allFields.join(', ')}) VALUES (${placeholders})
+                ON CONFLICT(track_url) DO UPDATE SET ${onConflictSet}, updated_at = CURRENT_TIMESTAMP`,
+                values
+            );
 
             return true;
         } catch (error) {
@@ -380,10 +419,9 @@ export class TrackStatistics {
      * Record track play
      * @param {string} trackUrl - Track URL
      * @param {Object} trackInfo - Track information
-     * @param {string} userId - User who played the track
      * @returns {boolean} Success
      */
-    static recordPlay(trackUrl, trackInfo, userId) {
+    static recordPlay(trackUrl, trackInfo) {
         try {
             const db = getDatabaseManager();
 
@@ -422,12 +460,12 @@ export class TrackStatistics {
     static getMostPlayed(limit = 10, period = 'all') {
         try {
             const db = getDatabaseManager();
-            const dateFilter = getDateFilter(period);
+            const dateFilter = getDateFilter(period, 'last_played_at');
 
             return db.query(
                 `
                 SELECT * FROM track_statistics
-                WHERE 1=1 ${dateFilter.replace('played_at', 'last_played_at')}
+                WHERE 1=1 ${dateFilter}
                 ORDER BY total_plays DESC
                 LIMIT ?
             `,
@@ -470,14 +508,16 @@ export class TrackStatistics {
     static search(query, limit = 25) {
         try {
             const db = getDatabaseManager();
+            const escaped = escapeLikePattern(query);
+            const searchTerm = `%${escaped}%`;
             return db.query(
                 `
                 SELECT * FROM track_statistics
-                WHERE track_title LIKE ? OR track_author LIKE ?
+                WHERE track_title LIKE ? ESCAPE '\\' OR track_author LIKE ? ESCAPE '\\'
                 ORDER BY total_plays DESC
                 LIMIT ?
             `,
-                [`%${query}%`, `%${query}%`, limit]
+                [searchTerm, searchTerm, limit]
             );
         } catch (error) {
             logger.error('Failed to search tracks', { query, error });
@@ -496,21 +536,7 @@ export class TrackStatistics {
     static getTopTracksByPeriod(guildId = null, limit = 10, period = 'all') {
         try {
             const db = getDatabaseManager();
-
-            let dateFilter = '';
-            switch (period) {
-                case 'today':
-                    dateFilter = "AND played_at > datetime('now', '-1 day')";
-                    break;
-                case 'week':
-                    dateFilter = "AND played_at > datetime('now', '-7 days')";
-                    break;
-                case 'month':
-                    dateFilter = "AND played_at > datetime('now', '-30 days')";
-                    break;
-                default:
-                    dateFilter = '';
-            }
+            const dateFilter = getDateFilter(period);
 
             const guildFilter = guildId ? 'AND guild_id = ?' : '';
             const params = guildId ? [guildId, limit] : [limit];
@@ -555,19 +581,7 @@ export class EnhancedStatisticsService {
     static getListeningTimePerUser(guildId, period = 'all', limit = 10) {
         try {
             const db = getDatabaseManager();
-
-            let dateFilter = '';
-            switch (period) {
-                case 'today':
-                    dateFilter = "AND played_at > datetime('now', '-1 day')";
-                    break;
-                case 'week':
-                    dateFilter = "AND played_at > datetime('now', '-7 days')";
-                    break;
-                case 'month':
-                    dateFilter = "AND played_at > datetime('now', '-30 days')";
-                    break;
-            }
+            const dateFilter = getDateFilter(period);
 
             return db.query(
                 `
@@ -603,16 +617,7 @@ export class EnhancedStatisticsService {
     static getPeakUsageHours(guildId, period = 'month') {
         try {
             const db = getDatabaseManager();
-
-            let dateFilter = '';
-            switch (period) {
-                case 'week':
-                    dateFilter = "AND played_at > datetime('now', '-7 days')";
-                    break;
-                case 'month':
-                    dateFilter = "AND played_at > datetime('now', '-30 days')";
-                    break;
-            }
+            const dateFilter = getDateFilter(period);
 
             const rawData = db.query(
                 `
@@ -690,16 +695,7 @@ export class EnhancedStatisticsService {
     static getArtistBreakdown(guildId, period = 'month', limit = 10) {
         try {
             const db = getDatabaseManager();
-
-            let dateFilter = '';
-            switch (period) {
-                case 'week':
-                    dateFilter = "AND played_at > datetime('now', '-7 days')";
-                    break;
-                case 'month':
-                    dateFilter = "AND played_at > datetime('now', '-30 days')";
-                    break;
-            }
+            const dateFilter = getDateFilter(period);
 
             return db.query(
                 `
@@ -809,11 +805,12 @@ export class EnhancedStatisticsService {
             let longestStreak = 0;
             let tempStreak = 1;
 
+            // P2-10: Use UTC consistently to avoid timezone mismatches between server and database
             const today = new Date();
-            today.setHours(0, 0, 0, 0);
+            today.setUTCHours(0, 0, 0, 0);
 
             const lastPlayDate = new Date(playDates[0].play_date);
-            lastPlayDate.setHours(0, 0, 0, 0);
+            lastPlayDate.setUTCHours(0, 0, 0, 0);
 
             // Check if last play was today or yesterday
             const daysSinceLastPlay = Math.floor((today - lastPlayDate) / (1000 * 60 * 60 * 24));
@@ -897,14 +894,12 @@ export class StatisticsService {
      */
     static recordPlay(guildId, userId, trackInfo) {
         try {
-            // Update all statistics atomically
-            const db = getDatabaseManager();
-
-            db.transaction(() => {
-                GuildStatistics.recordTrackPlay(guildId, trackInfo);
-                UserStatistics.recordTrackPlay(userId, guildId, trackInfo);
-                TrackStatistics.recordPlay(trackInfo.url || trackInfo.uri, trackInfo, userId);
-            })();
+            // Update all statistics independently
+            // Each inner method manages its own transaction;
+            // wrapping in an outer transaction causes a nested transaction crash in better-sqlite3
+            GuildStatistics.recordTrackPlay(guildId, trackInfo);
+            UserStatistics.recordTrackPlay(userId, guildId, trackInfo);
+            TrackStatistics.recordPlay(trackInfo.url || trackInfo.uri, trackInfo);
 
             return true;
         } catch (error) {

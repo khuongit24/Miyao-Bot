@@ -1,13 +1,16 @@
 /**
  * Autoplay Command
  * Enable/disable automatic playlist continuation with smart recommendations
- * @version 1.8.1 - Improved UI and feedback
+ * @version 1.9.0 - Standardized error handling
  */
 
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { COLORS } from '../../config/design-system.js';
 import UserPreferences from '../../database/models/UserPreferences.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
-import { NothingPlayingError, DifferentVoiceChannelError } from '../../utils/errors.js';
+import { requireQueue } from '../../middleware/queueCheck.js';
+import { UserNotInVoiceError, DifferentVoiceChannelError } from '../../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import logger from '../../utils/logger.js';
 
 export default {
@@ -20,15 +23,25 @@ export default {
 
     async execute(interaction, client) {
         try {
-            const queue = client.musicManager.getQueue(interaction.guildId);
-
-            if (!queue) {
-                throw new NothingPlayingError();
+            await interaction.deferReply();
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
             }
+
+            // Use middleware
+            const queue = requireQueue(client.musicManager, interaction.guildId);
 
             // Check voice channel
             const member = interaction.member;
-            if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
+            if (!member.voice.channel) {
+                throw new UserNotInVoiceError();
+            }
+            if (member.voice.channel.id !== queue.voiceChannelId) {
                 throw new DifferentVoiceChannelError();
             }
 
@@ -39,6 +52,18 @@ export default {
             // Apply autoplay state
             queue.setAutoplay(newState);
 
+            // When autoplay is enabled, cancel pending leave timer
+            // and trigger related track addition if queue is empty
+            if (newState) {
+                queue.clearLeaveTimeout();
+                if (!queue.current && queue.tracks.length === 0) {
+                    // Queue is empty, try to add a related track
+                    queue.addRelatedTrack().catch(error => {
+                        logger.warn('Autoplay: failed to add related track on enable', { error: error.message });
+                    });
+                }
+            }
+
             // Save preference
             UserPreferences.set(interaction.user.id, { autoResume: newState }, interaction.user.username);
 
@@ -47,7 +72,7 @@ export default {
             const trackInfo = currentTrack ? `\n🎵 *Đang phát: ${currentTrack.info.title}*` : '';
 
             const embed = new EmbedBuilder()
-                .setColor(newState ? '#00FF00' : '#FF6B6B')
+                .setColor(newState ? COLORS.AUTOPLAY_ON : COLORS.AUTOPLAY_OFF)
                 .setTitle(newState ? '✅ Autoplay Đã Bật' : '❌ Autoplay Đã Tắt')
                 .setDescription(
                     newState
@@ -61,13 +86,12 @@ export default {
                 .setFooter({ text: client.config.bot.footer })
                 .setTimestamp();
 
-            await interaction.reply({ embeds: [embed] });
+            await interaction.editReply({ embeds: [embed] });
 
             logger.command('autoplay', interaction.user.id, interaction.guildId, {
                 enabled: newState
             });
         } catch (error) {
-            logger.error('Autoplay command error', error);
             await sendErrorResponse(interaction, error, client.config, true);
         }
     }

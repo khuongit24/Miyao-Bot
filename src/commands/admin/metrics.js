@@ -1,9 +1,19 @@
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ComponentType
+} from 'discord.js';
 import { VERSION } from '../../utils/version.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import logger from '../../utils/logger.js';
 
 export default {
-    data: new SlashCommandBuilder().setName('metrics').setDescription('Hiển thị metrics và performance chi tiết'),
+    data: new SlashCommandBuilder()
+        .setName('metrics')
+        .setDescription('Hiển thị dashboard hiệu năng hệ thống (Live Update)'),
 
     async execute(interaction, client) {
         try {
@@ -15,144 +25,204 @@ export default {
                 });
             }
 
-            const metrics = client.metrics ? client.metrics.getSummary() : null;
+            await interaction.deferReply({ ephemeral: true });
 
-            if (!metrics) {
-                return interaction.reply({
-                    content: '❌ Metrics chưa được khởi tạo!',
-                    ephemeral: true
-                });
-            }
+            let updateInterval;
+            const updateDuration = 60000; // 1 minute
+            const updateFrequency = 5000; // 5 seconds
+            const startTime = Date.now();
+            let isUpdating = false; // Guard against concurrent editReply calls
 
-            // Format uptime
-            const uptime = metrics.uptime;
-            const days = Math.floor(uptime / 86400000);
-            const hours = Math.floor((uptime % 86400000) / 3600000);
-            const minutes = Math.floor((uptime % 3600000) / 60000);
-            const seconds = Math.floor((uptime % 60000) / 1000);
-            const uptimeStr = `${days}d ${hours}h ${minutes}m ${seconds}s`;
+            // BUG-C17: Truncate embed field values to Discord's 1024-char limit
+            const truncateField = (value, maxLen = 1024) => {
+                if (!value) return 'N/A';
+                const str = String(value);
+                return str.length <= maxLen ? str : str.substring(0, maxLen - 3) + '...';
+            };
 
-            // Format playtime
-            const playtime = metrics.music.totalPlaytime;
-            const playDays = Math.floor(playtime / 86400000);
-            const playHours = Math.floor((playtime % 86400000) / 3600000);
-            const playMinutes = Math.floor((playtime % 3600000) / 60000);
-            const playtimeStr = `${playDays}d ${playHours}h ${playMinutes}m`;
+            const createDashboard = () => {
+                const metrics = client.metrics ? client.metrics.getSummary() : null;
 
-            const embed = new EmbedBuilder()
-                .setColor(client.config.bot.color)
-                .setTitle('📊 Performance Metrics')
-                .setDescription(`**${VERSION.fullDisplay}** • Detailed performance and usage statistics`)
-                .addFields([
-                    {
-                        name: '⏱️ Uptime',
-                        value: `\`\`\`${uptimeStr}\`\`\``,
-                        inline: true
-                    },
-                    {
-                        name: '🎯 Success Rate',
-                        value: `\`\`\`${metrics.commands.successRate}%\`\`\``,
-                        inline: true
-                    },
-                    {
-                        name: '💾 Cache Hit Rate',
-                        value: `\`\`\`${metrics.music.cacheHitRate}%\`\`\``,
-                        inline: true
-                    },
-                    {
-                        name: '⚡ Commands',
-                        value:
-                            `\`\`\`Total: ${metrics.commands.total}\n` +
-                            `Success: ${metrics.commands.successful}\n` +
-                            `Failed: ${metrics.commands.failed}\`\`\``,
-                        inline: true
-                    },
-                    {
-                        name: '🎵 Music Stats',
-                        value:
-                            `\`\`\`Tracks: ${metrics.music.totalTracks}\n` +
-                            `Playlists: ${metrics.music.totalPlaylists}\n` +
-                            `Completed: ${metrics.music.tracksCompleted}\n` +
-                            `Skipped: ${metrics.music.tracksSkipped}\n` +
-                            `Searches: ${metrics.music.searchQueries}\`\`\``,
-                        inline: true
-                    },
-                    {
-                        name: '⏯️ Total Playtime',
-                        value: `\`\`\`${playtimeStr}\`\`\``,
-                        inline: true
-                    },
-                    {
-                        name: '🚀 Performance',
-                        value:
-                            `\`\`\`Avg: ${metrics.performance.avgResponseTime}ms\n` +
-                            `Min: ${metrics.performance.minResponseTime}ms\n` +
-                            `Max: ${metrics.performance.maxResponseTime}ms\`\`\``,
-                        inline: true
-                    },
-                    {
-                        name: '🧠 Memory',
-                        value:
-                            `\`\`\`Heap: ${metrics.system.memory.heapUsed}MB / ${metrics.system.memory.heapTotal}MB\n` +
-                            `RSS: ${metrics.system.memory.rss}MB\n` +
-                            `External: ${metrics.system.memory.external}MB\`\`\``,
-                        inline: true
-                    },
-                    {
-                        name: '❌ Errors',
-                        value: `\`\`\`Total: ${metrics.errors.total}\`\`\``,
-                        inline: true
-                    }
-                ])
-                .setFooter({ text: `${client.config.bot.footer} • Advanced Metrics Tracking` })
-                .setTimestamp();
+                if (!metrics) {
+                    return {
+                        content: '❌ Metrics chưa được khởi tạo!',
+                        embeds: []
+                    };
+                }
 
-            // Add top commands if available
-            if (metrics.commands.byCommand && metrics.commands.byCommand.length > 0) {
-                const topCommands = metrics.commands.byCommand
-                    .sort((a, b) => b.total - a.total)
-                    .slice(0, 5)
-                    .map((cmd, i) => `${i + 1}. **/${cmd.name}**: ${cmd.total} uses (${cmd.successRate}% success)`)
-                    .join('\n');
+                // Format uptime
+                const uptime = metrics.uptime;
+                const days = Math.floor(uptime / 86400000);
+                const hours = Math.floor((uptime % 86400000) / 3600000);
+                const minutes = Math.floor((uptime % 3600000) / 60000);
+                const seconds = Math.floor((uptime % 60000) / 1000);
+                const uptimeStr = `${days}d ${hours}h ${minutes}m ${seconds}s`;
 
-                embed.addFields([
-                    {
-                        name: '🏆 Top Commands',
-                        value: topCommands || 'No data',
-                        inline: false
-                    }
-                ]);
-            }
+                // Format playtime
+                const playtime = metrics.music.totalPlaytime;
+                const playDays = Math.floor(playtime / 86400000);
+                const playHours = Math.floor((playtime % 86400000) / 3600000);
+                const playMinutes = Math.floor((playtime % 3600000) / 60000);
+                const playtimeStr = `${playDays}d ${playHours}h ${playMinutes}m`;
 
-            // Add error breakdown if available
-            if (metrics.errors.byType && metrics.errors.byType.length > 0) {
-                const errorBreakdown = metrics.errors.byType
-                    .sort((a, b) => b.count - a.count)
-                    .slice(0, 3)
-                    .map((err, i) => `${i + 1}. **${err.type}**: ${err.count}`)
-                    .join('\n');
+                // Memory Bar
+                const heapUsed = metrics.system.memory.heapUsed;
+                const heapTotal = metrics.system.memory.heapTotal;
+                const memPercent = Math.min(100, Math.round((heapUsed / heapTotal) * 100));
+                const memBar = createProgressBar(memPercent, 10);
 
-                embed.addFields([
-                    {
-                        name: '⚠️ Error Breakdown',
-                        value: errorBreakdown || 'No errors',
-                        inline: false
-                    }
-                ]);
-            }
+                const embed = new EmbedBuilder()
+                    .setColor(client.config.bot.color)
+                    .setTitle('📊 System Performance Dashboard')
+                    .setDescription(
+                        `**${VERSION.fullDisplay}** • Live Updates (Ends <t:${Math.floor((startTime + updateDuration) / 1000)}:R>)`
+                    )
+                    .addFields([
+                        {
+                            name: '⏱️ Uptime',
+                            value: truncateField(`\`\`\`${uptimeStr}\`\`\``),
+                            inline: true
+                        },
+                        {
+                            name: '🎯 Success Rate',
+                            value: truncateField(`\`\`\`${metrics.commands.successRate}%\`\`\``),
+                            inline: true
+                        },
+                        {
+                            name: '💾 Cache Hit',
+                            value: truncateField(`\`\`\`${metrics.music.cacheHitRate}%\`\`\``),
+                            inline: true
+                        },
+                        {
+                            name: '🧠 Memory Usage',
+                            value: truncateField(
+                                `\`\`\`${memBar} ${memPercent}%\n${heapUsed}MB / ${heapTotal}MB\`\`\``
+                            ),
+                            inline: false
+                        },
+                        {
+                            name: '⚡ Command Stats',
+                            value: truncateField(
+                                `Total: **${metrics.commands.total}**\n` +
+                                    `Success: **${metrics.commands.successful}**\n` +
+                                    `Failed: **${metrics.commands.failed}**`
+                            ),
+                            inline: true
+                        },
+                        {
+                            name: '🎵 Music Stats',
+                            value: truncateField(
+                                `Tracks: **${metrics.music.totalTracks}**\n` +
+                                    `Completed: **${metrics.music.tracksCompleted}**\n` +
+                                    `Skipped: **${metrics.music.tracksSkipped}**`
+                            ),
+                            inline: true
+                        },
+                        {
+                            name: '🚀 Latency',
+                            value: truncateField(
+                                `Avg: **${metrics.performance.avgResponseTime}ms**\n` +
+                                    `Max: **${metrics.performance.maxResponseTime}ms**`
+                            ),
+                            inline: true
+                        }
+                    ])
+                    .setFooter({ text: `Last updated: ${new Date().toLocaleTimeString()}` })
+                    .setTimestamp();
 
-            await interaction.reply({
-                embeds: [embed],
-                ephemeral: true
+                const row = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder()
+                        .setCustomId('dashboard_refresh')
+                        .setLabel('Refresh')
+                        .setStyle(ButtonStyle.Primary)
+                        .setEmoji('🔄'),
+                    new ButtonBuilder()
+                        .setCustomId('dashboard_stop')
+                        .setLabel('Stop Auto-Update')
+                        .setStyle(ButtonStyle.Danger)
+                        .setEmoji('⏹️')
+                );
+
+                return { embeds: [embed], components: [row] };
+            };
+
+            const initialData = createDashboard();
+            const message = await interaction.editReply(initialData);
+
+            // Collector for buttons
+            const collector = message.createMessageComponentCollector({
+                componentType: ComponentType.Button,
+                time: updateDuration
             });
 
-            logger.command('metrics', interaction.user.id, interaction.guildId);
+            collector.on('collect', async i => {
+                if (i.user.id !== interaction.user.id) {
+                    return i.reply({ content: '❌ Bạn không có quyền điều khiển dashboard này!', ephemeral: true });
+                }
+
+                if (i.customId === 'dashboard_refresh') {
+                    await i.deferUpdate();
+                    if (isUpdating) return;
+                    isUpdating = true;
+                    try {
+                        const data = createDashboard();
+                        await interaction.editReply(data);
+                    } finally {
+                        isUpdating = false;
+                    }
+                } else if (i.customId === 'dashboard_stop') {
+                    await i.update({
+                        content: '🛑 Dashboard stopped.',
+                        components: []
+                    });
+                    collector.stop('stopped_by_user');
+                }
+            });
+
+            collector.on('end', () => {
+                if (updateInterval) clearInterval(updateInterval);
+                // Remove buttons when done
+                interaction.editReply({ components: [] }).catch(() => {});
+            });
+
+            // Auto-update interval
+            // FIX-CMD-C03: Always clear interval on any error including 429 rate limit
+            updateInterval = setInterval(async () => {
+                if (isUpdating) return; // Skip update if one is already in progress
+                isUpdating = true;
+                try {
+                    const data = createDashboard();
+                    await interaction.editReply(data);
+                } catch (err) {
+                    // Always clear interval on error — prevents leaked timers
+                    clearInterval(updateInterval);
+                    updateInterval = null;
+                    if (err.code === 10062) {
+                        // Interaction expired — silent cleanup
+                        return;
+                    }
+                    if (err.status === 429) {
+                        logger.warn('Metrics auto-update hit rate limit, stopping updates');
+                        return;
+                    }
+                    logger.error('Metrics auto-update error', err);
+                } finally {
+                    isUpdating = false;
+                }
+            }, updateFrequency);
+            // Prevent interval from blocking process exit
+            if (updateInterval.unref) updateInterval.unref();
+
+            logger.command('metrics-dashboard', interaction.user.id, interaction.guildId);
         } catch (error) {
             logger.error('Metrics command error', error);
-            await interaction.reply({
-                content: '❌ Đã xảy ra lỗi khi hiển thị metrics!',
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };
+
+function createProgressBar(percent, length = 10) {
+    const filled = Math.round((percent / 100) * length);
+    const empty = length - filled;
+    return '▓'.repeat(filled) + '░'.repeat(empty);
+}

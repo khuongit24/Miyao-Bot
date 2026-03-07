@@ -148,11 +148,25 @@ export class AuditLog {
             const stmt = db.prepare(query);
             const logs = stmt.all(...params);
 
-            // Parse JSON details
-            return logs.map(log => ({
-                ...log,
-                details: log.details ? JSON.parse(log.details) : null
-            }));
+            // Parse JSON details per entry (do not fail entire list if one row is malformed)
+            return logs.map(log => {
+                let parsedDetails = null;
+                if (log.details) {
+                    try {
+                        parsedDetails = JSON.parse(log.details);
+                    } catch (parseError) {
+                        logger.warn('Failed to parse audit log details JSON', {
+                            id: log.id,
+                            error: parseError.message
+                        });
+                    }
+                }
+
+                return {
+                    ...log,
+                    details: parsedDetails
+                };
+            });
         } catch (error) {
             logger.error('Failed to get audit logs', error);
             return [];
@@ -173,9 +187,22 @@ export class AuditLog {
 
             if (!log) return null;
 
+            let parsedDetails = null;
+            if (log.details) {
+                try {
+                    parsedDetails = JSON.parse(log.details);
+                } catch (parseError) {
+                    logger.warn('Failed to parse audit log details JSON', {
+                        id: log.id,
+                        error: parseError.message
+                    });
+                    parsedDetails = log.details;
+                }
+            }
+
             return {
                 ...log,
-                details: log.details ? JSON.parse(log.details) : null
+                details: parsedDetails
             };
         } catch (error) {
             logger.error('Failed to get audit log by ID', error);

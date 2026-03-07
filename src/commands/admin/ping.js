@@ -1,4 +1,5 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import logger from '../../utils/logger.js';
 import { getDatabaseManager } from '../../database/DatabaseManager.js';
 
@@ -21,7 +22,7 @@ export default {
             if (client.musicManager && client.musicManager.shoukaku) {
                 const nodes = [...client.musicManager.shoukaku.nodes.values()];
                 if (nodes.length > 0) {
-                    const connectedNode = nodes.find(n => n.state === 3);
+                    const connectedNode = nodes.find(n => n.state === 1); // 1 = CONNECTED in Shoukaku v4.3.0
                     if (connectedNode && connectedNode.stats) {
                         lavalinkPing = `${Math.round(connectedNode.stats.ping || 0)}ms`;
                         lavalinkStatus = '✅ Online';
@@ -101,10 +102,7 @@ export default {
             logger.command('ping', interaction.user.id, interaction.guildId);
         } catch (error) {
             logger.error('Ping command error', error);
-            await interaction.reply({
-                content: '❌ Đã xảy ra lỗi khi kiểm tra ping!',
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

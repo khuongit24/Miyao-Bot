@@ -13,65 +13,51 @@ import {
     ButtonStyle
 } from 'discord.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { COLORS } from '../../config/design-system.js';
 import { NoSearchResultsError } from '../../utils/errors.js';
 import logger from '../../utils/logger.js';
 import History from '../../database/models/History.js';
 import { formatDuration } from '../../utils/helpers.js';
 import { getRecommendationEngine } from '../../music/RecommendationEngine.js';
+import { DISCOVERY } from '../../utils/constants.js';
 
 // Genre-specific search queries - more specific and music-focused
-const GENRE_QUERIES = {
-    pop: ['top pop songs 2024 official mv', 'best pop music 2024', 'pop hits official music video'],
-    rock: ['rock songs official 2024', 'best rock music', 'rock anthems official'],
-    'hip hop': ['hip hop official music video 2024', 'best rap songs official', 'hip hop hits 2024'],
-    edm: ['edm songs official 2024', 'electronic dance music official', 'edm hits official mv'],
-    classical: ['classical music famous', 'classical masterpieces', 'best classical pieces'],
-    jazz: ['jazz music classic', 'smooth jazz songs', 'jazz standards'],
-    country: ['country songs official 2024', 'best country music', 'country hits official'],
-    'r&b': ['r&b songs official 2024', 'best r&b music', 'r&b soul official mv'],
-    kpop: ['kpop official mv 2024', 'best kpop songs official', 'kpop new release official'],
-    anime: ['anime opening official', 'best anime songs', 'anime ost official'],
-    vpop: ['nhạc việt official mv 2024', 'vpop hay nhất official', 'nhạc trẻ official mv'],
-    lofi: ['lofi hip hop chill', 'lofi beats relaxing', 'lofi music study']
-};
+function getGenreQueries(year) {
+    return {
+        pop: [`top pop songs ${year} official mv`, `best pop music ${year}`, 'pop hits official music video'],
+        rock: [`rock songs official ${year}`, 'best rock music', 'rock anthems official'],
+        'hip hop': [`hip hop official music video ${year}`, 'best rap songs official', `hip hop hits ${year}`],
+        edm: [`edm songs official ${year}`, 'electronic dance music official', 'edm hits official mv'],
+        classical: ['classical music famous', 'classical masterpieces', 'best classical pieces'],
+        jazz: ['jazz music classic', 'smooth jazz songs', 'jazz standards'],
+        country: [`country songs official ${year}`, 'best country music', 'country hits official'],
+        'r&b': [`r&b songs official ${year}`, 'best r&b music', 'r&b soul official mv'],
+        kpop: [`kpop official mv ${year}`, 'best kpop songs official', 'kpop new release official'],
+        anime: ['anime opening official', 'best anime songs', 'anime ost official'],
+        vpop: [`nhạc việt official mv ${year}`, 'vpop hay nhất official', 'nhạc trẻ official mv'],
+        lofi: ['lofi hip hop chill', 'lofi beats relaxing', 'lofi music study']
+    };
+}
 
 // Mood-specific search queries - more targeted
-const MOOD_QUERIES = {
-    'energetic upbeat': ['upbeat songs official', 'energetic music 2024', 'feel good music official'],
-    'chill relaxing': ['chill songs 2024', 'relaxing music acoustic', 'calm music official'],
-    'happy cheerful': ['happy songs official 2024', 'cheerful music', 'feel good hits'],
-    'sad emotional': ['sad songs official', 'emotional ballads', 'heartbreak songs official'],
-    'focus study': ['study music instrumental', 'focus music concentration', 'instrumental study'],
-    'workout gym motivation': ['workout music 2024', 'gym motivation songs', 'workout playlist hits'],
-    'late night vibes': ['late night music chill', 'night vibes songs', 'midnight music relaxing']
-};
+function getMoodQueries(year) {
+    return {
+        'energetic upbeat': ['upbeat songs official', `energetic music ${year}`, 'feel good music official'],
+        'chill relaxing': [`chill songs ${year}`, 'relaxing music acoustic', 'calm music official'],
+        'happy cheerful': [`happy songs official ${year}`, 'cheerful music', 'feel good hits'],
+        'sad emotional': ['sad songs official', 'emotional ballads', 'heartbreak songs official'],
+        'focus study': ['study music instrumental', 'focus music concentration', 'instrumental study'],
+        'workout gym motivation': [`workout music ${year}`, 'gym motivation songs', 'workout playlist hits'],
+        'late night vibes': ['late night music chill', 'night vibes songs', 'midnight music relaxing']
+    };
+}
 
 // Minimum and maximum duration for quality filtering
 const MIN_DURATION = 90000; // 1.5 minutes
 const MAX_DURATION = 10 * 60 * 1000; // 10 minutes
 
-// Patterns to skip (shorts, compilations, non-music content)
-const SKIP_PATTERNS = [
-    /#shorts?/i,
-    /\bshorts?\b/i,
-    /compilation/i,
-    /mix\s*20\d{2}/i,
-    /\d+\s*hour/i,
-    /playlist/i,
-    /best\s*of\s*20\d{2}/i,
-    /top\s*\d+/i,
-    /reaction/i,
-    /behind\s*the\s*scenes/i,
-    /interview/i,
-    /making\s*of/i,
-    /tutorial/i,
-    /cover\s*by/i,
-    /karaoke/i,
-    /instrumental\s*version/i,
-    /slowed\s*\+?\s*reverb/i,
-    /sped\s*up/i,
-    /8d\s*audio/i
-];
+// Skip patterns imported from shared constants
+const SKIP_PATTERNS = DISCOVERY.SKIP_PATTERNS;
 
 export default {
     data: new SlashCommandBuilder()
@@ -141,6 +127,46 @@ export default {
             const source = interaction.options.getString('source') || 'server';
             const count = interaction.options.getInteger('count') || 5;
 
+            const currentYear = new Date().getFullYear();
+            const GENRE_QUERIES = getGenreQueries(currentYear);
+            const MOOD_QUERIES = getMoodQueries(currentYear);
+
+            // BUG-074: Validate parameters against allowlist
+            const VALID_SOURCES = ['server', 'global', 'random'];
+            if (!VALID_SOURCES.includes(source)) {
+                return interaction.editReply({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setColor(COLORS.ERROR)
+                            .setDescription('❌ Nguồn gợi ý không hợp lệ.')
+                            .setFooter({ text: client.config.bot.footer })
+                            .setTimestamp()
+                    ]
+                });
+            }
+            if (genre && !GENRE_QUERIES[genre]) {
+                return interaction.editReply({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setColor(COLORS.ERROR)
+                            .setDescription('❌ Thể loại không hợp lệ.')
+                            .setFooter({ text: client.config.bot.footer })
+                            .setTimestamp()
+                    ]
+                });
+            }
+            if (mood && !MOOD_QUERIES[mood]) {
+                return interaction.editReply({
+                    embeds: [
+                        new EmbedBuilder()
+                            .setColor(COLORS.ERROR)
+                            .setDescription('❌ Tâm trạng không hợp lệ.')
+                            .setFooter({ text: client.config.bot.footer })
+                            .setTimestamp()
+                    ]
+                });
+            }
+
             let searchQueries = [];
             let recommendationSource = '';
             let recommendations = [];
@@ -177,7 +203,7 @@ export default {
                         for (const artist of topArtists.slice(0, 3)) {
                             searchQueries.push(`${artist} official music video`);
                             searchQueries.push(`${artist} best songs official`);
-                            searchQueries.push(`${artist} new songs 2024`);
+                            searchQueries.push(`${artist} new songs ${currentYear}`);
                         }
                         recommendationSource = `🎯 Dựa trên: ${topArtists.slice(0, 2).join(', ')}`;
                     }
@@ -224,14 +250,31 @@ export default {
             const seenAuthors = new Map(); // Track count per author for diversity
 
             // Get tracks from server history to exclude (to discover NEW music)
-            const recentHistory = History.getGuildHistory(interaction.guildId, 100);
+            const recentHistory = History.getGuildHistory(interaction.guildId, 100) || [];
             const historyUrls = new Set(recentHistory.map(h => h.track_url));
             const historyTitles = new Set(
                 recentHistory.map(h => h.track_title?.toLowerCase().substring(0, 25)).filter(Boolean)
             );
 
-            for (const query of searchQueries.slice(0, 6)) {
+            const queriesToRun = searchQueries.slice(0, 6);
+            for (let qi = 0; qi < queriesToRun.length; qi++) {
+                const query = queriesToRun[qi];
                 if (recommendations.length >= count * 2) break;
+
+                // Update progress every 2 searches
+                if (qi > 0 && qi % 2 === 0) {
+                    await interaction.editReply({
+                        embeds: [
+                            new EmbedBuilder()
+                                .setColor(client.config.bot.color)
+                                .setDescription(
+                                    `🔍 Đang tìm kiếm... (${qi}/${queriesToRun.length}) — Đã tìm thấy ${recommendations.length} bài`
+                                )
+                                .setFooter({ text: client.config.bot.footer })
+                                .setTimestamp()
+                        ]
+                    });
+                }
 
                 try {
                     const result = await client.musicManager.search(`ytsearch:${query}`, interaction.user);
@@ -288,30 +331,38 @@ export default {
 
             // Use RecommendationEngine for personalization and scoring
             const recEngine = getRecommendationEngine();
-            const userProfile = recEngine.getUserProfile(interaction.user.id, interaction.guildId);
-            const guildProfile = recEngine.getGuildGenreProfile(interaction.guildId);
 
-            // Add scoring metadata to tracks
-            const enhancedRecommendations = recommendations.map(track => ({
-                ...track,
-                detectedGenre: recEngine.detectGenre(track.info.title, track.info.author),
-                detectedMood: recEngine.detectMood(track.info.title)
-            }));
+            let userProfile = null;
 
-            // Score based on user and guild preferences
-            const scoredRecommendations = recEngine.scoreAndRank(enhancedRecommendations, {
-                userProfile,
-                guildProfile
-            });
+            if (!recEngine) {
+                logger.warn('RecommendationEngine not available for /discover command');
+                recommendations = recommendations.slice(0, count);
+            } else {
+                userProfile = recEngine.getUserProfile(interaction.user.id, interaction.guildId);
+                const guildProfile = recEngine.getGuildGenreProfile(interaction.guildId);
 
-            // Apply diversity
-            const diversifiedRecommendations = recEngine.applyDiversity(scoredRecommendations, {
-                maxPerArtist: 2,
-                serendipity: source === 'random' ? 0.2 : 0.1
-            });
+                // Add scoring metadata to tracks
+                const enhancedRecommendations = recommendations.map(track => ({
+                    ...track,
+                    detectedGenre: recEngine.detectGenre(track.info.title, track.info.author),
+                    detectedMood: recEngine.detectMood(track.info.title)
+                }));
 
-            // Take final count
-            recommendations = diversifiedRecommendations.slice(0, count);
+                // Score based on user and guild preferences
+                const scoredRecommendations = recEngine.scoreAndRank(enhancedRecommendations, {
+                    userProfile,
+                    guildProfile
+                });
+
+                // Apply diversity
+                const diversifiedRecommendations = recEngine.applyDiversity(scoredRecommendations, {
+                    maxPerArtist: 2,
+                    serendipity: source === 'random' ? 0.2 : 0.1
+                });
+
+                // Take final count
+                recommendations = diversifiedRecommendations.slice(0, count);
+            }
 
             if (recommendations.length === 0) {
                 throw new NoSearchResultsError('gợi ý nhạc');
@@ -390,6 +441,11 @@ export default {
                 });
             } else {
                 client._discoveryCache = client._discoveryCache || new Map();
+                // FIX-PB03: Cap fallback cache size (entries also auto-delete after 5 min via setTimeout)
+                if (client._discoveryCache.size >= 50) {
+                    const oldestKey = client._discoveryCache.keys().next().value;
+                    client._discoveryCache.delete(oldestKey);
+                }
                 client._discoveryCache.set(cacheKey, {
                     tracks: recommendations,
                     timestamp: Date.now()

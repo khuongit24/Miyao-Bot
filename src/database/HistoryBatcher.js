@@ -29,7 +29,11 @@ const DEFAULT_CONFIG = {
     /** Maximum retries for failed batch inserts */
     maxRetries: 3,
     /** Delay between retries in milliseconds */
-    retryDelayMs: 1000
+    retryDelayMs: 1000,
+    /** Maximum backoff duration in milliseconds (5 minutes) — FIX-DB-H04 */
+    maxBackoffMs: 5 * 60 * 1000,
+    /** Consecutive failure threshold before starting backoff — FIX-DB-H04 */
+    backoffThreshold: 5
 };
 
 /**
@@ -49,6 +53,10 @@ class HistoryBatcher extends EventEmitter {
         this.flushInterval = null;
         this.isShuttingDown = false;
         this.isFlushing = false;
+        this.consecutiveFailures = 0;
+
+        /** FIX-DB-H04: Cooldown timer for exponential backoff recovery */
+        this.cooldownTimer = null;
 
         // Statistics
         this.stats = {
@@ -77,6 +85,9 @@ class HistoryBatcher extends EventEmitter {
             this._autoFlush();
         }, this.config.flushIntervalMs);
 
+        // Allow Node.js to exit even if this interval is still active
+        this.flushInterval.unref();
+
         logger.info('HistoryBatcher started', {
             flushIntervalMs: this.config.flushIntervalMs,
             maxQueueSize: this.config.maxQueueSize
@@ -91,6 +102,12 @@ class HistoryBatcher extends EventEmitter {
             clearInterval(this.flushInterval);
             this.flushInterval = null;
             logger.info('HistoryBatcher stopped');
+        }
+
+        // FIX-DB-H04: Also clear any pending cooldown timer
+        if (this.cooldownTimer) {
+            clearTimeout(this.cooldownTimer);
+            this.cooldownTimer = null;
         }
     }
 
@@ -118,6 +135,7 @@ class HistoryBatcher extends EventEmitter {
         };
 
         this.queue.push(entry);
+        this._enforceQueueSizeLimit();
         this.stats.totalQueued++;
 
         logger.debug('History entry queued', {
@@ -165,9 +183,10 @@ class HistoryBatcher extends EventEmitter {
 
         this.isFlushing = true;
 
-        // Take current queue and reset
-        const entriesToFlush = [...this.queue];
-        this.queue = [];
+        // FIX-DB-C01: Use "in-flight" buffer pattern — copy entries first,
+        // insert, then drain only AFTER successful insert. This prevents data loss
+        // if a crash occurs between drain and write.
+        const entriesToFlush = this.queue.slice(0, this.queue.length);
 
         const startTime = Date.now();
         let result = { flushed: 0, failed: 0 };
@@ -175,7 +194,11 @@ class HistoryBatcher extends EventEmitter {
         try {
             result = await this._batchInsert(entriesToFlush);
 
+            // Only drain from queue AFTER successful insert
+            this.queue.splice(0, entriesToFlush.length);
+
             // Update statistics
+            this.consecutiveFailures = 0; // Reset on success
             this.stats.totalFlushed += result.flushed;
             this.stats.totalBatches++;
             this.stats.lastFlushTime = Date.now();
@@ -194,9 +217,41 @@ class HistoryBatcher extends EventEmitter {
         } catch (error) {
             logger.error('Batch flush failed', { error: error.message });
 
-            // Re-queue failed entries for retry
-            this.queue = [...entriesToFlush, ...this.queue];
+            this.consecutiveFailures++;
             this.stats.failedBatches++;
+
+            // FIX-DB-C01: No need to re-queue — entries were never drained from queue.
+            // Queue still contains unflushed entries, just enforce size limit.
+            this._enforceQueueSizeLimit();
+
+            // FIX-DB-H04: Use exponential backoff instead of permanent stop.
+            // After a cooldown period, reset failure counter and resume auto-flush.
+            if (this.consecutiveFailures > this.config.backoffThreshold) {
+                const backoffMs = Math.min(
+                    this.config.flushIntervalMs * Math.pow(2, this.consecutiveFailures - this.config.backoffThreshold),
+                    this.config.maxBackoffMs
+                );
+
+                logger.warn(
+                    `Too many consecutive flush failures (${this.consecutiveFailures}), ` +
+                        `backing off for ${Math.round(backoffMs / 1000)}s before retrying`,
+                    { consecutiveFailures: this.consecutiveFailures, backoffMs }
+                );
+
+                // Stop the current flush interval
+                this.stop();
+
+                // Schedule recovery: reset failure counter and restart auto-flush
+                this.cooldownTimer = setTimeout(() => {
+                    this.cooldownTimer = null;
+                    this.consecutiveFailures = 0;
+                    logger.info('HistoryBatcher cooldown expired, resetting failure counter and resuming auto-flush');
+                    this.start();
+                }, backoffMs);
+
+                // Allow Node.js process to exit even if cooldown is pending
+                this.cooldownTimer.unref();
+            }
 
             this.emit('error', error);
             result.failed = entriesToFlush.length;
@@ -205,6 +260,25 @@ class HistoryBatcher extends EventEmitter {
         }
 
         return result;
+    }
+
+    /**
+     * Enforce maximum queue size by dropping oldest entries
+     * @private
+     */
+    _enforceQueueSizeLimit() {
+        const maxQueueSize = Math.max(1, this.config.maxQueueSize || DEFAULT_CONFIG.maxQueueSize);
+        if (this.queue.length <= maxQueueSize) {
+            return;
+        }
+
+        const dropCount = this.queue.length - maxQueueSize;
+        this.queue.splice(0, dropCount);
+        logger.warn('HistoryBatcher queue exceeded max size, dropped oldest entries', {
+            dropped: dropCount,
+            maxQueueSize,
+            currentQueueSize: this.queue.length
+        });
     }
 
     /**
@@ -220,11 +294,13 @@ class HistoryBatcher extends EventEmitter {
 
         const db = getDatabaseManager();
 
-        let flushed = 0;
-        let failed = 0;
         let retries = 0;
 
         while (retries < this.config.maxRetries) {
+            // Reset counters on each attempt so they don't accumulate across retries
+            let flushed = 0;
+            let failed = 0;
+
             try {
                 // Use transaction for atomic batch insert
                 // NOTE: better-sqlite3 transactions are synchronous
@@ -256,7 +332,7 @@ class HistoryBatcher extends EventEmitter {
                 });
 
                 // Success - exit retry loop
-                break;
+                return { flushed, failed };
             } catch (error) {
                 retries++;
                 logger.warn(`Batch insert attempt ${retries} failed`, {
@@ -273,7 +349,7 @@ class HistoryBatcher extends EventEmitter {
             }
         }
 
-        return { flushed, failed };
+        return { flushed: 0, failed: entries.length };
     }
 
     /**

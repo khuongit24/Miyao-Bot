@@ -18,6 +18,12 @@ class Favorites {
             const db = getDatabaseManager();
             const info = track.info || track;
 
+            // Check max favorites limit per user
+            const countResult = db.queryOne('SELECT COUNT(*) as count FROM favorites WHERE user_id = ?', [userId]);
+            if (countResult && countResult.count >= 500) {
+                throw new Error('Maximum favorites limit reached (500)');
+            }
+
             // Check if already favorited
             const existing = db.queryOne('SELECT id FROM favorites WHERE user_id = ? AND track_url = ?', [
                 userId,
@@ -194,12 +200,13 @@ class Favorites {
             const info = track.info || track;
             const trackUrl = info.uri || info.url;
 
-            if (this.isFavorited(userId, trackUrl)) {
-                const success = this.remove(userId, trackUrl);
+            // Use remove() directly — its return value tells us whether the row existed
+            const removed = this.remove(userId, trackUrl);
+            if (removed) {
                 return {
-                    success,
+                    success: true,
                     isFavorited: false,
-                    message: success ? 'Đã xóa khỏi danh sách yêu thích!' : 'Không thể xóa khỏi danh sách yêu thích!'
+                    message: 'Đã xóa khỏi danh sách yêu thích!'
                 };
             } else {
                 const result = this.add(userId, track);
@@ -281,10 +288,11 @@ class Favorites {
     static search(userId, query, limit = 10) {
         try {
             const db = getDatabaseManager();
-            const searchTerm = `%${query}%`;
+            const escaped = query.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+            const searchTerm = `%${escaped}%`;
             const favorites = db.query(
                 `SELECT * FROM favorites 
-                 WHERE user_id = ? AND (track_title LIKE ? OR track_author LIKE ?)
+                 WHERE user_id = ? AND (track_title LIKE ? ESCAPE '\\' OR track_author LIKE ? ESCAPE '\\')
                  ORDER BY added_at DESC LIMIT ?`,
                 [userId, searchTerm, searchTerm, limit]
             );

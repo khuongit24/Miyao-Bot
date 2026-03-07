@@ -1,13 +1,18 @@
 /**
  * Queue Save Command
  * Save current queue to a playlist
- * @version 1.8.2 - Phase 4 feature
+ * @version 1.9.0 - Standardized error handling
  */
 
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
 import Playlist from '../../database/models/Playlist.js';
-import { createErrorEmbed, createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { requireQueue } from '../../middleware/queueCheck.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
+import { ValidationError } from '../../utils/errors.js';
 import logger from '../../utils/logger.js';
+import { COLORS } from '../../config/design-system.js';
 
 export default {
     data: new SlashCommandBuilder()
@@ -64,25 +69,26 @@ export default {
         await interaction.deferReply({ ephemeral: true });
 
         try {
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
+            }
+
             const playlistName = interaction.options.getString('name');
             const includeCurrent = interaction.options.getBoolean('include_current') ?? true;
             const createNew = interaction.options.getBoolean('create_new') ?? false;
 
             // Validate playlist name
             if (!playlistName || playlistName.length > 50) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Tên playlist không hợp lệ! Tên phải có 1-50 ký tự.', client.config)]
-                });
+                throw new ValidationError('Tên playlist không hợp lệ! Tên phải có 1-50 ký tự.');
             }
 
-            // Get queue
-            const queue = client.musicManager.getQueue(interaction.guildId);
-
-            if (!queue) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Không có hàng đợi nào đang hoạt động!', client.config)]
-                });
-            }
+            // Use middleware
+            const queue = requireQueue(client.musicManager, interaction.guildId);
 
             // Collect tracks to save
             const tracksToSave = [];
@@ -96,9 +102,7 @@ export default {
             }
 
             if (tracksToSave.length === 0) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Hàng đợi trống! Không có bài nào để lưu.', client.config)]
-                });
+                throw new ValidationError('Hàng đợi trống! Không có bài nào để lưu.');
             }
 
             // Check if playlist exists
@@ -106,40 +110,28 @@ export default {
             let isNewPlaylist = false;
 
             if (playlist && createNew) {
-                return interaction.editReply({
-                    embeds: [
-                        createErrorEmbed(
-                            `Playlist "${playlistName}" đã tồn tại. Bỏ chọn "create_new" để thêm vào playlist này.`,
-                            client.config
-                        )
-                    ]
-                });
+                throw new ValidationError(
+                    `Playlist "${playlistName}" đã tồn tại. Bỏ chọn "create_new" để thêm vào playlist này.`
+                );
             }
 
             if (!playlist) {
                 // Create new playlist
-                try {
-                    playlist = Playlist.create(
-                        playlistName,
-                        interaction.user.id,
-                        interaction.user.username,
-                        interaction.guildId,
-                        `Tạo từ hàng đợi ngày ${new Date().toLocaleDateString('vi-VN')}`,
-                        false // Private by default
-                    );
-                    isNewPlaylist = true;
+                playlist = Playlist.create(
+                    playlistName,
+                    interaction.user.id,
+                    interaction.user.username,
+                    interaction.guildId,
+                    `Tạo từ hàng đợi ngày ${new Date().toLocaleDateString('vi-VN')}`,
+                    false // Private by default
+                );
+                isNewPlaylist = true;
 
-                    logger.info('Created new playlist from queue save', {
-                        playlistId: playlist.id,
-                        name: playlistName,
-                        userId: interaction.user.id
-                    });
-                } catch (createError) {
-                    logger.error('Failed to create playlist for queue save', createError);
-                    return interaction.editReply({
-                        embeds: [createErrorEmbed('Không thể tạo playlist mới. Vui lòng thử lại!', client.config)]
-                    });
-                }
+                logger.info('Created new playlist from queue save', {
+                    playlistId: playlist.id,
+                    name: playlistName,
+                    userId: interaction.user.id
+                });
             }
 
             // Save tracks to playlist
@@ -159,11 +151,33 @@ export default {
                         continue;
                     }
 
+                    // FIX-LB05: Sanitize track data before saving to database
+                    const sanitizeString = (str, maxLen = 500) => {
+                        if (!str || typeof str !== 'string') return 'Unknown';
+                        // Remove control characters (except newline/tab) and null bytes
+                        return (
+                            str
+                                // eslint-disable-next-line no-control-regex
+                                .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+                                .trim()
+                                .substring(0, maxLen) || 'Unknown'
+                        );
+                    };
+
+                    const trackUrl = track.info.uri;
+                    // Basic URL validation — must start with http:// or https://
+                    if (!trackUrl || !/^https?:\/\//i.test(trackUrl)) {
+                        logger.warn('Skipping track with invalid URL in queue save', { url: trackUrl });
+                        skippedCount++;
+                        continue;
+                    }
+
                     const simpleTrack = {
-                        url: track.info.uri,
-                        title: track.info.title,
-                        author: track.info.author,
-                        duration: track.info.length
+                        url: trackUrl.substring(0, 2048), // URLs should never exceed 2048 chars
+                        title: sanitizeString(track.info.title, 500),
+                        author: sanitizeString(track.info.author, 200),
+                        duration:
+                            typeof track.info.length === 'number' && track.info.length >= 0 ? track.info.length : 0
                     };
 
                     const added = Playlist.addTrack(playlist.id, simpleTrack, interaction.user.id);
@@ -204,7 +218,7 @@ export default {
             }
 
             const embed = new EmbedBuilder()
-                .setColor(savedCount > 0 ? client.config.bot.color : '#FFA500')
+                .setColor(savedCount > 0 ? client.config.bot.color : COLORS.WARNING)
                 .setTitle(savedCount > 0 ? '✅ Đã Lưu Hàng Đợi' : '⚠️ Không Có Bài Nào Được Lưu')
                 .setDescription(description)
                 .setFooter({ text: `${client.config.bot.footer} | Playlist ID: ${playlist.id}` })
@@ -239,10 +253,7 @@ export default {
                 isNew: isNewPlaylist
             });
         } catch (error) {
-            logger.error('Queue save command error', error);
-            await interaction.editReply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi lưu hàng đợi!', client.config)]
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

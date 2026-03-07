@@ -1,5 +1,9 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { createErrorEmbed, createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { requireQueueTracks, validateQueuePosition } from '../../middleware/queueCheck.js';
+import { UserNotInVoiceError, DifferentVoiceChannelError } from '../../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import logger from '../../utils/logger.js';
 
 export default {
@@ -15,49 +19,43 @@ export default {
         ),
 
     async execute(interaction, client) {
-        await interaction.deferReply({ ephemeral: true });
+        await interaction.deferReply();
         try {
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
+            }
+
+            // Use middleware
+            const { queue } = requireQueueTracks(client.musicManager, interaction.guildId);
+
+            // Check if user is in the same voice channel
             const member = interaction.member;
-            const voiceChannel = member.voice.channel;
-            if (!voiceChannel) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Bạn phải ở trong voice channel để dùng lệnh này!', client.config)]
-                });
+            if (!member.voice.channel) {
+                throw new UserNotInVoiceError();
             }
-            const queue = client.musicManager.getQueue(interaction.guildId);
-            if (queue && queue.voiceChannelId !== voiceChannel.id) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Bạn phải ở cùng voice channel với bot!', client.config)]
-                });
+            if (member.voice.channel.id !== queue.voiceChannelId) {
+                throw new DifferentVoiceChannelError();
             }
+
             const position = interaction.options.getInteger('position');
 
-            if (!queue || queue.tracks.length === 0) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Hàng đợi trống! Không có bài nào để nhảy tới.', client.config)]
-                });
-            }
-
-            if (position < 1 || position > queue.tracks.length) {
-                return interaction.editReply({
-                    embeds: [
-                        createErrorEmbed(
-                            `Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.\n` +
-                                `Hiện có ${queue.tracks.length} bài trong hàng đợi.`,
-                            client.config
-                        )
-                    ]
-                });
-            }
+            // Validate position
+            // validateQueuePosition throws InvalidPositionError
+            validateQueuePosition(queue, position, 'jump to track');
 
             const trackToJump = queue.tracks[position - 1];
+
+            // Jump
+            // jump method implementation varies. usually it acts like skip to pos.
             const ok = await queue.jump(position);
+
             if (!ok) {
-                return interaction.editReply({
-                    embeds: [
-                        createErrorEmbed(`Vị trí không hợp lệ! Chọn từ 1 đến ${queue.tracks.length}.`, client.config)
-                    ]
-                });
+                throw new Error(`Không thể nhảy tới vị trí ${position}!`);
             }
 
             const trackTitle = trackToJump?.info?.title || 'Unknown Track';
@@ -73,10 +71,7 @@ export default {
 
             logger.command('jump', interaction.user.id, interaction.guildId);
         } catch (error) {
-            logger.error('Jump command error', error);
-            await interaction.editReply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi nhảy tới bài!', client.config)]
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

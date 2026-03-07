@@ -12,7 +12,8 @@ import {
     ButtonBuilder,
     ButtonStyle
 } from 'discord.js';
-import { createTrackAddedEmbed, createErrorEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createTrackAddedEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createErrorEmbed } from '../../UI/embeds/ErrorEmbeds.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import {
     UserNotInVoiceError,
@@ -24,6 +25,7 @@ import {
 import { commandRateLimiter } from '../../utils/rate-limiter.js';
 import Playlist from '../../database/models/Playlist.js';
 import logger from '../../utils/logger.js';
+import { COLORS } from '../../config/design-system.js';
 
 /**
  * Extract track URLs from message content
@@ -97,7 +99,7 @@ export const addToQueueContextMenu = {
                 return await interaction.editReply({
                     embeds: [
                         new EmbedBuilder()
-                            .setColor('#FF6B6B')
+                            .setColor(COLORS.ERROR)
                             .setTitle('❌ Không Tìm Thấy Link Nhạc')
                             .setDescription(
                                 'Tin nhắn này không chứa link nhạc hợp lệ!\n\n' +
@@ -260,7 +262,7 @@ export const addToPlaylistContextMenu = {
                 return await interaction.editReply({
                     embeds: [
                         new EmbedBuilder()
-                            .setColor('#FF6B6B')
+                            .setColor(COLORS.ERROR)
                             .setTitle('❌ Không Tìm Thấy Link Nhạc')
                             .setDescription(
                                 'Tin nhắn này không chứa link nhạc hợp lệ!\n\n' +
@@ -282,7 +284,7 @@ export const addToPlaylistContextMenu = {
             // If user has no playlists, show create option
             if (userPlaylists.length === 0) {
                 const embed = new EmbedBuilder()
-                    .setColor('#FFA500')
+                    .setColor(COLORS.WARNING)
                     .setTitle('📋 Chưa Có Playlist')
                     .setDescription(
                         'Bạn chưa có playlist nào!\n\n' +
@@ -339,6 +341,11 @@ export const addToPlaylistContextMenu = {
             // Store resolved tracks temporarily for the select menu handler
             const sessionId = `${interaction.user.id}_${Date.now()}`;
             client._contextMenuPlaylistSessions = client._contextMenuPlaylistSessions || new Map();
+            // FIX-PB03: Cap fallback session map size (sessions also expire after 5 min)
+            if (client._contextMenuPlaylistSessions.size >= 50) {
+                const oldestKey = client._contextMenuPlaylistSessions.keys().next().value;
+                client._contextMenuPlaylistSessions.delete(oldestKey);
+            }
             client._contextMenuPlaylistSessions.set(sessionId, {
                 tracks: resolvedTracks,
                 userId: interaction.user.id,
@@ -491,7 +498,7 @@ export async function handleContextMenuPlaylistSelect(interaction, client) {
 
         // Build success embed
         const embed = new EmbedBuilder()
-            .setColor('#2ECC71')
+            .setColor(COLORS.SUCCESS)
             .setTitle('✅ Đã Thêm Vào Playlist')
             .setDescription(
                 `**${playlist.name}**\n\n` +

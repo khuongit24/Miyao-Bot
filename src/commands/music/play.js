@@ -22,206 +22,246 @@ import {
 } from '../../utils/errors.js';
 import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import { CircuitBreakerError } from '../../utils/CircuitBreaker.js';
-import { PLAYLIST_RESOLUTION } from '../../utils/constants.js';
-import History from '../../database/models/History.js';
+import { PLAYLIST_RESOLUTION, SEARCH_PREFIXES } from '../../utils/constants.js';
+import { detectPlatform, getPlatformEmoji, getSmartSuggestions } from '../../utils/musicUtils.js';
+import { COLORS } from '../../config/design-system.js';
+import { checkAutoPlayFromResults, markAutoPlayed } from '../../events/autoPlaySuggestionHandler.js';
 import logger from '../../utils/logger.js';
 
-// URL patterns for different music platforms
-const URL_PATTERNS = {
-    SPOTIFY_TRACK: /^https?:\/\/(open\.)?spotify\.com\/(intl-[a-z]{2}\/)?track\/([a-zA-Z0-9]+)/,
-    SPOTIFY_ALBUM: /^https?:\/\/(open\.)?spotify\.com\/(intl-[a-z]{2}\/)?album\/([a-zA-Z0-9]+)/,
-    SPOTIFY_PLAYLIST: /^https?:\/\/(open\.)?spotify\.com\/(intl-[a-z]{2}\/)?playlist\/([a-zA-Z0-9]+)/,
-    SPOTIFY_ARTIST: /^https?:\/\/(open\.)?spotify\.com\/(intl-[a-z]{2}\/)?artist\/([a-zA-Z0-9]+)/,
-    SOUNDCLOUD: /^https?:\/\/(www\.)?soundcloud\.com\//,
-    YOUTUBE: /^https?:\/\/(www\.)?(youtube\.com|youtu\.be)\//
-};
-
 /**
- * Detect the platform and type from a URL
- * @param {string} query - The query or URL
- * @returns {{ platform: string, type: string, isUrl: boolean }}
+ * Normalize search query for better cache hit rates
+ * @param {string} query - Raw search query
+ * @returns {string} Normalized query
  */
-function detectPlatform(query) {
-    if (URL_PATTERNS.SPOTIFY_TRACK.test(query)) {
-        return { platform: 'spotify', type: 'track', isUrl: true };
-    }
-    if (URL_PATTERNS.SPOTIFY_ALBUM.test(query)) {
-        return { platform: 'spotify', type: 'album', isUrl: true };
-    }
-    if (URL_PATTERNS.SPOTIFY_PLAYLIST.test(query)) {
-        return { platform: 'spotify', type: 'playlist', isUrl: true };
-    }
-    if (URL_PATTERNS.SPOTIFY_ARTIST.test(query)) {
-        return { platform: 'spotify', type: 'artist', isUrl: true };
-    }
-    if (URL_PATTERNS.SOUNDCLOUD.test(query)) {
-        return { platform: 'soundcloud', type: 'url', isUrl: true };
-    }
-    if (URL_PATTERNS.YOUTUBE.test(query)) {
-        return { platform: 'youtube', type: 'url', isUrl: true };
-    }
-    if (/^https?:\/\//.test(query)) {
-        return { platform: 'unknown', type: 'url', isUrl: true };
-    }
-    return { platform: 'search', type: 'search', isUrl: false };
+function normalizeSearchQuery(query) {
+    if (!query) return '';
+    const trimmed = query.trim();
+    if (/^https?:\/\//i.test(trimmed)) return trimmed;
+    return trimmed.toLowerCase().replace(/\s+/g, ' '); // Collapse multiple spaces
 }
 
+// --- Helpers ---
+
 /**
- * Get platform-specific icon for embeds
- * @param {string} platform - Platform name
- * @returns {string} Emoji icon
+ * Truncate a title string for embed display.
+ * @param {string} str
+ * @param {number} maxLen
+ * @returns {string}
  */
-function getPlatformEmoji(platform) {
-    const emojis = {
-        spotify: '🟢',
-        soundcloud: '🟠',
-        youtube: '🔴',
-        unknown: '🔵'
-    };
-    return emojis[platform] || '🎵';
+function truncateTitle(str, maxLen) {
+    if (!str) return '';
+    return str.length > maxLen ? str.substring(0, maxLen - 1) + '…' : str;
 }
 
-/**
- * Create a text-based progress bar
- * @param {number} percent - Progress percentage (0-100)
- * @param {number} length - Bar length in characters
- * @returns {string} Progress bar string
- */
-function createProgressBar(percent, length = 20) {
-    const filled = Math.round((percent / 100) * length);
-    const empty = length - filled;
-    return '▓'.repeat(filled) + '░'.repeat(empty);
+async function handleDegradedMode(interaction) {
+    const degradedMessage = getDegradedModeMessage('phát nhạc');
+    const embed = new EmbedBuilder()
+        .setColor(degradedMessage.color)
+        .setTitle(degradedMessage.title)
+        .setDescription(degradedMessage.description)
+        .addFields(degradedMessage.fields)
+        .setFooter({ text: interaction.client.config.bot.footer })
+        .setTimestamp(degradedMessage.timestamp);
+    return interaction.editReply({ embeds: [embed] });
 }
 
-/**
- * Extract potential artist name from search query
- * @param {string} query - The search query
- * @returns {string|null} Potential artist name or null
- */
-function extractArtistFromQuery(query) {
-    // Common patterns: "artist - song", "song by artist", "artist song"
-    const patterns = [
-        /^(.+?)\s*-\s*.+$/i, // "Artist - Song"
-        /^.+?\s+by\s+(.+)$/i, // "Song by Artist"
-        /^(.+?)\s+(official|music|video|audio|lyrics)/i // "Artist official"
-    ];
+function validateVoicePermissions(interaction) {
+    const voiceChannel = interaction.member.voice.channel;
+    if (!voiceChannel) throw new UserNotInVoiceError();
 
-    for (const pattern of patterns) {
-        const match = query.match(pattern);
-        if (match && match[1]) {
-            return match[1].trim();
+    const permissions = voiceChannel.permissionsFor(interaction.client.user);
+    if (!permissions.has(['ViewChannel', 'Connect', 'Speak'])) {
+        throw new VoiceChannelPermissionError(voiceChannel.name);
+    }
+    return voiceChannel;
+}
+
+async function getOrCreateQueue(client, interaction, voiceChannel) {
+    let queue = client.musicManager.getQueue(interaction.guildId);
+    if (!queue) {
+        queue = await client.musicManager.createQueue(interaction.guildId, voiceChannel.id, interaction.channel);
+    }
+
+    if (queue.voiceChannelId && queue.voiceChannelId !== voiceChannel.id) {
+        throw new DifferentVoiceChannelError();
+    }
+    return queue;
+}
+
+async function handleSpotifyLoading(interaction, platform, type) {
+    if (platform === 'spotify' && (type === 'playlist' || type === 'album')) {
+        const loadingEmbed = new EmbedBuilder()
+            .setColor(COLORS.PRIMARY)
+            .setTitle(
+                `${getPlatformEmoji(platform)} Đang tải ${type === 'playlist' ? 'playlist' : 'album'} từ Spotify...`
+            )
+            .setDescription('Quá trình này có thể mất vài giây, vui lòng đợi...')
+            .setFooter({ text: interaction.client.config.bot.footer })
+            .setTimestamp();
+        await interaction.editReply({ embeds: [loadingEmbed] });
+    }
+}
+
+async function handleNoResults(interaction, client, query, platform) {
+    if (platform === 'spotify') {
+        const spotifyError = new EmbedBuilder()
+            .setColor(COLORS.ERROR)
+            .setTitle('❌ Không tìm thấy kết quả từ Spotify')
+            .setDescription('Không thể tải nhạc từ Spotify. Thử tìm kiếm bằng tên bài hát.')
+            .setFooter({ text: client.config.bot.footer })
+            .setTimestamp();
+        return interaction.editReply({ embeds: [spotifyError] });
+    }
+
+    const suggestions = await getSmartSuggestions(query, interaction.user.id, interaction.guildId);
+    if (suggestions.length > 0) {
+        const suggestionsEmbed = createNoResultsSuggestionsEmbed(query, suggestions, client.config);
+        return interaction.editReply({ embeds: [suggestionsEmbed] });
+    }
+
+    throw new NoSearchResultsError(query);
+}
+
+const SEARCH_RESULTS_TTL = 5 * 60 * 1000; // 5 minutes
+const SEARCH_RESULTS_MAX_SIZE = 100;
+
+async function handleSearchConfirmation(interaction, client, firstTrack, choices) {
+    const key = `${interaction.user.id}:${interaction.guildId}`;
+    if (client.cacheManager) {
+        client.cacheManager.set('searchResults', key, { tracks: choices, createdAt: Date.now() }, SEARCH_RESULTS_TTL);
+    } else {
+        if (!client._lastSearchResults) client._lastSearchResults = new Map();
+
+        // Evict expired entries and enforce size limit
+        const now = Date.now();
+        for (const [k, v] of client._lastSearchResults) {
+            if (now - v.createdAt > SEARCH_RESULTS_TTL) {
+                client._lastSearchResults.delete(k);
+            }
         }
+        if (client._lastSearchResults.size >= SEARCH_RESULTS_MAX_SIZE) {
+            const oldestKey = client._lastSearchResults.keys().next().value;
+            client._lastSearchResults.delete(oldestKey);
+        }
+
+        client._lastSearchResults.set(key, { tracks: choices, createdAt: Date.now() });
+        setTimeout(() => client._lastSearchResults.delete(key), 120_000);
     }
 
-    // Fallback: take first 1-2 words if query has 3+ words
-    const words = query.split(/\s+/);
-    if (words.length >= 3) {
-        return words.slice(0, 2).join(' ');
-    }
+    const reply = await interaction.editReply({
+        embeds: [createSearchConfirmEmbed(firstTrack, client.config)],
+        components: createSearchConfirmButtons(firstTrack)
+    });
 
-    return null;
+    // BUG-067: Disable buttons after timeout
+    setTimeout(async () => {
+        try {
+            // Clean up cached search results
+            if (client.cacheManager) {
+                client.cacheManager.delete?.('searchResults', key);
+            } else {
+                client._lastSearchResults?.delete(key);
+            }
+
+            await reply.edit({ components: [] }).catch(() => {});
+        } catch {
+            // Message may have been deleted or interaction expired
+        }
+    }, SEARCH_RESULTS_TTL);
+
+    logger.command('play-search-confirm', interaction.user.id, interaction.guildId);
 }
 
-/**
- * Get smart suggestions based on user history and query
- * @param {string} query - The search query that returned no results
- * @param {string} userId - The user ID
- * @param {string} guildId - The guild ID
- * @returns {Promise<Array>} Array of suggestion objects
- */
-async function getSmartSuggestions(query, userId, guildId) {
-    const suggestions = [];
-    const queryLower = query.toLowerCase();
-    const queryWords = queryLower.split(/\s+/).filter(w => w.length > 2);
+async function handlePlaylistResult({ interaction, client, queue, result, platform, type, searchInfo }) {
+    result.tracks.forEach(t => (t.requester = interaction.user.id));
+    queue.add(result.tracks);
 
-    try {
-        // 1. Get user's history and find similar tracks
-        const userHistory = History.getUserHistory(userId, 50);
+    if (client.metrics) {
+        client.metrics.trackMusic('playlist_added', { trackCount: result.tracks.length, platform, type });
+    }
 
-        if (userHistory && userHistory.length > 0) {
-            // Find tracks that match any word in the query
-            const historyMatches = userHistory
-                .filter(entry => {
-                    const titleLower = (entry.track_title || '').toLowerCase();
-                    const authorLower = (entry.track_author || '').toLowerCase();
+    const playlistName = result.playlistInfo?.name || 'Playlist';
+    const playlistEmbed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle(`${getPlatformEmoji(platform)} Đã thêm ${type === 'album' ? 'album' : 'playlist'}`)
+        .setDescription(
+            `📝 **${playlistName}**` +
+                (searchInfo?.isFallback ? `\n🔄 Tìm thấy trên **${searchInfo.searchSourceName}**` : '')
+        )
+        .addFields([
+            { name: '🎵 Số bài', value: `${result.tracks.length} bài`, inline: true },
+            {
+                name: '📍 Nguồn',
+                value: searchInfo?.searchSourceName || platform.charAt(0).toUpperCase() + platform.slice(1),
+                inline: true
+            }
+        ])
+        .setFooter({ text: client.config.bot.footer })
+        .setTimestamp();
 
-                    // Check if any query word is in title or author
-                    return queryWords.some(word => titleLower.includes(word) || authorLower.includes(word));
-                })
-                .slice(0, 3);
+    if (result.playlistInfo?.artworkUrl) playlistEmbed.setThumbnail(result.playlistInfo.artworkUrl);
+    await interaction.editReply({ embeds: [playlistEmbed] });
 
-            // Add history matches
-            historyMatches.forEach(entry => {
-                suggestions.push({
-                    type: 'history',
-                    title: entry.track_title,
-                    author: entry.track_author,
-                    url: entry.track_url,
-                    score: 10 // High priority for history matches
+    await ensurePlayback(interaction, queue, client);
+}
+
+async function handleSingleTrackResult({ interaction, client, queue, track, platform, searchInfo }) {
+    track.requester = interaction.user.id;
+    queue.add(track);
+
+    if (client.metrics) client.metrics.trackMusic('track_added', { platform });
+
+    await interaction.editReply({
+        embeds: [createTrackAddedEmbed(track, queue.tracks.length, client.config, searchInfo)]
+    });
+
+    await ensurePlayback(interaction, queue, client);
+}
+
+async function ensurePlayback(interaction, queue, client) {
+    if (!queue.current) {
+        await queue.play();
+        setTimeout(async () => {
+            try {
+                if (!queue.current) {
+                    logger.warn('No current track in queue after play, skipping now-playing message');
+                    return;
+                }
+                const nowPlayingMessage = await interaction.channel.send({
+                    embeds: [createNowPlayingEmbed(queue.current, queue, client.config)],
+                    components: createNowPlayingButtons(queue, false)
                 });
-            });
-        }
+                queue.setNowPlayingMessage(nowPlayingMessage);
+            } catch (error) {
+                logger.error('Failed to send now playing message', error);
+            }
+        }, 1000);
+    }
+}
 
-        // 2. Get guild's popular tracks
-        const popularTracks = History.getMostPlayed(guildId, 5, 'week');
+async function handlePlayError(interaction, client, error) {
+    if (error instanceof CircuitBreakerError) {
+        const degradedMessage = getDegradedModeMessage('tìm kiếm nhạc');
+        degradedMessage.description = 'Hệ thống tìm kiếm nhạc đang quá tải. Vui lòng thử lại sau 1-2 phút.';
 
-        if (popularTracks && popularTracks.length > 0) {
-            // Filter out already suggested and add some popular tracks
-            const existingUrls = new Set(suggestions.map(s => s.url));
-
-            popularTracks.slice(0, 3).forEach(entry => {
-                if (!existingUrls.has(entry.track_url)) {
-                    suggestions.push({
-                        type: 'popular',
-                        title: entry.track_title,
-                        author: entry.track_author,
-                        url: entry.track_url,
-                        playCount: entry.play_count,
-                        score: 5
-                    });
-                }
-            });
-        }
-
-        // 3. Try to extract artist and suggest artist's tracks
-        const artistName = extractArtistFromQuery(query);
-        if (artistName) {
-            const artistLower = artistName.toLowerCase();
-
-            // Look for tracks by this artist in history
-            const artistTracks =
-                userHistory
-                    ?.filter(entry => {
-                        const authorLower = (entry.track_author || '').toLowerCase();
-                        return authorLower.includes(artistLower);
-                    })
-                    .slice(0, 3) || [];
-
-            artistTracks.forEach(entry => {
-                const existingUrls = new Set(suggestions.map(s => s.url));
-                if (!existingUrls.has(entry.track_url)) {
-                    suggestions.push({
-                        type: 'artist',
-                        title: entry.track_title,
-                        author: entry.track_author,
-                        url: entry.track_url,
-                        score: 8
-                    });
-                }
-            });
-        }
-    } catch (error) {
-        logger.debug('Error getting smart suggestions', { error: error.message });
+        const embed = new EmbedBuilder()
+            .setColor(degradedMessage.color)
+            .setTitle(degradedMessage.title)
+            .setDescription(degradedMessage.description)
+            .addFields(degradedMessage.fields)
+            .setFooter({ text: client.config.bot.footer })
+            .setTimestamp(degradedMessage.timestamp);
+        return interaction.editReply({ embeds: [embed] });
     }
 
-    // Sort by score and return
-    return suggestions.sort((a, b) => b.score - a.score);
+    logger.error('Play command error', error);
+    await sendErrorResponse(interaction, error, client.config);
 }
 
 export default {
     data: new SlashCommandBuilder()
         .setName('play')
-        .setDescription('Phát nhạc từ URL hoặc tìm kiếm')
+        .setDescription('Phát nhạc từ YouTube, Spotify, SoundCloud, v.v.')
         .addStringOption(option =>
             option
                 .setName('query')
@@ -233,233 +273,114 @@ export default {
         await interaction.deferReply();
 
         try {
-            // Check if music system is available (graceful degradation)
             if (!isMusicSystemAvailable(client.musicManager)) {
-                const degradedMessage = getDegradedModeMessage('phát nhạc');
-                const embed = new EmbedBuilder()
-                    .setColor(degradedMessage.color)
-                    .setTitle(degradedMessage.title)
-                    .setDescription(degradedMessage.description)
-                    .addFields(degradedMessage.fields)
-                    .setTimestamp(degradedMessage.timestamp);
-
-                return await interaction.editReply({ embeds: [embed] });
+                return handleDegradedMode(interaction);
             }
 
-            const query = interaction.options.getString('query');
-            const member = interaction.member;
-            const voiceChannel = member.voice.channel;
-
-            // Check if user is in voice channel
-            if (!voiceChannel) {
-                throw new UserNotInVoiceError();
-            }
-
-            // Check bot permissions
-            const permissions = voiceChannel.permissionsFor(interaction.client.user);
-            if (!permissions.has(['Connect', 'Speak'])) {
-                throw new VoiceChannelPermissionError(voiceChannel.name);
-            }
+            const query = normalizeSearchQuery(interaction.options.getString('query'));
+            const voiceChannel = validateVoicePermissions(interaction);
 
             // Get or create queue
-            let queue = client.musicManager.getQueue(interaction.guildId);
+            const queue = await getOrCreateQueue(client, interaction, voiceChannel);
 
-            if (!queue) {
-                queue = await client.musicManager.createQueue(
-                    interaction.guildId,
-                    voiceChannel.id,
-                    interaction.channel
-                );
-            }
-
-            // Check if bot is in different voice channel
-            if (queue.voiceChannelId && queue.voiceChannelId !== voiceChannel.id) {
-                throw new DifferentVoiceChannelError();
-            }
-
-            // Detect platform and type
             const { platform, type, isUrl } = detectPlatform(query);
+            logger.debug('Play command', { query: query.substring(0, 50), platform, type });
 
-            // Log platform detection for debugging
-            logger.debug('Play command platform detection', { query: query.substring(0, 50), platform, type, isUrl });
+            await handleSpotifyLoading(interaction, platform, type);
 
-            // Show loading message for Spotify playlists/albums (they can be slow)
-            if (platform === 'spotify' && (type === 'playlist' || type === 'album')) {
-                const loadingEmbed = new EmbedBuilder()
-                    .setColor('#1DB954') // Spotify green
-                    .setTitle(
-                        `${getPlatformEmoji(platform)} Đang tải ${type === 'playlist' ? 'playlist' : 'album'} từ Spotify...`
-                    )
-                    .setDescription('Quá trình này có thể mất vài giây, vui lòng đợi...')
-                    .setTimestamp();
-
-                await interaction.editReply({ embeds: [loadingEmbed] });
-            }
-
-            // Search for tracks
             const result = await client.musicManager.search(query, interaction.user);
 
+            if (result?.error === 'SERVICE_UNAVAILABLE') {
+                return handleDegradedMode(interaction);
+            }
+
             if (!result || !result.tracks || result.tracks.length === 0) {
-                // Special error message for Spotify if credentials not configured
-                if (platform === 'spotify') {
-                    const spotifyError = new EmbedBuilder()
-                        .setColor('#FF0000')
-                        .setTitle('❌ Không tìm thấy kết quả từ Spotify')
-                        .setDescription(
-                            'Không thể tải nhạc từ Spotify. Có thể do:\n\n' +
-                                '• Link không hợp lệ hoặc bài hát không tồn tại\n' +
-                                '• Spotify API chưa được cấu hình (cần Client ID & Secret)\n' +
-                                '• Bài hát bị giới hạn theo khu vực\n\n' +
-                                '**Giải pháp:** Thử tìm kiếm bằng tên bài hát thay vì link Spotify'
-                        )
+                return handleNoResults(interaction, client, query, platform);
+            }
+
+            // Handle Search Confirmation (if not URL)
+            if (!isUrl && result.loadType === 'search' && result.tracks.length > 0) {
+                const searchTracks = result.tracks.slice(0, 5);
+                const topTrack = result.tracks[0];
+
+                // Check ALL search results for auto-play preference (not just top result).
+                // This fixes the case where a user saved a preference for a specific version
+                // (e.g., OST lyrics) but the search returns the MV version as the top result.
+                const autoPlayMatch = checkAutoPlayFromResults(interaction.user.id, searchTracks);
+
+                if (autoPlayMatch && autoPlayMatch.matchIndex >= 0) {
+                    // BUG-002: Guard against queue-full — fall back to manual confirmation
+                    const maxQueueSize = client.config?.music?.maxQueueSize || 500;
+                    if (queue.tracks.length >= maxQueueSize) {
+                        return handleSearchConfirmation(interaction, client, topTrack, searchTracks);
+                    }
+
+                    // Auto-play: use the MATCHED track (could be any result, not just tracks[0])
+                    const matchedTrack = searchTracks[autoPlayMatch.matchIndex] || topTrack;
+                    const matchedTrackUrl = matchedTrack.info?.uri || matchedTrack.uri || matchedTrack.url || '';
+                    matchedTrack.requester = interaction.user.id;
+                    queue.add(matchedTrack);
+
+                    // Build informative auto-play message
+                    const matchedTitle = matchedTrack.info?.title || autoPlayMatch.trackTitle || 'Unknown';
+                    const isAlternateVersion = autoPlayMatch.matchIndex > 0;
+                    const description = isAlternateVersion
+                        ? `🔄 Đã tự động phát **${truncateTitle(matchedTitle, 50)}**\n` +
+                          '💡 _Đây là phiên bản bạn đã chọn trước đó_'
+                        : `🔄 Đã tự động phát **${truncateTitle(matchedTitle, 50)}**`;
+
+                    const autoPlayEmbed = new EmbedBuilder()
+                        .setColor(COLORS.SUCCESS)
+                        .setDescription(description)
                         .setFooter({ text: client.config.bot.footer })
                         .setTimestamp();
 
-                    return await interaction.editReply({ embeds: [spotifyError] });
-                }
+                    await interaction.editReply({ embeds: [autoPlayEmbed] });
+                    markAutoPlayed(interaction.user.id, matchedTrackUrl);
+                    await ensurePlayback(interaction, queue, client);
 
-                // Get smart suggestions for better UX
-                const suggestions = await getSmartSuggestions(query, interaction.user.id, interaction.guildId);
-
-                if (suggestions.length > 0) {
-                    // Show suggestions embed instead of plain error
-                    const suggestionsEmbed = createNoResultsSuggestionsEmbed(query, suggestions, client.config);
-                    return await interaction.editReply({ embeds: [suggestionsEmbed] });
-                }
-
-                // No suggestions available, throw regular error
-                throw new NoSearchResultsError(query);
-            }
-
-            // If query isn't a URL and result is a search with many tracks, show confirmation for first track
-            if (!isUrl && result.loadType === 'search' && result.tracks.length > 0) {
-                const choices = result.tracks.slice(0, 5);
-                const firstTrack = choices[0];
-
-                // Save choices in memory to resolve on button click
-                if (!client._lastSearchResults) client._lastSearchResults = new Map();
-                const key = `${interaction.user.id}:${interaction.guildId}`;
-                client._lastSearchResults.set(key, { tracks: choices, createdAt: Date.now() });
-
-                // Show confirmation embed for the first track
-                await interaction.editReply({
-                    embeds: [createSearchConfirmEmbed(firstTrack, client.config)],
-                    components: createSearchConfirmButtons(firstTrack)
-                });
-                logger.command('play-search-confirm', interaction.user.id, interaction.guildId);
-                return; // Wait for button selection
-            }
-
-            // Handle different result types
-            if (result.loadType === 'playlist') {
-                // Add requester to all tracks
-                result.tracks.forEach(track => {
-                    track.requester = interaction.user.id;
-                });
-
-                // Add all tracks from playlist
-                queue.add(result.tracks);
-
-                // Track metrics
-                if (client.metrics) {
-                    client.metrics.trackMusic('playlist_added', {
-                        trackCount: result.tracks.length,
+                    logger.command('play-auto', interaction.user.id, interaction.guildId, {
                         platform,
-                        type
+                        matchIndex: autoPlayMatch.matchIndex,
+                        confidence: autoPlayMatch.confidence
                     });
+                    return;
                 }
 
-                // Create appropriate embed based on platform
-                const playlistName = result.playlistInfo?.name || 'Playlist';
-                const playlistEmbed = new EmbedBuilder()
-                    .setColor(platform === 'spotify' ? '#1DB954' : client.config.bot.color)
-                    .setTitle(`${getPlatformEmoji(platform)} Đã thêm ${type === 'album' ? 'album' : 'playlist'}`)
-                    .setDescription(`📝 **${playlistName}**`)
-                    .addFields([
-                        {
-                            name: '🎵 Số bài',
-                            value: `${result.tracks.length} bài`,
-                            inline: true
-                        },
-                        {
-                            name: '📍 Nguồn',
-                            value: platform.charAt(0).toUpperCase() + platform.slice(1),
-                            inline: true
-                        }
-                    ])
-                    .setFooter({ text: client.config.bot.footer })
-                    .setTimestamp();
+                return handleSearchConfirmation(interaction, client, topTrack, searchTracks);
+            }
 
-                // Add thumbnail if available
-                if (result.playlistInfo?.artworkUrl) {
-                    playlistEmbed.setThumbnail(result.playlistInfo.artworkUrl);
+            // v1.11.0: Build search source info for fallback badge
+            const searchInfo = result.searchSource
+                ? {
+                      searchSource: result.searchSource,
+                      searchSourceName: result.searchSourceName || result.searchSource,
+                      isFallback:
+                          !isUrl && result.searchSource !== SEARCH_PREFIXES.YOUTUBE && result.searchSource !== 'url'
+                  }
+                : null;
+
+            // Handle Results
+            if (result.loadType === 'playlist') {
+                // BUG-C01: Validate tracks have encoded field before adding to queue
+                result.tracks = result.tracks.filter(t => t.encoded);
+                if (result.tracks.length === 0) {
+                    return handleNoResults(interaction, client, query, platform);
                 }
-
-                await interaction.editReply({ embeds: [playlistEmbed] });
-
-                // Start playing if not already
-                if (!queue.current) {
-                    await queue.play();
-                }
+                await handlePlaylistResult({ interaction, client, queue, result, platform, type, searchInfo });
             } else {
-                // Add single track (first search result)
                 const track = result.tracks[0];
-                track.requester = interaction.user.id;
-                queue.add(track);
-
-                // Track metrics
-                if (client.metrics) {
-                    client.metrics.trackMusic('track_added', { platform });
+                // BUG-C01: Validate track.encoded exists before passing to queue
+                if (!track.encoded) {
+                    logger.warn('Track missing encoded field', { query: query.substring(0, 50), platform });
+                    return handleNoResults(interaction, client, query, platform);
                 }
-
-                const position = queue.tracks.length;
-
-                await interaction.editReply({
-                    embeds: [createTrackAddedEmbed(track, position, client.config)]
-                });
-
-                // Start playing if not already
-                if (!queue.current) {
-                    await queue.play();
-
-                    // Send now playing with buttons after a short delay
-                    setTimeout(async () => {
-                        try {
-                            const nowPlayingMessage = await interaction.channel.send({
-                                embeds: [createNowPlayingEmbed(queue.current, queue, client.config)],
-                                components: createNowPlayingButtons(queue, false)
-                            });
-
-                            // Store message for auto-updates
-                            queue.setNowPlayingMessage(nowPlayingMessage);
-                        } catch (error) {
-                            logger.error('Failed to send now playing message', error);
-                        }
-                    }, 1000);
-                }
+                await handleSingleTrackResult({ interaction, client, queue, track, platform, searchInfo });
             }
 
             logger.command('play', interaction.user.id, interaction.guildId, { platform, type });
         } catch (error) {
-            // Handle circuit breaker errors with specific message
-            if (error instanceof CircuitBreakerError) {
-                const degradedMessage = getDegradedModeMessage('tìm kiếm nhạc');
-                degradedMessage.description =
-                    'Hệ thống tìm kiếm nhạc đang quá tải hoặc không khả dụng.\n\n' +
-                    'Chúng tôi đang tự động khắc phục. Vui lòng thử lại sau 1-2 phút.';
-
-                const embed = new EmbedBuilder()
-                    .setColor(degradedMessage.color)
-                    .setTitle(degradedMessage.title)
-                    .setDescription(degradedMessage.description)
-                    .addFields(degradedMessage.fields)
-                    .setTimestamp(degradedMessage.timestamp);
-
-                return await interaction.editReply({ embeds: [embed] });
-            }
-
-            logger.error('Play command error', error);
-            await sendErrorResponse(interaction, error, client.config);
+            await handlePlayError(interaction, client, error);
         }
     }
 };

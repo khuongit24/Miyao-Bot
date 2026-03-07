@@ -6,6 +6,8 @@ import {
     ButtonBuilder,
     ButtonStyle
 } from 'discord.js';
+import { COLORS } from '../../config/design-system.js';
+import { HELP_CATEGORY_OPTIONS } from '../../config/help-categories.js';
 import logger from '../../utils/logger.js';
 
 // All available commands with descriptions for search
@@ -57,12 +59,6 @@ const allCommands = [
     { name: 'similar', description: 'Tìm nhạc tương tự', category: 'discovery', aliases: ['tương tự', 'like'] },
     { name: 'lyrics', description: 'Xem lời bài hát', category: 'discovery', aliases: ['ly', 'lời'] },
     // Playlist
-    {
-        name: 'favorites',
-        description: 'Quản lý danh sách yêu thích',
-        category: 'playlist',
-        aliases: ['fav', 'yêu thích']
-    },
     { name: 'playlist', description: 'Quản lý playlist cá nhân', category: 'playlist', aliases: ['pl'] },
     // Stats
     { name: 'mystats', description: 'Thống kê nghe nhạc cá nhân', category: 'stats', aliases: ['thống kê'] },
@@ -84,7 +80,33 @@ const allCommands = [
         category: 'admin',
         aliases: ['h', 'trợ giúp', 'hướng dẫn']
     },
-    { name: 'ping', description: 'Kiểm tra độ trễ bot', category: 'admin', aliases: [] }
+    { name: 'ping', description: 'Kiểm tra độ trễ bot', category: 'admin', aliases: [] },
+    { name: 'metrics', description: 'Dashboard hiệu năng hệ thống', category: 'admin', aliases: [] },
+    { name: 'save', description: 'Lưu queue hiện tại vào playlist', category: 'queue', aliases: ['lưu'] },
+    { name: 'voteskip', description: 'Bỏ phiếu skip bài hát', category: 'queue', aliases: ['vs'] },
+    { name: 'feedback', description: 'Gửi góp ý hoặc báo cáo lỗi', category: 'settings', aliases: ['góp ý'] },
+    // v1.11.1: Added missing commands (HELP-H01)
+    {
+        name: 'search',
+        description: 'Tìm kiếm bài hát từ nhiều nguồn',
+        category: 'discovery',
+        aliases: ['tìm kiếm'],
+        usage: '/search <query> [source]'
+    },
+    {
+        name: 'replay',
+        description: 'Phát lại bài hát hiện tại từ đầu',
+        category: 'playback',
+        aliases: ['phát lại'],
+        usage: '/replay'
+    },
+    {
+        name: 'mypreferences',
+        description: 'Quản lý cài đặt cá nhân',
+        category: 'settings',
+        aliases: ['cài đặt cá nhân'],
+        usage: '/mypreferences'
+    }
 ];
 
 // Command categories with details
@@ -101,6 +123,10 @@ const categories = {
             '• 📊 Thống kê nghe nhạc chi tiết\n' +
             '• 🔍 Khám phá nhạc mới & Lyrics\n' +
             '• 🔄 Auto-reconnect và error recovery\n\n' +
+            '**🚀 Bắt đầu nhanh:**\n' +
+            '1. Vào một kênh thoại\n' +
+            '2. Gõ `/play <tên bài hát>`\n' +
+            '3. Tận hưởng âm nhạc! 🎶\n\n' +
             '**Chọn category từ menu bên dưới để xem chi tiết!**\n\n' +
             '💡 **Mẹo:** Dùng `/help search <từ khóa>` để tìm lệnh nhanh!'
     },
@@ -166,20 +192,17 @@ const categories = {
             '**Mẹo:** Để trống query để dùng bài đang phát!'
     },
     playlist: {
-        emoji: '❤️',
-        title: 'Playlist & Favorites',
+        emoji: '📁',
+        title: 'Playlist',
         description:
-            '**Quản lý danh sách phát:**\n\n' +
-            '**Favorites (Yêu thích):**\n' +
-            '`/favorites list` - Xem danh sách yêu thích\n' +
-            '`/favorites add` - Thêm bài (đang phát/tìm kiếm)\n' +
-            '`/favorites play` - Phát tất cả yêu thích\n\n' +
-            '**Playlist (Tùy chỉnh):**\n' +
-            '`/playlist create <name>` - Tạo playlist mới\n' +
+            '**Quản lý playlist cá nhân:**\n\n' +
+            '`/playlist create <tên>` - Tạo playlist mới\n' +
             '`/playlist list` - Xem tất cả playlist\n' +
-            '`/playlist add <name> <query>` - Thêm bài\n' +
-            '`/playlist play <name>` - Phát playlist\n' +
-            '`/playlist save <name>` - Lưu queue/bài hiện tại'
+            '`/playlist add <tên> <query>` - Thêm bài vào playlist\n' +
+            '`/playlist play <tên>` - Phát playlist\n' +
+            '`/playlist remove <tên> <vị trí>` - Xóa bài khỏi playlist\n' +
+            '`/save <tên>` - Lưu nhanh queue hiện tại vào playlist\n\n' +
+            '💡 **Mẹo:** Nhấn nút ❤️ trên Now Playing để thêm bài vào playlist yêu thích!'
     },
     stats: {
         emoji: '📊',
@@ -191,8 +214,8 @@ const categories = {
             '  • Thói quen nghe nhạc\n' +
             '`/serverstats` - Thống kê server\n' +
             '`/leaderboard` - Bảng xếp hạng\n' +
-            '  • Most active users\n' +
-            '  • Most played tracks\n\n' +
+            '  • Người nghe nhiều nhất\n' +
+            '  • Bài hát phổ biến nhất\n\n' +
             '**Admin:**\n' +
             '`/stats` - Thống kê bot\n' +
             '`/nodes` - Trạng thái Lavalink nodes'
@@ -204,8 +227,7 @@ const categories = {
             '**Cài đặt cá nhân:**\n\n' +
             '`/settings show` - Xem cài đặt hiện tại\n' +
             '`/settings volume <level>` - Âm lượng mặc định\n' +
-            '`/settings autoresume <on/off>` - Auto-resume\n' +
-            '`/settings language <vi/en>` - Ngôn ngữ\n\n' +
+            '`/settings autoresume <on/off>` - Auto-resume\n\n' +
             '**Cài đặt server (Admin):**\n' +
             '`/settings djrole <role>` - Đặt DJ role\n' +
             '`/settings djonly <on/off>` - Chế độ DJ-only\n' +
@@ -355,22 +377,7 @@ async function handleMenuCommand(interaction, client) {
     const selectMenu = new StringSelectMenuBuilder()
         .setCustomId('help_category')
         .setPlaceholder('📚 Chọn category để xem chi tiết')
-        .addOptions([
-            { label: 'Trang chủ', description: 'Giới thiệu về Miyao Music Bot', value: 'home', emoji: '🏠' },
-            { label: 'Phát nhạc', description: 'Play, pause, skip, stop...', value: 'playback', emoji: '🎶' },
-            { label: 'Hàng đợi', description: 'Queue, shuffle, loop, move...', value: 'queue', emoji: '📋' },
-            { label: 'Âm thanh & Filters', description: 'Volume, filters, autoplay', value: 'control', emoji: '🎛️' },
-            { label: 'Khám phá', description: 'Discover, trending, lyrics, similar', value: 'discovery', emoji: '🔍' },
-            {
-                label: 'Playlist & Favorites',
-                description: 'Quản lý danh sách phát cá nhân',
-                value: 'playlist',
-                emoji: '❤️'
-            },
-            { label: 'Thống kê', description: 'Mystats, serverstats, leaderboard', value: 'stats', emoji: '📊' },
-            { label: 'Cài đặt', description: 'Cài đặt cá nhân và server', value: 'settings', emoji: '⚙️' },
-            { label: 'Tips & Tricks', description: 'Mẹo sử dụng hiệu quả', value: 'tips', emoji: '💡' }
-        ]);
+        .addOptions(HELP_CATEGORY_OPTIONS);
 
     // Create action buttons
     const buttons = new ActionRowBuilder().addComponents(
@@ -429,7 +436,7 @@ async function handleSearchCommand(interaction, client) {
                 '• Dùng `/help menu` để xem tất cả category\n' +
                 '• Thử tìm bằng tiếng Việt hoặc tiếng Anh'
         );
-        embed.setColor('#FFA500');
+        embed.setColor(COLORS.WARNING);
     } else {
         const description = results
             .slice(0, 10)
@@ -493,13 +500,13 @@ async function handleCommandDetails(interaction, client) {
 
     if (!command) {
         const embed = new EmbedBuilder()
-            .setColor('#FF0000')
+            .setColor(COLORS.ERROR)
             .setTitle('❌ Lệnh không tồn tại')
             .setDescription(`Không tìm thấy lệnh \`/${cmdName}\`\n\n` + 'Dùng `/help search <từ khóa>` để tìm lệnh.')
             .setFooter({ text: client.config.bot.footer })
             .setTimestamp();
 
-        return await interaction.reply({ embeds: [embed], ephemeral: true });
+        return interaction.reply({ embeds: [embed], ephemeral: true });
     }
 
     const emoji = getCategoryEmoji(command.category);
@@ -510,7 +517,7 @@ async function handleCommandDetails(interaction, client) {
         .setDescription(command.description)
         .addFields([
             {
-                name: '📂 Category',
+                name: '📂 Danh mục',
                 value: categories[command.category]?.title || command.category,
                 inline: true
             }
@@ -522,7 +529,7 @@ async function handleCommandDetails(interaction, client) {
     if (command.aliases.length > 0) {
         embed.addFields([
             {
-                name: '📝 Aliases',
+                name: '📝 Tên gọi khác',
                 value: command.aliases.map(a => `\`${a}\``).join(', '),
                 inline: true
             }
@@ -552,14 +559,13 @@ async function handleCommandDetails(interaction, client) {
 function getCommandExamples(cmdName) {
     const examples = {
         play: '`/play blue - yung kai`\n`/play https://youtube.com/watch?v=...`\n`/play spotify:track:...`',
-        seek: '`/seek 1:30` - Tua đến 1 phút 30 giây\n`/seek 90` - Tua đến 90 giây',
+        seek: '`/seek 1:30` - Tua đến phút 1:30\n`/seek 2:45` - Tua đến phút 2:45\n`/seek 1:00:00` - Tua đến giờ thứ 1',
         volume: '`/volume 50` - Đặt âm lượng 50%',
         filter: '`/filter bass` - Bật bass boost\n`/filter nightcore` - Bật nightcore\n`/filter clear` - Tắt tất cả',
         loop: '`/loop track` - Lặp bài hiện tại\n`/loop queue` - Lặp toàn bộ queue\n`/loop off` - Tắt lặp',
         playlist: '`/playlist create MyPlaylist`\n`/playlist play Chill Music`\n`/playlist add MyPlaylist https://...`',
-        favorites: '`/favorites add` - Thêm bài đang phát\n`/favorites play` - Phát tất cả',
-        discover: '`/discover pop happy` - Gợi ý nhạc pop vui vẻ',
-        trending: '`/trending VN` - Nhạc hot tại Việt Nam',
+        discover: '`/discover genre:pop mood:happy` - Gợi ý nhạc pop vui vẻ',
+        trending: '`/trending source:vn` - Nhạc hot tại Việt Nam',
         settings: '`/settings volume 80` - Đặt âm lượng mặc định\n`/settings djrole @DJ` - Đặt DJ role'
     };
 

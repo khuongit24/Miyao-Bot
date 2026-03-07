@@ -1,15 +1,19 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { createSuccessEmbed, createErrorEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { requireQueue } from '../../middleware/queueCheck.js';
+import { UserNotInVoiceError, DifferentVoiceChannelError } from '../../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import logger from '../../utils/logger.js';
 
 export default {
     data: new SlashCommandBuilder()
         .setName('loop')
-        .setDescription('Đặt chế độ lặp lại')
+        .setDescription('Bật/tắt lặp lại bài hát hoặc toàn bộ hàng đợi')
         .addStringOption(option =>
             option
                 .setName('mode')
-                .setDescription('Chế độ lặp lại')
+                .setDescription('Chọn chế độ lặp')
                 .setRequired(true)
                 .addChoices(
                     { name: 'Tắt', value: 'off' },
@@ -20,23 +24,26 @@ export default {
 
     async execute(interaction, client) {
         try {
-            const queue = client.musicManager.getQueue(interaction.guildId);
-
-            // Check if there's a queue
-            if (!queue) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Không có nhạc nào đang phát!', client.config)],
-                    ephemeral: true
-                });
+            await interaction.deferReply();
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
             }
+
+            // Use middleware
+            const queue = requireQueue(client.musicManager, interaction.guildId);
 
             // Check if user is in the same voice channel
             const member = interaction.member;
-            if (!member.voice.channel || member.voice.channel.id !== queue.voiceChannelId) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Bạn phải ở trong cùng voice channel với bot!', client.config)],
-                    ephemeral: true
-                });
+            if (!member.voice.channel) {
+                throw new UserNotInVoiceError();
+            }
+            if (member.voice.channel.id !== queue.voiceChannelId) {
+                throw new DifferentVoiceChannelError();
             }
 
             const mode = interaction.options.getString('mode');
@@ -44,13 +51,18 @@ export default {
             // Set loop mode
             await queue.setLoop(mode);
 
+            // Clear pending leave timeout when loop is enabled
+            if (mode !== 'off') {
+                queue.clearLeaveTimeout();
+            }
+
             const modeText = {
                 off: 'Tắt',
                 track: 'Bài hát hiện tại',
                 queue: 'Toàn bộ hàng đợi'
             };
 
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [
                     createSuccessEmbed('Chế độ lặp', `Đã đặt chế độ lặp thành **${modeText[mode]}**`, client.config)
                 ]
@@ -58,11 +70,7 @@ export default {
 
             logger.command('loop', interaction.user.id, interaction.guildId);
         } catch (error) {
-            logger.error('Loop command error', error);
-            await interaction.reply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi đặt chế độ lặp!', client.config)],
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

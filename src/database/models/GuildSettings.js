@@ -6,6 +6,30 @@
 import { getDatabaseManager } from '../DatabaseManager.js';
 import logger from '../../utils/logger.js';
 
+// In-memory LRU cache with 60s TTL for guild settings
+const CACHE_TTL_MS = 60_000;
+const CACHE_MAX_SIZE = 500;
+const _settingsCache = new Map(); // guildId -> { data, expiresAt }
+
+/**
+ * Evict expired entries and trim to max size
+ */
+function _pruneCache() {
+    const now = Date.now();
+    for (const [key, entry] of _settingsCache) {
+        if (now >= entry.expiresAt) _settingsCache.delete(key);
+    }
+    // LRU eviction: Map iterates in insertion order, so first entries are oldest
+    while (_settingsCache.size > CACHE_MAX_SIZE) {
+        const oldestKey = _settingsCache.keys().next().value;
+        _settingsCache.delete(oldestKey);
+    }
+}
+
+// Periodic cache cleanup (every 5 minutes)
+const _cacheCleanupInterval = setInterval(_pruneCache, 300_000);
+_cacheCleanupInterval.unref();
+
 class GuildSettings {
     /**
      * Get guild settings
@@ -13,29 +37,43 @@ class GuildSettings {
      * @returns {Object} Guild settings
      */
     static get(guildId) {
+        // Check cache first
+        const cached = _settingsCache.get(guildId);
+        if (cached && Date.now() < cached.expiresAt) {
+            // Move to end for LRU ordering
+            _settingsCache.delete(guildId);
+            _settingsCache.set(guildId, cached);
+            return cached.data;
+        }
+
         try {
             const db = getDatabaseManager();
             const settings = db.queryOne('SELECT * FROM guild_settings WHERE guild_id = ?', [guildId]);
 
+            let result;
             if (!settings) {
-                return this.getDefaults(guildId);
+                result = this.getDefaults(guildId);
+            } else {
+                result = {
+                    guildId: settings.guild_id,
+                    guildName: settings.guild_name,
+                    djRoleId: settings.dj_role_id,
+                    djOnlyMode: Boolean(settings.dj_only_mode),
+                    voteSkipEnabled: Boolean(settings.vote_skip_enabled),
+                    voteSkipPercentage: settings.vote_skip_percentage,
+                    twentyFourSeven: Boolean(settings.twenty_four_seven),
+                    announceSongs: Boolean(settings.announce_songs),
+                    defaultVolume: settings.default_volume,
+                    maxQueueSize: settings.max_queue_size,
+                    allowDuplicates: Boolean(settings.allow_duplicates),
+                    createdAt: settings.created_at,
+                    updatedAt: settings.updated_at
+                };
             }
 
-            return {
-                guildId: settings.guild_id,
-                guildName: settings.guild_name,
-                djRoleId: settings.dj_role_id,
-                djOnlyMode: Boolean(settings.dj_only_mode),
-                voteSkipEnabled: Boolean(settings.vote_skip_enabled),
-                voteSkipPercentage: settings.vote_skip_percentage,
-                twentyFourSeven: Boolean(settings.twenty_four_seven),
-                announceSongs: Boolean(settings.announce_songs),
-                defaultVolume: settings.default_volume,
-                maxQueueSize: settings.max_queue_size,
-                allowDuplicates: Boolean(settings.allow_duplicates),
-                createdAt: settings.created_at,
-                updatedAt: settings.updated_at
-            };
+            // Store in cache
+            _settingsCache.set(guildId, { data: result, expiresAt: Date.now() + CACHE_TTL_MS });
+            return result;
         } catch (error) {
             logger.error('Failed to get guild settings', { guildId, error: error.message });
             return this.getDefaults(guildId);
@@ -53,83 +91,63 @@ class GuildSettings {
         try {
             const db = getDatabaseManager();
 
-            // Check if guild exists
-            const existing = db.queryOne('SELECT guild_id FROM guild_settings WHERE guild_id = ?', [guildId]);
+            const insertColumns = ['guild_id'];
+            const insertValues = [guildId];
+            const updateSets = [];
 
-            if (existing) {
-                // Update existing settings
-                const updates = [];
-                const params = [];
+            const addField = (column, value) => {
+                insertColumns.push(column);
+                insertValues.push(value);
+                updateSets.push(`${column} = excluded.${column}`);
+            };
 
-                if (guildName) {
-                    updates.push('guild_name = ?');
-                    params.push(guildName);
-                }
-                if (settings.djRoleId !== undefined) {
-                    updates.push('dj_role_id = ?');
-                    params.push(settings.djRoleId);
-                }
-                if (settings.djOnlyMode !== undefined) {
-                    updates.push('dj_only_mode = ?');
-                    params.push(settings.djOnlyMode ? 1 : 0);
-                }
-                if (settings.voteSkipEnabled !== undefined) {
-                    updates.push('vote_skip_enabled = ?');
-                    params.push(settings.voteSkipEnabled ? 1 : 0);
-                }
-                if (settings.voteSkipPercentage !== undefined) {
-                    updates.push('vote_skip_percentage = ?');
-                    params.push(Math.max(10, Math.min(100, settings.voteSkipPercentage)));
-                }
-                if (settings.twentyFourSeven !== undefined) {
-                    updates.push('twenty_four_seven = ?');
-                    params.push(settings.twentyFourSeven ? 1 : 0);
-                }
-                if (settings.announceSongs !== undefined) {
-                    updates.push('announce_songs = ?');
-                    params.push(settings.announceSongs ? 1 : 0);
-                }
-                if (settings.defaultVolume !== undefined) {
-                    updates.push('default_volume = ?');
-                    params.push(Math.max(0, Math.min(100, settings.defaultVolume)));
-                }
-                if (settings.maxQueueSize !== undefined) {
-                    updates.push('max_queue_size = ?');
-                    params.push(Math.max(10, Math.min(1000, settings.maxQueueSize)));
-                }
-                if (settings.allowDuplicates !== undefined) {
-                    updates.push('allow_duplicates = ?');
-                    params.push(settings.allowDuplicates ? 1 : 0);
-                }
+            if (guildName !== null && guildName !== undefined) {
+                addField('guild_name', guildName);
+            }
+            if (settings.djRoleId !== undefined) {
+                addField('dj_role_id', settings.djRoleId);
+            }
+            if (settings.djOnlyMode !== undefined) {
+                addField('dj_only_mode', settings.djOnlyMode ? 1 : 0);
+            }
+            if (settings.voteSkipEnabled !== undefined) {
+                addField('vote_skip_enabled', settings.voteSkipEnabled ? 1 : 0);
+            }
+            if (settings.voteSkipPercentage !== undefined) {
+                addField('vote_skip_percentage', Math.max(10, Math.min(100, settings.voteSkipPercentage)));
+            }
+            if (settings.twentyFourSeven !== undefined) {
+                addField('twenty_four_seven', settings.twentyFourSeven ? 1 : 0);
+            }
+            if (settings.announceSongs !== undefined) {
+                addField('announce_songs', settings.announceSongs ? 1 : 0);
+            }
+            if (settings.defaultVolume !== undefined) {
+                addField('default_volume', Math.max(0, Math.min(100, settings.defaultVolume)));
+            }
+            if (settings.maxQueueSize !== undefined) {
+                addField('max_queue_size', Math.max(10, Math.min(1000, settings.maxQueueSize)));
+            }
+            if (settings.allowDuplicates !== undefined) {
+                addField('allow_duplicates', settings.allowDuplicates ? 1 : 0);
+            }
 
-                if (updates.length > 0) {
-                    params.push(guildId);
-                    db.execute(`UPDATE guild_settings SET ${updates.join(', ')} WHERE guild_id = ?`, params);
-                }
-            } else {
-                // Insert new guild settings
+            const placeholders = insertColumns.map(() => '?').join(', ');
+            if (updateSets.length === 0) {
                 db.execute(
-                    `INSERT INTO guild_settings (
-                        guild_id, guild_name, dj_role_id, dj_only_mode, vote_skip_enabled,
-                        vote_skip_percentage, twenty_four_seven, announce_songs,
-                        default_volume, max_queue_size, allow_duplicates
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                    [
-                        guildId,
-                        guildName,
-                        settings.djRoleId || null,
-                        settings.djOnlyMode ? 1 : 0,
-                        settings.voteSkipEnabled ? 1 : 0,
-                        settings.voteSkipPercentage || 50,
-                        settings.twentyFourSeven ? 1 : 0,
-                        settings.announceSongs !== false ? 1 : 0,
-                        settings.defaultVolume || 50,
-                        settings.maxQueueSize || 500,
-                        settings.allowDuplicates !== false ? 1 : 0
-                    ]
+                    `INSERT OR IGNORE INTO guild_settings (${insertColumns.join(', ')}) VALUES (${placeholders})`,
+                    insertValues
+                );
+            } else {
+                db.execute(
+                    `INSERT INTO guild_settings (${insertColumns.join(', ')}) VALUES (${placeholders})
+                     ON CONFLICT(guild_id) DO UPDATE SET ${updateSets.join(', ')}`,
+                    insertValues
                 );
             }
 
+            // Invalidate cache on write
+            _settingsCache.delete(guildId);
             logger.info('Guild settings updated', { guildId });
             return true;
         } catch (error) {
@@ -196,6 +214,8 @@ class GuildSettings {
         try {
             const db = getDatabaseManager();
             db.execute('DELETE FROM guild_settings WHERE guild_id = ?', [guildId]);
+            // Invalidate cache on delete
+            _settingsCache.delete(guildId);
             logger.info('Guild settings deleted', { guildId });
             return true;
         } catch (error) {

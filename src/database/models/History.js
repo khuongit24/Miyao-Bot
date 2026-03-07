@@ -8,6 +8,7 @@
 
 import { getDatabaseManager } from '../DatabaseManager.js';
 import { getHistoryBatcher } from '../HistoryBatcher.js';
+import { getDateFilter } from '../helpers.js';
 import logger from '../../utils/logger.js';
 
 class History {
@@ -113,26 +114,15 @@ class History {
     static getMostPlayed(guildId, limit = 10, period = 'all') {
         try {
             const db = getDatabaseManager();
-
-            let dateFilter = '';
-            switch (period) {
-                case 'day':
-                    dateFilter = "AND played_at > datetime('now', '-1 day')";
-                    break;
-                case 'week':
-                    dateFilter = "AND played_at > datetime('now', '-7 days')";
-                    break;
-                case 'month':
-                    dateFilter = "AND played_at > datetime('now', '-30 days')";
-                    break;
-            }
+            const dateFilter = getDateFilter(period);
 
             return db.query(
                 `SELECT track_title, track_author, track_url,
                         COUNT(*) as play_count,
-                        MAX(played_at) as last_played
+                        MAX(played_at) as last_played,
+                        MAX(track_duration) as track_duration
                  FROM history
-                 WHERE guild_id = ? ${dateFilter}
+                 WHERE guild_id = ? AND track_url IS NOT NULL ${dateFilter}
                  GROUP BY track_url
                  ORDER BY play_count DESC
                  LIMIT ?`,
@@ -256,19 +246,7 @@ class History {
     static getServerStats(guildId, period = 'all') {
         try {
             const db = getDatabaseManager();
-
-            let dateFilter = '';
-            switch (period) {
-                case 'day':
-                    dateFilter = "AND played_at > datetime('now', '-1 day')";
-                    break;
-                case 'week':
-                    dateFilter = "AND played_at > datetime('now', '-7 days')";
-                    break;
-                case 'month':
-                    dateFilter = "AND played_at > datetime('now', '-30 days')";
-                    break;
-            }
+            const dateFilter = getDateFilter(period);
 
             const stats = db.queryOne(
                 `SELECT 
@@ -307,19 +285,7 @@ class History {
     static getMostActiveUsers(guildId, limit = 10, period = 'all') {
         try {
             const db = getDatabaseManager();
-
-            let dateFilter = '';
-            switch (period) {
-                case 'day':
-                    dateFilter = "AND played_at > datetime('now', '-1 day')";
-                    break;
-                case 'week':
-                    dateFilter = "AND played_at > datetime('now', '-7 days')";
-                    break;
-                case 'month':
-                    dateFilter = "AND played_at > datetime('now', '-30 days')";
-                    break;
-            }
+            const dateFilter = getDateFilter(period);
 
             return db.query(
                 `SELECT 
@@ -362,6 +328,32 @@ class History {
         } catch (error) {
             logger.error('Failed to get server peak hours', { guildId, error });
             return [];
+        }
+    }
+
+    /**
+     * Ensure composite indexes exist for frequently filtered queries.
+     * Should be called once at startup.
+     * @returns {boolean} True if indexes were created/verified successfully
+     */
+    static ensureIndexes() {
+        try {
+            const db = getDatabaseManager();
+
+            // Accelerates period-filtered stats (getServerStats, getMostPlayed, etc.)
+            db.execute('CREATE INDEX IF NOT EXISTS idx_history_guild_played ON history (guild_id, played_at)');
+
+            // Accelerates user stats per guild (getMostActiveUsers, getUserStats)
+            db.execute('CREATE INDEX IF NOT EXISTS idx_history_user_guild ON history (user_id, guild_id)');
+
+            // Accelerates most-played and unique track queries
+            db.execute('CREATE INDEX IF NOT EXISTS idx_history_guild_track ON history (guild_id, track_url)');
+
+            logger.debug('History indexes verified/created');
+            return true;
+        } catch (error) {
+            logger.error('Failed to create history indexes', error);
+            return false;
         }
     }
 

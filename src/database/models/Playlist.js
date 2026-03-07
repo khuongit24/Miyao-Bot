@@ -23,12 +23,13 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            const stmt = db.db.prepare(`
+            const info = db.execute(
+                `
                 INSERT INTO playlists (name, owner_id, owner_username, guild_id, description, is_public)
                 VALUES (?, ?, ?, ?, ?, ?)
-            `);
-
-            const info = stmt.run(name, ownerId, ownerUsername, guildId, description, isPublic ? 1 : 0);
+            `,
+                [name, ownerId, ownerUsername, guildId, description, isPublic ? 1 : 0]
+            );
 
             logger.info('Playlist created', {
                 playlistId: info.lastInsertRowid,
@@ -56,15 +57,16 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            const stmt = db.db.prepare(`
+            const playlist = db.queryOne(
+                `
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p
                 LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
                 WHERE p.id = ?
                 GROUP BY p.id
-            `);
-
-            const playlist = stmt.get(playlistId);
+            `,
+                [playlistId]
+            );
             return playlist || null;
         } catch (error) {
             logger.error('Failed to get playlist by ID', { error: error.message, playlistId });
@@ -96,8 +98,7 @@ class Playlist {
 
             query += ' GROUP BY p.id ORDER BY p.updated_at DESC';
 
-            const stmt = db.db.prepare(query);
-            return stmt.all(ownerId, guildId);
+            return db.query(query, [ownerId, guildId]);
         } catch (error) {
             logger.error('Failed to get playlists by owner', { error: error.message, ownerId, guildId });
             throw new DatabaseError('Failed to get playlists', error);
@@ -115,15 +116,18 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            const stmt = db.db.prepare(`
+            return (
+                db.queryOne(
+                    `
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p
                 LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
                 WHERE p.name = ? AND p.owner_id = ? AND p.guild_id = ?
                 GROUP BY p.id
-            `);
-
-            return stmt.get(name, ownerId, guildId) || null;
+            `,
+                    [name, ownerId, guildId]
+                ) || null
+            );
         } catch (error) {
             logger.error('Failed to get playlist by name', { error: error.message, name, ownerId, guildId });
             throw new DatabaseError('Failed to get playlist', error);
@@ -148,16 +152,19 @@ class Playlist {
             }
 
             // If not found, search for public playlist with that name in the guild
-            const stmt = db.db.prepare(`
+            return (
+                db.queryOne(
+                    `
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p
                 LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
                 WHERE p.name = ? AND p.guild_id = ? AND p.is_public = 1
                 GROUP BY p.id
                 LIMIT 1
-            `);
-
-            return stmt.get(name, guildId) || null;
+            `,
+                    [name, guildId]
+                ) || null
+            );
         } catch (error) {
             logger.error('Failed to find playlist by name in guild', { error: error.message, name, userId, guildId });
             throw new DatabaseError('Failed to find playlist', error);
@@ -175,15 +182,6 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            // Verify ownership
-            const playlist = this.getById(playlistId);
-            if (!playlist) {
-                throw new DatabaseError('Playlist not found');
-            }
-            if (playlist.owner_id !== ownerId) {
-                throw new DatabaseError('You do not have permission to modify this playlist');
-            }
-
             // Build update query
             const allowedFields = ['name', 'description', 'thumbnail', 'is_public'];
             const updates = [];
@@ -197,18 +195,35 @@ class Playlist {
             }
 
             if (updates.length === 0) {
+                const playlist = this.getById(playlistId);
+                if (!playlist) {
+                    throw new DatabaseError('Playlist not found');
+                }
+                if (playlist.owner_id !== ownerId) {
+                    throw new DatabaseError('You do not have permission to modify this playlist');
+                }
                 return playlist;
             }
 
-            values.push(playlistId);
+            // Combine ownership check with mutation in a single atomic statement (P2-09)
+            values.push(playlistId, ownerId);
 
-            const stmt = db.db.prepare(`
+            const info = db.execute(
+                `
                 UPDATE playlists
                 SET ${updates.join(', ')}
-                WHERE id = ?
-            `);
+                WHERE id = ? AND owner_id = ?
+            `,
+                values
+            );
 
-            stmt.run(...values);
+            if (info.changes === 0) {
+                const existing = this.getById(playlistId);
+                if (!existing) {
+                    throw new DatabaseError('Playlist not found');
+                }
+                throw new DatabaseError('You do not have permission to modify this playlist');
+            }
 
             logger.info('Playlist updated', { playlistId, changes: Object.keys(changes) });
             return this.getById(playlistId);
@@ -228,17 +243,16 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            // Verify ownership
-            const playlist = this.getById(playlistId);
-            if (!playlist) {
-                throw new DatabaseError('Playlist not found');
-            }
-            if (playlist.owner_id !== ownerId) {
+            // Combine ownership check with deletion in a single atomic statement (P2-09)
+            const info = db.execute('DELETE FROM playlists WHERE id = ? AND owner_id = ?', [playlistId, ownerId]);
+
+            if (info.changes === 0) {
+                const existing = this.getById(playlistId);
+                if (!existing) {
+                    throw new DatabaseError('Playlist not found');
+                }
                 throw new DatabaseError('You do not have permission to delete this playlist');
             }
-
-            const stmt = db.db.prepare('DELETE FROM playlists WHERE id = ?');
-            stmt.run(playlistId);
 
             logger.info('Playlist deleted', { playlistId, ownerId });
             return true;
@@ -259,45 +273,63 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            // Get next position
-            const posStmt = db.db.prepare(`
-                SELECT COALESCE(MAX(position), 0) + 1 as next_position
-                FROM playlist_tracks
-                WHERE playlist_id = ?
-            `);
-            const { next_position } = posStmt.get(playlistId);
+            // Validate required fields (BUG-055)
+            const trackUrl = track.url || track.uri;
+            const trackTitle = track.title || track.name;
+            if (!trackUrl) {
+                throw new DatabaseError('Track URL is required');
+            }
+            if (!trackTitle) {
+                throw new DatabaseError('Track title is required');
+            }
 
-            const stmt = db.db.prepare(`
-                INSERT INTO playlist_tracks (playlist_id, track_url, track_title, track_author, track_duration, position, added_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            `);
+            const trackAuthor = track.author || track.artist || 'Unknown';
+            const trackDuration = track.duration || track.length || 0;
 
-            const info = stmt.run(
-                playlistId,
-                track.url || track.uri,
-                track.title || track.name,
-                track.author || track.artist,
-                track.duration || track.length,
-                next_position,
-                addedBy
-            );
+            // Wrap SELECT MAX + INSERT in a transaction for atomicity (BUG-D12)
+            let result;
+            db.transaction(() => {
+                const posStmt = db.db.prepare(`
+                    SELECT COALESCE(MAX(position), 0) + 1 as next_position
+                    FROM playlist_tracks
+                    WHERE playlist_id = ?
+                `);
+                const { next_position } = posStmt.get(playlistId);
+
+                const stmt = db.db.prepare(`
+                    INSERT INTO playlist_tracks (playlist_id, track_url, track_title, track_author, track_duration, position, added_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                `);
+
+                const info = stmt.run(
+                    playlistId,
+                    trackUrl,
+                    trackTitle,
+                    trackAuthor,
+                    trackDuration,
+                    next_position,
+                    addedBy
+                );
+
+                result = {
+                    id: info.lastInsertRowid,
+                    playlist_id: playlistId,
+                    track_url: trackUrl,
+                    track_title: trackTitle,
+                    track_author: trackAuthor,
+                    track_duration: trackDuration,
+                    position: next_position,
+                    added_by: addedBy
+                };
+            });
 
             logger.info('Track added to playlist', {
                 playlistId,
-                trackId: info.lastInsertRowid,
-                title: track.title
+                trackId: result.id,
+                title: trackTitle
             });
 
-            return {
-                id: info.lastInsertRowid,
-                playlist_id: playlistId,
-                track_url: track.url || track.uri,
-                track_title: track.title || track.name,
-                track_author: track.author || track.artist,
-                track_duration: track.duration || track.length,
-                position: next_position,
-                added_by: addedBy
-            };
+            return result;
         } catch (error) {
             logger.error('Failed to add track to playlist', { error: error.message, playlistId });
             throw new DatabaseError('Failed to add track to playlist', error);
@@ -315,21 +347,37 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            // Verify ownership
-            const playlist = this.getById(playlistId);
-            if (!playlist) {
-                throw new DatabaseError('Playlist not found');
-            }
-            if (playlist.owner_id !== ownerId) {
-                throw new DatabaseError('You do not have permission to modify this playlist');
-            }
+            // Delete and re-index positions atomically with ownership check (P2-09, BUG-056)
+            db.transaction(() => {
+                // Verify ownership atomically within transaction (P2-09)
+                const playlist = db.db
+                    .prepare('SELECT 1 FROM playlists WHERE id = ? AND owner_id = ?')
+                    .get(playlistId, ownerId);
+                if (!playlist) {
+                    const existing = db.db.prepare('SELECT 1 FROM playlists WHERE id = ?').get(playlistId);
+                    if (!existing) {
+                        throw new DatabaseError('Playlist not found');
+                    }
+                    throw new DatabaseError('You do not have permission to modify this playlist');
+                }
 
-            const stmt = db.db.prepare('DELETE FROM playlist_tracks WHERE id = ? AND playlist_id = ?');
-            const info = stmt.run(trackId, playlistId);
+                // Get the position of the track being deleted
+                const track = db.db
+                    .prepare('SELECT position FROM playlist_tracks WHERE id = ? AND playlist_id = ?')
+                    .get(trackId, playlistId);
+                if (!track) {
+                    throw new DatabaseError('Track not found in playlist');
+                }
 
-            if (info.changes === 0) {
-                throw new DatabaseError('Track not found in playlist');
-            }
+                const deleteStmt = db.db.prepare('DELETE FROM playlist_tracks WHERE id = ? AND playlist_id = ?');
+                deleteStmt.run(trackId, playlistId);
+
+                // Re-index: close the position gap
+                const reindexStmt = db.db.prepare(
+                    'UPDATE playlist_tracks SET position = position - 1 WHERE playlist_id = ? AND position > ?'
+                );
+                reindexStmt.run(playlistId, track.position);
+            });
 
             logger.info('Track removed from playlist', { playlistId, trackId });
             return true;
@@ -348,13 +396,14 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            const stmt = db.db.prepare(`
+            return db.query(
+                `
                 SELECT * FROM playlist_tracks
                 WHERE playlist_id = ?
                 ORDER BY position ASC
-            `);
-
-            return stmt.all(playlistId);
+            `,
+                [playlistId]
+            );
         } catch (error) {
             logger.error('Failed to get playlist tracks', { error: error.message, playlistId });
             throw new DatabaseError('Failed to get playlist tracks', error);
@@ -373,19 +422,20 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            // Verify ownership
-            const playlist = this.getById(playlistId);
-            if (!playlist) {
-                throw new DatabaseError('Playlist not found');
-            }
-            if (playlist.owner_id !== ownerId) {
-                throw new DatabaseError('You do not have permission to modify this playlist');
-            }
+            // Use db.transaction() for atomic operation with ownership check (P2-09)
+            db.transaction(() => {
+                // Verify ownership atomically within transaction (P2-09)
+                const playlist = db.db
+                    .prepare('SELECT 1 FROM playlists WHERE id = ? AND owner_id = ?')
+                    .get(playlistId, ownerId);
+                if (!playlist) {
+                    const existing = db.db.prepare('SELECT 1 FROM playlists WHERE id = ?').get(playlistId);
+                    if (!existing) {
+                        throw new DatabaseError('Playlist not found');
+                    }
+                    throw new DatabaseError('You do not have permission to modify this playlist');
+                }
 
-            // Use transaction for atomic operation
-            db.db.prepare('BEGIN').run();
-
-            try {
                 // Get track at fromPosition
                 const getStmt = db.db.prepare(`
                     SELECT id FROM playlist_tracks
@@ -398,7 +448,6 @@ class Playlist {
                 }
 
                 if (fromPosition === toPosition) {
-                    db.db.prepare('COMMIT').run();
                     return true;
                 }
 
@@ -438,14 +487,11 @@ class Playlist {
                     )
                     .run(toPosition, track.id);
 
-                db.db.prepare('COMMIT').run();
-
-                logger.info('Track moved in playlist', { playlistId, fromPosition, toPosition });
                 return true;
-            } catch (error) {
-                db.db.prepare('ROLLBACK').run();
-                throw error;
-            }
+            });
+
+            logger.info('Track moved in playlist', { playlistId, fromPosition, toPosition });
+            return true;
         } catch (error) {
             logger.error('Failed to move track in playlist', { error: error.message, playlistId });
             throw new DatabaseError('Failed to move track in playlist', error);
@@ -462,17 +508,21 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            // Verify ownership
-            const playlist = this.getById(playlistId);
-            if (!playlist) {
-                throw new DatabaseError('Playlist not found');
-            }
-            if (playlist.owner_id !== ownerId) {
-                throw new DatabaseError('You do not have permission to modify this playlist');
-            }
+            // Verify ownership and clear tracks atomically (P2-09)
+            db.transaction(() => {
+                const playlist = db.db
+                    .prepare('SELECT 1 FROM playlists WHERE id = ? AND owner_id = ?')
+                    .get(playlistId, ownerId);
+                if (!playlist) {
+                    const existing = db.db.prepare('SELECT 1 FROM playlists WHERE id = ?').get(playlistId);
+                    if (!existing) {
+                        throw new DatabaseError('Playlist not found');
+                    }
+                    throw new DatabaseError('You do not have permission to modify this playlist');
+                }
 
-            const stmt = db.db.prepare('DELETE FROM playlist_tracks WHERE playlist_id = ?');
-            stmt.run(playlistId);
+                db.db.prepare('DELETE FROM playlist_tracks WHERE playlist_id = ?').run(playlistId);
+            });
 
             logger.info('Playlist tracks cleared', { playlistId });
             return true;
@@ -492,7 +542,8 @@ class Playlist {
         try {
             const db = getDatabaseManager();
 
-            const stmt = db.db.prepare(`
+            return db.query(
+                `
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p
                 LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
@@ -500,9 +551,9 @@ class Playlist {
                 GROUP BY p.id
                 ORDER BY p.updated_at DESC
                 LIMIT ?
-            `);
-
-            return stmt.all(guildId, limit);
+            `,
+                [guildId, limit]
+            );
         } catch (error) {
             logger.error('Failed to get public playlists', { error: error.message, guildId });
             throw new DatabaseError('Failed to get public playlists', error);
@@ -524,7 +575,7 @@ class Playlist {
                 SELECT p.*, COUNT(pt.id) as track_count
                 FROM playlists p
                 LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
-                WHERE p.guild_id = ? AND p.name LIKE ?
+                WHERE p.guild_id = ? AND p.name LIKE ? ESCAPE '\\'
             `;
 
             if (publicOnly) {
@@ -533,8 +584,8 @@ class Playlist {
 
             sql += ' GROUP BY p.id ORDER BY p.updated_at DESC LIMIT 25';
 
-            const stmt = db.db.prepare(sql);
-            return stmt.all(guildId, `%${query}%`);
+            const escaped = query.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+            return db.query(sql, [guildId, `%${escaped}%`]);
         } catch (error) {
             logger.error('Failed to search playlists', { error: error.message, guildId, query });
             throw new DatabaseError('Failed to search playlists', error);

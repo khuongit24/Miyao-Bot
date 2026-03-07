@@ -29,6 +29,7 @@ export default {
                     .setColor(client.config.bot.color)
                     .setTitle('📊 Thống Kê Của Bạn')
                     .setDescription('Bạn chưa nghe nhạc nào qua bot!\n\nSử dụng `/play` để bắt đầu nghe nhạc.')
+                    .setFooter({ text: client.config.bot.footer })
                     .setTimestamp();
 
                 return await interaction.editReply({ embeds: [embed] });
@@ -131,10 +132,12 @@ export default {
             if (totalHours >= 100) badges.push('⏰ Thính Giả Hardcore (100h+)');
             else if (totalHours >= 24) badges.push('🎧 Thính Giả Chăm Chỉ (24h+)');
 
-            if (streak.currentStreak >= 30) badges.push('🔥 Streak Master (30+ ngày)');
-            else if (streak.currentStreak >= 7) badges.push('📅 Nghe Nhạc Hàng Ngày (7+ ngày)');
+            if (streak) {
+                if (streak.currentStreak >= 30) badges.push('🔥 Streak Master (30+ ngày)');
+                else if (streak.currentStreak >= 7) badges.push('📅 Nghe Nhạc Hàng Ngày (7+ ngày)');
 
-            if (streak.longestStreak >= 30) badges.push('🏆 Kỷ Lục Streak 30+');
+                if (streak.longestStreak >= 30) badges.push('🏆 Kỷ Lục Streak 30+');
+            }
 
             if (badges.length > 0) {
                 embed.addFields([

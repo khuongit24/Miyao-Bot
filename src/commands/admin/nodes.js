@@ -1,4 +1,5 @@
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import logger from '../../utils/logger.js';
 
 export default {
@@ -7,14 +8,14 @@ export default {
         .setDescription('Hiển thị trạng thái chi tiết của các Lavalink nodes'),
 
     async execute(interaction, client) {
+        await interaction.deferReply();
         try {
             const healthMonitor = client.musicManager.healthMonitor;
             const nodes = client.musicManager.shoukaku.nodes;
 
             if (!nodes || nodes.size === 0) {
-                return await interaction.reply({
-                    content: '❌ Không có Lavalink node nào được kết nối!',
-                    ephemeral: true
+                return await interaction.editReply({
+                    content: '❌ Không có Lavalink node nào được kết nối!'
                 });
             }
 
@@ -29,15 +30,18 @@ export default {
                 const health = healthMonitor ? healthMonitor.getNodeHealth(name) : null;
                 const stats = node.stats;
 
-                // Status indicator
+                // Shoukaku v4.3.0 State: 0=CONNECTING, 1=CONNECTED, 2=DISCONNECTING, 3=DISCONNECTED
                 let statusIcon = '❌';
                 let statusText = 'Disconnected';
-                if (node.state === 3) {
+                if (node.state === 1) {
                     statusIcon = '✅';
                     statusText = 'Connected';
-                } else if (node.state === 2) {
+                } else if (node.state === 0) {
                     statusIcon = '🔄';
                     statusText = 'Connecting';
+                } else if (node.state === 2) {
+                    statusIcon = '⏳';
+                    statusText = 'Disconnecting';
                 }
 
                 const fieldLines = [`**Status:** ${statusIcon} ${statusText}`];
@@ -50,7 +54,10 @@ export default {
 
                     const memUsed = Math.round(stats.memory.used / 1024 / 1024);
                     const memTotal = Math.round(stats.memory.reservable / 1024 / 1024);
-                    const memPercent = ((stats.memory.used / stats.memory.reservable) * 100).toFixed(0);
+                    const memPercent =
+                        stats.memory.reservable > 0
+                            ? ((stats.memory.used / stats.memory.reservable) * 100).toFixed(0)
+                            : '0';
 
                     const cpuLoad = (stats.cpu.systemLoad * 100).toFixed(1);
 
@@ -89,17 +96,14 @@ export default {
                 }
             }
 
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [embed]
             });
 
             logger.command('nodes', interaction.user.id, interaction.guildId);
         } catch (error) {
             logger.error('Nodes command error', error);
-            await interaction.reply({
-                content: '❌ Đã xảy ra lỗi khi hiển thị thông tin nodes!',
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

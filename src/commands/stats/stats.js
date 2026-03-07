@@ -1,13 +1,19 @@
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, PermissionFlagsBits } from 'discord.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import logger from '../../utils/logger.js';
 import { VERSION, ENVIRONMENT } from '../../utils/version.js';
 import os from 'os';
 
 export default {
-    data: new SlashCommandBuilder().setName('stats').setDescription('Hiển thị thống kê và hiệu suất của bot'),
+    data: new SlashCommandBuilder()
+        .setName('stats')
+        .setDescription('Hiển thị thống kê và hiệu suất của bot')
+        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
     async execute(interaction, client) {
         try {
+            await interaction.deferReply();
+
             const metrics = client.musicManager.getMetrics();
             const memUsage = process.memoryUsage();
             const uptime = process.uptime();
@@ -25,7 +31,7 @@ export default {
             const rss = Math.round(memUsage.rss / 1024 / 1024);
 
             // Node stats
-            const nodeStatsStr = metrics.nodeStats
+            const nodeStatsStr = (metrics.nodeStats || [])
                 .map(
                     node =>
                         `**${node.name}**: ${node.connected ? '✅' : '❌'} | Players: ${node.players}/${node.playingPlayers} | CPU: ${node.cpu.toFixed(1)}%`
@@ -88,17 +94,14 @@ export default {
                 .setFooter({ text: `${client.config.bot.footer} • Advanced Performance Monitoring` })
                 .setTimestamp();
 
-            await interaction.reply({
+            await interaction.editReply({
                 embeds: [embed]
             });
 
             logger.command('stats', interaction.user.id, interaction.guildId);
         } catch (error) {
             logger.error('Stats command error', error);
-            await interaction.reply({
-                content: '❌ Đã xảy ra lỗi khi hiển thị thống kê!',
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

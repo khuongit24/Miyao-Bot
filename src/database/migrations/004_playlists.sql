@@ -12,11 +12,11 @@ CREATE TABLE IF NOT EXISTS playlists_backup AS SELECT * FROM playlists WHERE 1=0
 -- Insert backup data if playlists table exists
 INSERT OR IGNORE INTO playlists_backup SELECT * FROM playlists;
 
--- Step 2: Drop old playlists table (data is in backup)
+-- Step 2: Drop old playlists table (backup already created above)
 DROP TABLE IF EXISTS playlists;
 
--- Step 3: Create new playlists table with enhanced schema
-CREATE TABLE playlists (
+-- Step 2b: Create new playlists table with enhanced schema
+CREATE TABLE IF NOT EXISTS playlists (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     owner_id TEXT NOT NULL,
@@ -30,8 +30,8 @@ CREATE TABLE playlists (
     UNIQUE(owner_id, guild_id, name)
 );
 
--- Step 4: Create playlist_tracks table
-CREATE TABLE playlist_tracks (
+-- Step 3: Create playlist_tracks table
+CREATE TABLE IF NOT EXISTS playlist_tracks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     playlist_id INTEGER NOT NULL,
     track_url TEXT NOT NULL,
@@ -44,9 +44,9 @@ CREATE TABLE playlist_tracks (
     FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE
 );
 
--- Step 5: Migrate data from backup (if exists)
+-- Step 5: Migrate data from backup (if exists) — non-destructive
 -- Convert old user_id to owner_id, and guild_id is assumed from first user interaction
-INSERT INTO playlists (name, owner_id, owner_username, guild_id, description, is_public, created_at, updated_at)
+INSERT OR IGNORE INTO playlists (name, owner_id, owner_username, guild_id, description, is_public, created_at, updated_at)
 SELECT 
     name,
     user_id as owner_id,
@@ -64,11 +64,11 @@ FROM playlists_backup;
 -- Note: Old tracks_json data is preserved in playlists_backup table
 
 -- Step 7: Create indexes for performance optimization
-CREATE INDEX idx_playlists_owner ON playlists(owner_id);
-CREATE INDEX idx_playlists_guild ON playlists(guild_id);
-CREATE INDEX idx_playlists_public ON playlists(is_public, guild_id);
-CREATE INDEX idx_playlist_tracks_playlist ON playlist_tracks(playlist_id);
-CREATE INDEX idx_playlist_tracks_position ON playlist_tracks(playlist_id, position);
+CREATE INDEX IF NOT EXISTS idx_playlists_owner ON playlists(owner_id);
+CREATE INDEX IF NOT EXISTS idx_playlists_guild ON playlists(guild_id);
+CREATE INDEX IF NOT EXISTS idx_playlists_public ON playlists(is_public, guild_id);
+CREATE INDEX IF NOT EXISTS idx_playlist_tracks_playlist ON playlist_tracks(playlist_id);
+CREATE INDEX IF NOT EXISTS idx_playlist_tracks_position ON playlist_tracks(playlist_id, position);
 
 -- Step 8: Create triggers
 -- Trigger: Update updated_at timestamp on playlist changes

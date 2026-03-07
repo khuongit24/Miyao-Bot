@@ -8,6 +8,7 @@ import UserPreferences from '../../database/models/UserPreferences.js';
 import GuildSettings from '../../database/models/GuildSettings.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import { ValidationError, InvalidVolumeError } from '../../utils/errors.js';
+import { COLORS } from '../../config/design-system.js';
 import { VOLUME } from '../../utils/constants.js';
 import logger from '../../utils/logger.js';
 
@@ -43,18 +44,6 @@ export default {
                 .setDescription('Nhận thông báo từ bot')
                 .addBooleanOption(option =>
                     option.setName('enabled').setDescription('Bật/tắt thông báo').setRequired(true)
-                )
-        )
-        .addSubcommand(subcommand =>
-            subcommand
-                .setName('language')
-                .setDescription('Chọn ngôn ngữ')
-                .addStringOption(option =>
-                    option
-                        .setName('lang')
-                        .setDescription('Ngôn ngữ')
-                        .setRequired(true)
-                        .addChoices({ name: 'Tiếng Việt', value: 'vi' }, { name: 'English', value: 'en' })
                 )
         )
         .addSubcommand(subcommand => subcommand.setName('reset').setDescription('Đặt lại về mặc định'))
@@ -126,9 +115,6 @@ export default {
                 case 'notifications':
                     await handleNotifications(interaction, client);
                     break;
-                case 'language':
-                    await handleLanguage(interaction, client);
-                    break;
                 case 'reset':
                     await handleReset(interaction, client);
                     break;
@@ -193,11 +179,11 @@ async function handleShow(interaction, client) {
             },
             {
                 name: '🌐 Ngôn ngữ',
-                value: prefs.language === 'vi' ? '🇻🇳 Tiếng Việt' : '🇬🇧 English',
+                value: '🇻🇳 Tiếng Việt (chỉ hỗ trợ)',
                 inline: true
             }
         ])
-        .setFooter({ text: 'Dùng /settings <option> để thay đổi' })
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     if (prefs.createdAt) {
@@ -235,6 +221,7 @@ async function handleVolume(interaction, client) {
         .setColor(client.config.bot.color)
         .setTitle('✅ Đã Cập Nhật')
         .setDescription(`Âm lượng mặc định: **${volume}%**\n\nÂm lượng này sẽ được áp dụng khi bạn bắt đầu phát nhạc.`)
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -260,6 +247,7 @@ async function handleAutoResume(interaction, client) {
         .setDescription(
             `Auto-resume: **${enabled ? 'Bật' : 'Tắt'}**\n\n${enabled ? 'Bot sẽ tự động tiếp tục phát nhạc khi bạn join lại voice channel.' : 'Bot sẽ không tự động tiếp tục phát.'}`
         )
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -289,31 +277,7 @@ async function handleNotifications(interaction, client) {
         .setDescription(
             `Thông báo: **${enabled ? 'Bật' : 'Tắt'}**\n\n${enabled ? 'Bạn sẽ nhận được thông báo từ bot.' : 'Bạn sẽ không nhận thông báo.'}`
         )
-        .setTimestamp();
-
-    await interaction.editReply({ embeds: [embed] });
-}
-
-/**
- * Set language
- */
-async function handleLanguage(interaction, client) {
-    await interaction.deferReply({ ephemeral: true });
-
-    const lang = interaction.options.getString('lang');
-
-    const success = UserPreferences.set(interaction.user.id, { language: lang }, interaction.user.username);
-
-    if (!success) {
-        throw new Error('Không thể cập nhật cài đặt');
-    }
-
-    const langName = lang === 'vi' ? '🇻🇳 Tiếng Việt' : '🇬🇧 English';
-
-    const embed = new EmbedBuilder()
-        .setColor(client.config.bot.color)
-        .setTitle('✅ Đã Cập Nhật')
-        .setDescription(`Ngôn ngữ: **${langName}**\n\n*Lưu ý: Tính năng đa ngôn ngữ đang được phát triển.*`)
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -355,10 +319,11 @@ async function handleReset(interaction, client) {
             },
             {
                 name: '🌐 Ngôn ngữ',
-                value: defaults.language === 'vi' ? 'Tiếng Việt' : 'English',
+                value: '🇻🇳 Tiếng Việt (chỉ hỗ trợ)',
                 inline: true
             }
         ])
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -396,7 +361,7 @@ async function handleDJRole(interaction, client) {
                 ? `DJ Role được đặt thành: **${role.name}**\n\nThành viên có role này có thể sử dụng các lệnh điều khiển nhạc khi bật chế độ DJ-only.`
                 : 'DJ Role đã được **xóa**.\n\nMọi người đều có thể điều khiển nhạc.'
         )
-        .setFooter({ text: 'Sử dụng /settings djonly để bật/tắt chế độ DJ-only' })
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -425,13 +390,14 @@ async function handleDJOnly(interaction, client) {
     }
 
     const embed = new EmbedBuilder()
-        .setColor(enabled ? '#FFA500' : '#00FF00')
+        .setColor(enabled ? COLORS.WARNING : COLORS.SETTINGS_ENABLED)
         .setTitle(`✅ Chế Độ DJ-Only: ${enabled ? 'BẬT' : 'TẮT'}`)
         .setDescription(
             enabled
                 ? '🎧 **Chế độ DJ-Only đã được bật!**\n\nChỉ những người có role DJ mới có thể:\n• Skip bài hát\n• Dừng phát nhạc\n• Xóa queue\n• Thay đổi âm lượng\n• Sử dụng các bộ lọc\n\n*Administrators luôn có quyền DJ.*'
                 : '🎵 **Chế độ DJ-Only đã tắt!**\n\nTất cả mọi người đều có thể điều khiển nhạc.'
         )
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -461,7 +427,7 @@ async function handleVoteSkip(interaction, client) {
     }
 
     const embed = new EmbedBuilder()
-        .setColor(enabled ? '#00FF00' : '#FFA500')
+        .setColor(enabled ? COLORS.SETTINGS_ENABLED : COLORS.WARNING)
         .setTitle(`✅ Vote Skip: ${enabled ? 'BẬT' : 'TẮT'}`)
         .setDescription(
             enabled
@@ -471,6 +437,7 @@ async function handleVoteSkip(interaction, client) {
                       '*Nhấn nút 🗳️ trong Now Playing để vote skip*'
                 : '⏭️ **Vote Skip đã tắt!**\n\nBài hát sẽ được skip ngay khi có người nhấn nút skip.'
         )
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -492,7 +459,7 @@ async function handle247(interaction, client) {
     }
 
     const embed = new EmbedBuilder()
-        .setColor(enabled ? '#9B59B6' : '#3498DB')
+        .setColor(enabled ? COLORS.FILTER_ACTIVE : COLORS.INFO)
         .setTitle(`✅ Chế Độ 24/7: ${enabled ? 'BẬT' : 'TẮT'}`)
         .setDescription(
             enabled
@@ -506,6 +473,7 @@ async function handle247(interaction, client) {
                       '• Hết nhạc trong queue\n' +
                       '• Không có ai trong voice channel'
         )
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -548,7 +516,7 @@ async function handleDuplicates(interaction, client) {
     }
 
     const embed = new EmbedBuilder()
-        .setColor(allowDuplicates ? '#3498DB' : '#9B59B6')
+        .setColor(allowDuplicates ? COLORS.INFO : COLORS.FILTER_ACTIVE)
         .setTitle(`✅ Bài Hát Trùng Lặp: ${allowDuplicates ? 'CHO PHÉP' : 'CHẶN'}`)
         .setDescription(
             allowDuplicates
@@ -561,6 +529,7 @@ async function handleDuplicates(interaction, client) {
                       (queue ? `• ${queue.tracks.length} bài còn lại trong hàng đợi\n` : '') +
                       '\n*Áp dụng cho cả bài đang phát và hàng đợi*'
         )
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -622,7 +591,7 @@ async function handleServerSettings(interaction, client) {
                 inline: true
             }
         ])
-        .setFooter({ text: 'Sử dụng /settings <option> để thay đổi' })
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });

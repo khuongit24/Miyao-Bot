@@ -9,12 +9,15 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import os from 'os';
+import v8 from 'v8';
+import { timingSafeEqual } from 'crypto';
 import { metricsTracker } from '../utils/metrics.js';
-import { VERSION } from '../utils/version.js';
+import { VERSION, ENVIRONMENT } from '../utils/version.js';
 import logger from '../utils/logger.js';
 
 const app = express();
 const PORT = process.env.METRICS_PORT || 3000;
+const SHOW_ERROR_DETAILS = process.env.SHOW_ERROR_DETAILS === 'true';
 
 // API key and whitelist will be validated on server start
 let VALID_API_KEYS = [];
@@ -22,14 +25,15 @@ let IP_WHITELIST = [];
 
 // Security middleware
 app.use(helmet());
+// FIX-API-C01: Default CORS origin restricted to localhost instead of wildcard '*'
 app.use(
     cors({
-        origin: process.env.CORS_ORIGIN || '*',
+        origin: process.env.CORS_ORIGIN || 'http://127.0.0.1',
         methods: ['GET', 'POST'],
         allowedHeaders: ['Content-Type', 'x-api-key']
     })
 );
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '100kb' }));
 
 // Rate limiting
 const limiter = rateLimit({
@@ -64,10 +68,9 @@ app.use('/api/', (req, res, next) => {
 
     const clientIp = req.ip || req.connection.remoteAddress;
 
-    // Check if IP is whitelisted
+    // Check if IP is whitelisted (exact match only)
     const isAllowed = IP_WHITELIST.some(allowedIp => {
-        // Support CIDR notation or exact match
-        return clientIp === allowedIp || clientIp.startsWith(allowedIp);
+        return clientIp === allowedIp;
     });
 
     if (!isAllowed) {
@@ -100,18 +103,23 @@ app.use((req, res, next) => {
 
 // API Key authentication middleware with audit logging
 const authenticate = (req, res, next) => {
-    const apiKey = req.headers['x-api-key'] || req.query.apiKey;
+    const apiKey = req.headers['x-api-key'];
 
     if (!apiKey) {
         logger.warn('API request without key', { ip: req.ip, path: req.path });
         return res.status(401).json({
             error: 'Unauthorized',
-            message: 'API key required. Please provide x-api-key header or apiKey query parameter.'
+            message: 'API key required. Please provide x-api-key header.'
         });
     }
 
-    // Check against all valid API keys (support rotation)
-    const isValidKey = VALID_API_KEYS.includes(apiKey);
+    // Check against all valid API keys (support rotation) using constant-time comparison
+    const apiKeyBuffer = Buffer.from(apiKey);
+    const isValidKey = VALID_API_KEYS.some(validKey => {
+        const validKeyBuffer = Buffer.from(validKey);
+        if (apiKeyBuffer.length !== validKeyBuffer.length) return false;
+        return timingSafeEqual(apiKeyBuffer, validKeyBuffer);
+    });
 
     if (!isValidKey) {
         logger.warn('API request with invalid key', {
@@ -135,27 +143,22 @@ app.get('/health', async (req, res) => {
     try {
         const client = app.locals.client;
         let healthStatus = 'ok';
-        let checks = {};
 
         // Get detailed health if health check manager is available
         if (client && client.healthCheck) {
             const health = await client.healthCheck.getOverallHealth();
             healthStatus = health.status;
-            checks = health.checks;
         }
 
         res.json({
             status: healthStatus,
-            timestamp: new Date().toISOString(),
-            version: VERSION.full,
-            uptime: process.uptime(),
-            checks: checks
+            timestamp: new Date().toISOString()
         });
     } catch (error) {
         res.status(503).json({
             status: 'error',
             timestamp: new Date().toISOString(),
-            error: error.message
+            error: SHOW_ERROR_DETAILS ? error.message : 'Health check failed'
         });
     }
 });
@@ -186,7 +189,7 @@ app.get('/api/health', authenticate, async (req, res) => {
         res.status(500).json({
             success: false,
             error: 'Internal server error',
-            message: error.message
+            message: SHOW_ERROR_DETAILS ? error.message : 'An unexpected error occurred'
         });
     }
 });
@@ -194,7 +197,9 @@ app.get('/api/health', authenticate, async (req, res) => {
 // Get all metrics (requires auth)
 app.get('/api/metrics', authenticate, (req, res) => {
     try {
+        const client = app.locals.client;
         const summary = metricsTracker.getSummary();
+        const activeQueues = client?.musicManager?.queues?.size || 0;
 
         res.json({
             success: true,
@@ -202,38 +207,40 @@ app.get('/api/metrics', authenticate, (req, res) => {
             version: VERSION.full,
             codename: VERSION.codename,
             build: VERSION.build,
-            environment: VERSION.ENVIRONMENT,
+            environment: ENVIRONMENT.env,
             metrics: {
                 uptime: {
                     seconds: summary.uptime,
                     formatted: formatUptime(summary.uptime)
                 },
                 commands: {
-                    total: summary.totalCommands,
-                    successful: summary.successfulCommands,
-                    failed: summary.failedCommands,
-                    successRate: summary.commandSuccessRate,
-                    topCommands: summary.topCommands || []
+                    total: summary.commands.total,
+                    successful: summary.commands.successful,
+                    failed: summary.commands.failed,
+                    successRate: summary.commands.successRate,
+                    topCommands: summary.commands.byCommand || []
                 },
                 music: {
-                    tracksPlayed: summary.tracksPlayed || 0,
-                    totalPlaytime: summary.totalPlaytime || 0,
-                    activeQueues: summary.activeQueues || 0,
-                    mostPlayed: summary.mostPlayedTrack || null
+                    tracksPlayed: summary.music.totalTracks || 0,
+                    totalPlaytime: summary.music.totalPlaytime || 0,
+                    activeQueues,
+                    mostPlayed: null
                 },
                 performance: {
-                    averageResponseTime: summary.avgResponseTime,
-                    minResponseTime: summary.minResponseTime,
-                    maxResponseTime: summary.maxResponseTime,
-                    responseTimeHistory: summary.responseTimeHistory || []
+                    averageResponseTime: summary.performance.avgResponseTime,
+                    minResponseTime: summary.performance.minResponseTime,
+                    maxResponseTime: summary.performance.maxResponseTime,
+                    responseTimeHistory: []
                 },
                 system: {
                     memory: {
-                        used: summary.memoryUsage,
-                        limit: summary.memoryLimit || 512 * 1024 * 1024,
-                        percentage: ((summary.memoryUsage / (summary.memoryLimit || 512 * 1024 * 1024)) * 100).toFixed(
-                            1
-                        )
+                        // FIX-API-C03: Use dynamic heap limit instead of hardcoded 512MB
+                        used: process.memoryUsage().heapUsed,
+                        limit: v8.getHeapStatistics().heap_size_limit,
+                        percentage: (
+                            (process.memoryUsage().heapUsed / v8.getHeapStatistics().heap_size_limit) *
+                            100
+                        ).toFixed(1)
                     },
                     cpu: {
                         usage: getCPUUsage(),
@@ -241,15 +248,18 @@ app.get('/api/metrics', authenticate, (req, res) => {
                     }
                 },
                 errors: {
-                    total: summary.totalErrors || 0,
-                    rate: summary.errorRate || 0,
-                    breakdown: summary.errorBreakdown || {},
-                    recent: summary.recentErrors || []
+                    total: summary.errors.total || 0,
+                    rate:
+                        summary.commands.total > 0
+                            ? (((summary.errors.total || 0) / summary.commands.total) * 100).toFixed(1)
+                            : 0,
+                    breakdown: summary.errors.byType || {},
+                    recent: summary.errors.lastError ? [summary.errors.lastError] : []
                 },
                 cache: {
-                    hits: summary.cacheHits || 0,
-                    misses: summary.cacheMisses || 0,
-                    hitRate: summary.cacheHitRate || 0
+                    hits: summary.music.cacheHits || 0,
+                    misses: summary.music.cacheMisses || 0,
+                    hitRate: summary.music.cacheHitRate || 0
                 }
             }
         });
@@ -258,7 +268,7 @@ app.get('/api/metrics', authenticate, (req, res) => {
         res.status(500).json({
             success: false,
             error: 'Internal server error',
-            message: error.message
+            message: SHOW_ERROR_DETAILS ? error.message : 'An unexpected error occurred'
         });
     }
 });
@@ -267,47 +277,51 @@ app.get('/api/metrics', authenticate, (req, res) => {
 app.get('/api/metrics/:category', authenticate, (req, res) => {
     try {
         const { category } = req.params;
+        const client = app.locals.client;
         const summary = metricsTracker.getSummary();
+        const activeQueues = client?.musicManager?.queues?.size || 0;
 
         let data;
 
         switch (category) {
             case 'commands':
                 data = {
-                    total: summary.totalCommands,
-                    successful: summary.successfulCommands,
-                    failed: summary.failedCommands,
-                    successRate: summary.commandSuccessRate,
-                    topCommands: summary.topCommands || []
+                    total: summary.commands.total,
+                    successful: summary.commands.successful,
+                    failed: summary.commands.failed,
+                    successRate: summary.commands.successRate,
+                    topCommands: summary.commands.byCommand || []
                 };
                 break;
 
             case 'music':
                 data = {
-                    tracksPlayed: summary.tracksPlayed || 0,
-                    totalPlaytime: summary.totalPlaytime || 0,
-                    activeQueues: summary.activeQueues || 0,
-                    mostPlayed: summary.mostPlayedTrack || null
+                    tracksPlayed: summary.music.totalTracks || 0,
+                    totalPlaytime: summary.music.totalPlaytime || 0,
+                    activeQueues,
+                    mostPlayed: null
                 };
                 break;
 
             case 'performance':
                 data = {
-                    averageResponseTime: summary.avgResponseTime,
-                    minResponseTime: summary.minResponseTime,
-                    maxResponseTime: summary.maxResponseTime,
-                    responseTimeHistory: summary.responseTimeHistory || []
+                    averageResponseTime: summary.performance.avgResponseTime,
+                    minResponseTime: summary.performance.minResponseTime,
+                    maxResponseTime: summary.performance.maxResponseTime,
+                    responseTimeHistory: []
                 };
                 break;
 
             case 'system':
                 data = {
                     memory: {
-                        used: summary.memoryUsage,
-                        limit: summary.memoryLimit || 512 * 1024 * 1024,
-                        percentage: ((summary.memoryUsage / (summary.memoryLimit || 512 * 1024 * 1024)) * 100).toFixed(
-                            1
-                        )
+                        // FIX-API-C03: Use dynamic heap limit instead of hardcoded 512MB
+                        used: process.memoryUsage().heapUsed,
+                        limit: v8.getHeapStatistics().heap_size_limit,
+                        percentage: (
+                            (process.memoryUsage().heapUsed / v8.getHeapStatistics().heap_size_limit) *
+                            100
+                        ).toFixed(1)
                     },
                     cpu: {
                         usage: getCPUUsage(),
@@ -319,18 +333,22 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
 
             case 'errors':
                 data = {
-                    total: summary.totalErrors || 0,
-                    rate: summary.errorRate || 0,
-                    breakdown: summary.errorBreakdown || {},
-                    recent: summary.recentErrors || []
+                    total: summary.errors.total || 0,
+                    rate:
+                        summary.commands.total > 0
+                            ? (((summary.errors.total || 0) / summary.commands.total) * 100).toFixed(1)
+                            : 0,
+                    breakdown: summary.errors.byType || {},
+                    recent: summary.errors.lastError ? [summary.errors.lastError] : []
                 };
                 break;
 
             default:
+                // FIX-API-C02: Do not reflect user input in error response (XSS risk)
                 return res.status(404).json({
                     success: false,
                     error: 'Category not found',
-                    message: `Unknown category: ${category}`,
+                    message: 'Unknown category',
                     availableCategories: ['commands', 'music', 'performance', 'system', 'errors']
                 });
         }
@@ -345,7 +363,7 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
         res.status(500).json({
             success: false,
             error: 'Internal server error',
-            message: error.message
+            message: SHOW_ERROR_DETAILS ? error.message : 'An unexpected error occurred'
         });
     }
 });
@@ -353,25 +371,27 @@ app.get('/api/metrics/:category', authenticate, (req, res) => {
 // Get real-time stats (lightweight endpoint for frequent polling)
 app.get('/api/stats/realtime', authenticate, (req, res) => {
     try {
+        const client = app.locals.client;
         const summary = metricsTracker.getSummary();
+        const activeQueues = client?.musicManager?.queues?.size || 0;
 
         res.json({
             success: true,
             timestamp: Date.now(),
             stats: {
                 uptime: summary.uptime,
-                memory: summary.memoryUsage,
-                commands: summary.totalCommands,
-                successRate: summary.commandSuccessRate,
-                avgResponseTime: summary.avgResponseTime,
-                activeQueues: summary.activeQueues || 0,
-                errors: summary.totalErrors || 0
+                memory: process.memoryUsage().heapUsed,
+                commands: summary.commands.total,
+                successRate: summary.commands.successRate,
+                avgResponseTime: summary.performance.avgResponseTime,
+                activeQueues,
+                errors: summary.errors.total || 0
             }
         });
     } catch (error) {
         res.status(500).json({
             success: false,
-            error: error.message
+            error: SHOW_ERROR_DETAILS ? error.message : 'Failed to fetch realtime stats'
         });
     }
 });
@@ -441,19 +461,28 @@ export function startMetricsServer(client) {
     // Store client reference for future use
     app.locals.client = client;
 
-    const server = app.listen(PORT, () => {
-        logger.info(`Metrics API server started on port ${PORT}`);
-        logger.info(`Health check: http://localhost:${PORT}/health`);
-        logger.info(`Metrics endpoint: http://localhost:${PORT}/api/metrics`);
+    const server = app.listen(PORT, '127.0.0.1', () => {
+        logger.info(`Metrics API server started on 127.0.0.1:${PORT}`);
+        logger.info(`Health check: http://127.0.0.1:${PORT}/health`);
+        logger.info(`Metrics endpoint: http://127.0.0.1:${PORT}/api/metrics`);
     });
 
     server.on('error', error => {
         if (error.code === 'EADDRINUSE') {
             logger.warn(`Port ${PORT} is already in use. Metrics API not started.`);
+            // FIX-LB08: Clear server reference so shutdown doesn't try to close a failed server
+            if (client) {
+                client._metricsServer = null;
+            }
         } else {
             logger.error('Metrics API server error:', error);
         }
     });
+
+    // Store server reference on client for shutdown cleanup
+    if (client) {
+        client._metricsServer = server;
+    }
 
     return server;
 }

@@ -5,32 +5,34 @@
 
 import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import History from '../../database/models/History.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import logger from '../../utils/logger.js';
 import { formatDuration } from '../../utils/helpers.js';
+import { COLORS } from '../../config/design-system.js';
 
 export default {
     data: new SlashCommandBuilder()
         .setName('leaderboard')
-        .setDescription('View server music leaderboard')
+        .setDescription('Xem bảng xếp hạng nhạc của server')
         .addStringOption(option =>
             option
                 .setName('type')
-                .setDescription('Type of leaderboard')
+                .setDescription('Loại bảng xếp hạng')
                 .addChoices(
-                    { name: 'Most Active Users', value: 'users' },
-                    { name: 'Most Played Tracks', value: 'tracks' }
+                    { name: 'Người nghe nhiều nhất', value: 'users' },
+                    { name: 'Bài hát được nghe nhiều nhất', value: 'tracks' }
                 )
                 .setRequired(false)
         )
         .addStringOption(option =>
             option
                 .setName('period')
-                .setDescription('Time period')
+                .setDescription('Khoảng thời gian')
                 .addChoices(
-                    { name: 'Today', value: 'day' },
-                    { name: 'This Week', value: 'week' },
-                    { name: 'This Month', value: 'month' },
-                    { name: 'All Time', value: 'all' }
+                    { name: 'Hôm nay', value: 'day' },
+                    { name: 'Tuần này', value: 'week' },
+                    { name: 'Tháng này', value: 'month' },
+                    { name: 'Tất cả', value: 'all' }
                 )
                 .setRequired(false)
         ),
@@ -44,10 +46,10 @@ export default {
             const guildId = interaction.guildId;
 
             const periodNames = {
-                day: 'Today',
-                week: 'This Week',
-                month: 'This Month',
-                all: 'All Time'
+                day: 'Hôm nay',
+                week: 'Tuần này',
+                month: 'Tháng này',
+                all: 'Tất cả'
             };
 
             if (type === 'users') {
@@ -56,9 +58,10 @@ export default {
 
                 if (!users || users.length === 0) {
                     const embed = new EmbedBuilder()
-                        .setColor('#FFA500')
-                        .setTitle('🏆 Leaderboard')
-                        .setDescription('No data available yet. Start playing music!')
+                        .setColor(COLORS.WARNING)
+                        .setTitle('🏆 Bảng xếp hạng')
+                        .setDescription('Chưa có dữ liệu. Hãy bắt đầu nghe nhạc!')
+                        .setFooter({ text: client.config.bot.footer })
                         .setTimestamp();
 
                     return await interaction.editReply({ embeds: [embed] });
@@ -75,12 +78,12 @@ export default {
                     const pageUsers = users.slice(start, end);
 
                     const embed = new EmbedBuilder()
-                        .setColor('#FFD700')
-                        .setTitle('🏆 Server Music Leaderboard')
-                        .setDescription(`**${periodNames[period]}** • Top Listeners`)
+                        .setColor(COLORS.PRIMARY)
+                        .setTitle('🏆 Bảng xếp hạng')
+                        .setDescription(`**${periodNames[period]}** • Người nghe nhiều nhất`)
                         .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
                         .setFooter({
-                            text: `Page ${page + 1}/${totalPages} • ${users.length} total users`
+                            text: `Trang ${page + 1}/${totalPages} • Tổng ${users.length} người dùng | ${client.config.bot.footer}`
                         })
                         .setTimestamp();
 
@@ -102,18 +105,18 @@ export default {
 
                                 return [
                                     `${rankDisplay} **${discordUser.username}**`,
-                                    `   🎵 ${user.play_count.toLocaleString()} plays`,
-                                    `   ⏱️ ${time} total`,
-                                    `   📊 Avg: ${avgDuration}s per track`
+                                    `   🎵 ${user.play_count.toLocaleString()} lần phát`,
+                                    `   ⏱️ ${time} tổng`,
+                                    `   📊 TB: ${avgDuration}s mỗi bài`
                                 ].join('\n');
                             } catch (error) {
-                                return `${rankDisplay} Unknown User\n   🎵 ${user.play_count} plays`;
+                                return `${rankDisplay} Ẩn danh\n   🎵 ${user.play_count} lần phát`;
                             }
                         })
                     );
 
                     embed.setDescription(
-                        `**${periodNames[period]}** • Top Listeners\n\n${leaderboardText.join('\n\n')}`
+                        `**${periodNames[period]}** • Người nghe nhiều nhất\n\n${leaderboardText.join('\n\n')}`
                     );
 
                     return embed;
@@ -158,8 +161,8 @@ export default {
 
                     collector.on('collect', async i => {
                         if (i.user.id !== interaction.user.id) {
-                            return await i.reply({
-                                content: '❌ Only the command user can navigate!',
+                            return i.reply({
+                                content: '❌ Chỉ người dùng lệnh mới được chuyển trang!',
                                 ephemeral: true
                             });
                         }
@@ -224,20 +227,23 @@ export default {
 
                 if (!tracks || tracks.length === 0) {
                     const embed = new EmbedBuilder()
-                        .setColor('#FFA500')
-                        .setTitle('🏆 Leaderboard')
-                        .setDescription('No data available yet. Start playing music!')
+                        .setColor(COLORS.WARNING)
+                        .setTitle('🏆 Bảng xếp hạng')
+                        .setDescription('Chưa có dữ liệu. Hãy bắt đầu nghe nhạc!')
+                        .setFooter({ text: client.config.bot.footer })
                         .setTimestamp();
 
                     return await interaction.editReply({ embeds: [embed] });
                 }
 
                 const embed = new EmbedBuilder()
-                    .setColor('#FFD700')
-                    .setTitle('🏆 Most Played Tracks')
+                    .setColor(COLORS.PRIMARY)
+                    .setTitle('🏆 Bài hát phổ biến nhất')
                     .setDescription(`**${periodNames[period]}**`)
                     .setThumbnail(interaction.guild.iconURL({ dynamic: true }))
-                    .setFooter({ text: `${tracks.length} tracks • ${periodNames[period]}` })
+                    .setFooter({
+                        text: `${tracks.length} bài hát • ${periodNames[period]} | ${client.config.bot.footer}`
+                    })
                     .setTimestamp();
 
                 const tracksText = tracks
@@ -252,7 +258,7 @@ export default {
                                 ? track.track_title.substring(0, 37) + '...'
                                 : track.track_title;
 
-                        return `${rankDisplay} **${title}**\n   by ${track.track_author} • ${track.play_count} plays`;
+                        return `${rankDisplay} **${title}**\n   bởi ${track.track_author} • ${track.play_count} lần phát`;
                     })
                     .join('\n\n');
 
@@ -261,26 +267,10 @@ export default {
                 await interaction.editReply({ embeds: [embed] });
             }
 
-            logger.command('leaderboard', {
-                userId: interaction.user.id,
-                guildId,
-                type,
-                period
-            });
+            logger.command('leaderboard', interaction.user.id, guildId);
         } catch (error) {
             logger.error('Error in leaderboard command', { error });
-
-            const errorEmbed = new EmbedBuilder()
-                .setColor('#FF0000')
-                .setTitle('❌ Error')
-                .setDescription('Failed to fetch leaderboard. Please try again later.')
-                .setTimestamp();
-
-            if (interaction.deferred) {
-                await interaction.editReply({ embeds: [errorEmbed] });
-            } else {
-                await interaction.reply({ embeds: [errorEmbed], ephemeral: true });
-            }
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

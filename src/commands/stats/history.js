@@ -5,9 +5,20 @@
  */
 
 import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder } from 'discord.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import logger from '../../utils/logger.js';
 import { formatDuration } from '../../utils/helpers.js';
 import History from '../../database/models/History.js';
+
+/** Discord embed field value limit */
+const MAX_FIELD_VALUE = 1024;
+
+/** Truncate a string to fit within Discord's embed field value limit */
+function truncateFieldValue(value) {
+    if (typeof value !== 'string') return 'N/A';
+    if (value.length <= MAX_FIELD_VALUE) return value;
+    return value.slice(0, MAX_FIELD_VALUE - 4) + '...';
+}
 
 export default {
     data: new SlashCommandBuilder()
@@ -61,9 +72,7 @@ export default {
             logger.command('history', interaction.user.id, interaction.guildId, { view, limit });
         } catch (error) {
             logger.error('History command error', error);
-            await interaction.editReply({
-                content: '❌ Đã xảy ra lỗi khi hiển thị lịch sử!'
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };
@@ -124,10 +133,11 @@ async function buildPersonalHistory(interaction, client, limit) {
         embed.addFields([
             {
                 name: '📊 Thống Kê Tổng Quan',
-                value:
+                value: truncateFieldValue(
                     `🎵 **Tổng đã nghe:** ${stats.totalPlays} bài\n` +
-                    `⏱️ **Thời gian:** ${timeStr}\n` +
-                    `📅 **Lần đầu:** ${new Date(stats.firstPlayedAt).toLocaleDateString('vi-VN')}`,
+                        `⏱️ **Thời gian:** ${timeStr}\n` +
+                        `📅 **Lần đầu:** ${new Date(stats.firstPlayedAt).toLocaleDateString('vi-VN')}`
+                ),
                 inline: true
             }
         ]);
@@ -147,7 +157,7 @@ async function buildPersonalHistory(interaction, client, limit) {
             embed.addFields([
                 {
                     name: '🔥 Nghe Nhiều Nhất',
-                    value: topList,
+                    value: truncateFieldValue(topList),
                     inline: true
                 }
             ]);
@@ -180,6 +190,11 @@ async function buildPersonalHistory(interaction, client, limit) {
             });
         } else {
             client._personalHistoryCache = client._personalHistoryCache || new Map();
+            // FIX-PB03: Cap fallback cache size (entries also auto-delete after 5 min via setTimeout)
+            if (client._personalHistoryCache.size >= 50) {
+                const oldestKey = client._personalHistoryCache.keys().next().value;
+                client._personalHistoryCache.delete(oldestKey);
+            }
             client._personalHistoryCache.set(cacheKey, {
                 tracks: history,
                 timestamp: Date.now()
@@ -195,7 +210,7 @@ async function buildPersonalHistory(interaction, client, limit) {
  * Build session history from current queue
  */
 async function buildSessionHistory(interaction, client, limit) {
-    const queue = client.musicManager.queues.get(interaction.guildId);
+    const queue = client.musicManager.getQueue(interaction.guildId);
 
     if (!queue) {
         const embed = new EmbedBuilder()
@@ -264,10 +279,11 @@ async function buildSessionHistory(interaction, client, limit) {
         embed.addFields([
             {
                 name: '📊 Thống Kê Session',
-                value:
+                value: truncateFieldValue(
                     `🎵 **Tổng đã phát:** ${stats.totalPlayed}\n` +
-                    `⏱️ **Thời gian:** ${playtimeStr}\n` +
-                    `⏭️ **Số lần skip:** ${stats.skips}`,
+                        `⏱️ **Thời gian:** ${playtimeStr}\n` +
+                        `⏭️ **Số lần skip:** ${stats.skips}`
+                ),
                 inline: false
             }
         ]);
@@ -334,10 +350,11 @@ async function buildServerHistory(interaction, client, limit) {
         embed.addFields([
             {
                 name: '📊 Thống Kê Tuần Này',
-                value:
+                value: truncateFieldValue(
                     `🎵 **Tổng đã phát:** ${serverStats.totalPlays} bài\n` +
-                    `👥 **Thành viên:** ${serverStats.uniqueUsers} người\n` +
-                    `⏱️ **Thời gian:** ${timeStr}`,
+                        `👥 **Thành viên:** ${serverStats.uniqueUsers} người\n` +
+                        `⏱️ **Thời gian:** ${timeStr}`
+                ),
                 inline: true
             }
         ]);
@@ -358,7 +375,7 @@ async function buildServerHistory(interaction, client, limit) {
         embed.addFields([
             {
                 name: '🔥 Hot Tuần Này',
-                value: topList,
+                value: truncateFieldValue(topList),
                 inline: true
             }
         ]);

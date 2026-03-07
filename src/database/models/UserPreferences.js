@@ -48,52 +48,59 @@ class UserPreferences {
         try {
             const db = getDatabaseManager();
 
-            // Check if user exists
-            const existing = db.queryOne('SELECT user_id FROM users WHERE user_id = ?', [userId]);
+            const insertColumns = ['user_id'];
+            const insertValues = [userId];
+            const updateSets = [];
 
-            if (existing) {
-                // Update existing user
-                const updates = [];
-                const params = [];
+            const addField = (column, value, includeInUpdate = true) => {
+                insertColumns.push(column);
+                insertValues.push(value);
+                if (includeInUpdate) {
+                    updateSets.push(`${column} = excluded.${column}`);
+                }
+            };
 
-                if (username) {
-                    updates.push('username = ?');
-                    params.push(username);
-                }
-                if (preferences.defaultVolume !== undefined) {
-                    updates.push('default_volume = ?');
-                    params.push(preferences.defaultVolume);
-                }
-                if (preferences.autoResume !== undefined) {
-                    updates.push('auto_resume = ?');
-                    params.push(preferences.autoResume ? 1 : 0);
-                }
-                if (preferences.notificationsEnabled !== undefined) {
-                    updates.push('notifications_enabled = ?');
-                    params.push(preferences.notificationsEnabled ? 1 : 0);
-                }
-                if (preferences.language !== undefined) {
-                    updates.push('language = ?');
-                    params.push(preferences.language);
-                }
+            if (username !== null && username !== undefined) {
+                addField('username', username);
+            }
+            if (preferences.defaultVolume !== undefined) {
+                addField('default_volume', preferences.defaultVolume);
+            }
+            if (preferences.autoResume !== undefined) {
+                addField('auto_resume', preferences.autoResume ? 1 : 0);
+            }
+            if (preferences.notificationsEnabled !== undefined) {
+                addField('notifications_enabled', preferences.notificationsEnabled ? 1 : 0);
+            }
+            if (preferences.language !== undefined) {
+                addField('language', preferences.language);
+            }
 
-                if (updates.length > 0) {
-                    params.push(userId);
-                    db.execute(`UPDATE users SET ${updates.join(', ')} WHERE user_id = ?`, params);
-                }
-            } else {
-                // Insert new user
+            // Preserve existing insert defaults while allowing explicit 0 for defaultVolume
+            if (!insertColumns.includes('default_volume')) {
+                addField('default_volume', preferences.defaultVolume ?? 50, false);
+            }
+            if (!insertColumns.includes('auto_resume')) {
+                addField('auto_resume', preferences.autoResume ? 1 : 0, false);
+            }
+            if (!insertColumns.includes('notifications_enabled')) {
+                addField('notifications_enabled', preferences.notificationsEnabled !== false ? 1 : 0, false);
+            }
+            if (!insertColumns.includes('language')) {
+                addField('language', preferences.language || 'vi', false);
+            }
+
+            const placeholders = insertColumns.map(() => '?').join(', ');
+            if (updateSets.length === 0) {
                 db.execute(
-                    `INSERT INTO users (user_id, username, default_volume, auto_resume, notifications_enabled, language)
-                     VALUES (?, ?, ?, ?, ?, ?)`,
-                    [
-                        userId,
-                        username,
-                        preferences.defaultVolume || 50,
-                        preferences.autoResume ? 1 : 0,
-                        preferences.notificationsEnabled !== false ? 1 : 0,
-                        preferences.language || 'vi'
-                    ]
+                    `INSERT OR IGNORE INTO users (${insertColumns.join(', ')}) VALUES (${placeholders})`,
+                    insertValues
+                );
+            } else {
+                db.execute(
+                    `INSERT INTO users (${insertColumns.join(', ')}) VALUES (${placeholders})
+                     ON CONFLICT(user_id) DO UPDATE SET ${updateSets.join(', ')}`,
+                    insertValues
                 );
             }
 

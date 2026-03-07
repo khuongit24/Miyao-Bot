@@ -4,10 +4,18 @@
  * @version 1.8.1 - Improved UI and error handling
  */
 
-import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
+import {
+    SlashCommandBuilder,
+    EmbedBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    ComponentType
+} from 'discord.js';
 import { getLyrics, paginateLyrics, cleanTrackName, cleanArtistName, parseSyncedLyrics } from '../../utils/lyrics.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import { NothingPlayingError, DifferentVoiceChannelError, ResourceNotFoundError } from '../../utils/errors.js';
+import { COLORS } from '../../config/design-system.js';
 import logger from '../../utils/logger.js';
 
 export default {
@@ -69,7 +77,7 @@ export default {
                 logger.warn('Lyrics API unavailable', { error: error.message });
 
                 const embed = new EmbedBuilder()
-                    .setColor('#FFA500')
+                    .setColor(COLORS.WARNING)
                     .setTitle('⚠️ Không Thể Tải Lyrics')
                     .setDescription(
                         `Không thể tải lời bài hát cho:\n**${trackName}**${artistName ? ` - ${artistName}` : ''}\n\n` +
@@ -134,13 +142,13 @@ async function showPlainLyrics(interaction, client, lyricsData) {
 
     if (!plainLyrics) {
         const embed = new EmbedBuilder()
-            .setColor('#f39c12')
+            .setColor(COLORS.WARNING)
             .setTitle('⚠️ Không Có Lời')
             .setDescription(`**${lyricsData.trackName}**\n*${lyricsData.artistName}*\n\nKhông tìm thấy lời bài hát.`)
             .setFooter({ text: client.config.bot.footer })
             .setTimestamp();
 
-        return await interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
     }
 
     // Paginate lyrics (15 lines per page for readability)
@@ -203,6 +211,7 @@ async function showPlainLyrics(interaction, client, lyricsData) {
 
     // Button collector
     const collector = message.createMessageComponentCollector({
+        componentType: ComponentType.Button,
         time: 300000 // 5 minutes
     });
 
@@ -245,14 +254,14 @@ async function showSyncedLyrics(interaction, client, lyricsData) {
 
     if (!syncedLyrics) {
         // Fallback to plain lyrics
-        return await showPlainLyrics(interaction, client, lyricsData);
+        return showPlainLyrics(interaction, client, lyricsData);
     }
 
     const parsed = parseSyncedLyrics(syncedLyrics);
 
     if (parsed.length === 0) {
         // Fallback to plain lyrics
-        return await showPlainLyrics(interaction, client, lyricsData);
+        return showPlainLyrics(interaction, client, lyricsData);
     }
 
     // For simplicity, show all synced lyrics with timestamps

@@ -90,6 +90,8 @@ CREATE INDEX IF NOT EXISTS idx_track_stats_recent
 ON track_statistics(last_played_at DESC);
 
 -- Triggers to keep updated_at current
+-- WARNING (DB-L01): Pattern is fragile — if trigger logic changes, could cause infinite recursion.
+-- SQLite does not guard against recursive triggers unless PRAGMA recursive_triggers=OFF.
 CREATE TRIGGER IF NOT EXISTS update_guild_stats_timestamp
 AFTER UPDATE ON guild_statistics
 BEGIN
@@ -178,6 +180,9 @@ GROUP BY user_id, guild_id;
 -- ============================================================================
 -- PART 4: HISTORY ARCHIVING SYSTEM
 -- ============================================================================
+
+-- NOTE (DB-M01): This table was never populated — cleanupHistory() only DELETEs.
+-- Dropped by migration 012_drop_history_archive.sql
 
 -- Create history archive table (for data older than 30 days)
 CREATE TABLE IF NOT EXISTS history_archive (

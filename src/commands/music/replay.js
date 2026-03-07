@@ -1,13 +1,13 @@
 import { SlashCommandBuilder } from 'discord.js';
 import { createSuccessEmbed } from '../../UI/embeds/MusicEmbeds.js';
-import { createWarningEmbed, sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
-import { requireQueue } from '../../middleware/queueCheck.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { requireCurrentTrack } from '../../middleware/queueCheck.js';
 import { UserNotInVoiceError, DifferentVoiceChannelError } from '../../utils/errors.js';
 import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import logger from '../../utils/logger.js';
 
 export default {
-    data: new SlashCommandBuilder().setName('pause').setDescription('Tạm dừng bài hát đang phát'),
+    data: new SlashCommandBuilder().setName('replay').setDescription('Phát lại bài hát hiện tại từ đầu'),
 
     async execute(interaction, client) {
         try {
@@ -21,10 +21,10 @@ export default {
                 );
             }
 
-            // Use middleware for common checks
-            const queue = requireQueue(client.musicManager, interaction.guildId);
+            // Use middleware — no separate voiceCheck needed (CMD-H03 fix)
+            const { queue, current } = requireCurrentTrack(client.musicManager, interaction.guildId);
 
-            // Check if user is in voice channel and same as bot
+            // Check if user is in the same voice channel
             const member = interaction.member;
             if (!member.voice.channel) {
                 throw new UserNotInVoiceError();
@@ -33,21 +33,15 @@ export default {
                 throw new DifferentVoiceChannelError();
             }
 
-            // Check if already paused
-            if (queue.paused) {
-                return interaction.editReply({
-                    embeds: [createWarningEmbed('Nhạc đã được tạm dừng rồi!', client.config)]
-                });
-            }
+            // Seek to the beginning to replay the current track
+            await queue.player.seekTo(0);
 
-            // Pause
-            await queue.pause();
-
+            const title = current?.info?.title || 'Unknown Track';
             await interaction.editReply({
-                embeds: [createSuccessEmbed('Tạm dừng', 'Đã tạm dừng phát nhạc', client.config)]
+                embeds: [createSuccessEmbed('Phát lại', `Đang phát lại **${title}** từ đầu`, client.config)]
             });
 
-            logger.command('pause', interaction.user.id, interaction.guildId);
+            logger.command('replay', interaction.user.id, interaction.guildId);
         } catch (error) {
             await sendErrorResponse(interaction, error, client.config, true);
         }

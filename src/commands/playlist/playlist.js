@@ -3,9 +3,10 @@
  * Manage custom playlists
  */
 
-import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
+import { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } from 'discord.js';
 import Playlist from '../../database/models/Playlist.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { COLORS } from '../../config/design-system.js';
 import {
     PlaylistNotFoundError,
     ValidationError,
@@ -16,6 +17,7 @@ import {
     NoSearchResultsError
 } from '../../utils/errors.js';
 import { PLAYLIST_RESOLUTION } from '../../utils/constants.js';
+import { handlePlaylistAutocomplete } from '../../events/playlists/index.js';
 import logger from '../../utils/logger.js';
 
 export default {
@@ -103,7 +105,46 @@ export default {
                     option.setName('name').setDescription('Tên playlist').setAutocomplete(true).setRequired(true)
                 )
         )
-        .addSubcommand(subcommand => subcommand.setName('menu').setDescription('Hiển thị menu quản lý playlist')),
+        .addSubcommand(subcommand => subcommand.setName('menu').setDescription('Hiển thị menu quản lý playlist'))
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('shuffle')
+                .setDescription('Xáo trộn thứ tự bài hát trong playlist')
+                .addStringOption(option =>
+                    option.setName('name').setDescription('Tên playlist').setAutocomplete(true).setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('clone')
+                .setDescription('Tạo bản sao của playlist')
+                .addStringOption(option =>
+                    option.setName('source').setDescription('Tên playlist gốc').setAutocomplete(true).setRequired(true)
+                )
+                .addStringOption(option =>
+                    option.setName('newname').setDescription('Tên playlist mới').setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('clear')
+                .setDescription('Xóa tất cả bài hát khỏi playlist')
+                .addStringOption(option =>
+                    option.setName('name').setDescription('Tên playlist').setAutocomplete(true).setRequired(true)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand.setName('public').setDescription('Xem các playlist công khai trong server')
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('import')
+                .setDescription('Import playlist từ YouTube/Spotify URL')
+                .addStringOption(option =>
+                    option.setName('url').setDescription('URL của playlist YouTube/Spotify').setRequired(true)
+                )
+                .addStringOption(option => option.setName('name').setDescription('Tên playlist mới').setRequired(true))
+        ),
 
     async execute(interaction, client) {
         try {
@@ -137,6 +178,21 @@ export default {
                 case 'play':
                     await handlePlay(interaction, client);
                     break;
+                case 'shuffle':
+                    await handleShuffle(interaction, client);
+                    break;
+                case 'clone':
+                    await handleClone(interaction, client);
+                    break;
+                case 'clear':
+                    await handleClear(interaction, client);
+                    break;
+                case 'public':
+                    await handlePublicList(interaction, client);
+                    break;
+                case 'import':
+                    await handleImport(interaction, client);
+                    break;
                 default:
                     // Default to menu if subcommand not recognized
                     await handleMenu(interaction, client);
@@ -148,6 +204,10 @@ export default {
             logger.error('Playlist command error', error);
             await sendErrorResponse(interaction, error, client.config, true);
         }
+    },
+
+    async autocomplete(interaction) {
+        await handlePlaylistAutocomplete(interaction);
     }
 };
 
@@ -155,8 +215,6 @@ export default {
  * Display playlist management menu
  */
 async function handleMenu(interaction, client) {
-    const { ActionRowBuilder, ButtonBuilder, ButtonStyle } = await import('discord.js');
-
     const embed = new EmbedBuilder()
         .setColor(client.config.bot.color)
         .setTitle('🎵 Quản Lý Playlist')
@@ -256,6 +314,7 @@ async function handleCreate(interaction, client) {
                 inline: false
             }
         ])
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -274,9 +333,10 @@ async function handleList(interaction, client) {
             .setColor(client.config.bot.color)
             .setTitle('📋 Playlists Của Bạn')
             .setDescription('Bạn chưa có playlist nào.\n\nTạo playlist mới với:\n`/playlist create name:<tên>`')
+            .setFooter({ text: client.config.bot.footer })
             .setTimestamp();
 
-        return await interaction.editReply({ embeds: [embed] });
+        return interaction.editReply({ embeds: [embed] });
     }
 
     const description = playlists
@@ -343,10 +403,81 @@ async function handleShow(interaction, client) {
         .setColor(client.config.bot.color)
         .setTitle(`🎵 ${playlist.name}`)
         .setDescription(description)
-        .setFooter({ text: `Playlist ID: ${playlist.id}` })
+        .setFooter({ text: `Playlist ID: ${playlist.id} • ${client.config.bot.footer}` })
         .setTimestamp();
 
-    await interaction.editReply({ embeds: [embed] });
+    // Build action buttons
+    const components = [];
+
+    // Row 1: Play and Edit actions
+    const row1 = new ActionRowBuilder();
+
+    // Play button (always available if playlist has tracks)
+    if (tracks.length > 0) {
+        row1.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`playlist_play_${playlist.id}`)
+                .setLabel('Phát Playlist')
+                .setEmoji('▶️')
+                .setStyle(ButtonStyle.Success)
+        );
+    }
+
+    // Only show edit buttons if user owns the playlist
+    if (isOwn) {
+        row1.addComponents(
+            new ButtonBuilder()
+                .setCustomId(`playlist_add_track_to_${playlist.id}`)
+                .setLabel('Thêm Nhạc')
+                .setEmoji('➕')
+                .setStyle(ButtonStyle.Primary),
+            new ButtonBuilder()
+                .setCustomId(`playlist_remove_track_${playlist.id}`)
+                .setLabel('Xóa Nhạc')
+                .setEmoji('🗑️')
+                .setStyle(ButtonStyle.Danger)
+                .setDisabled(tracks.length === 0)
+        );
+    }
+
+    if (row1.components.length > 0) {
+        components.push(row1);
+    }
+
+    // Row 2: Additional actions (only for owner)
+    if (isOwn) {
+        const row2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`playlist_edit_${playlist.id}`)
+                .setLabel('Sửa Playlist')
+                .setEmoji('✏️')
+                .setStyle(ButtonStyle.Secondary),
+            new ButtonBuilder()
+                .setCustomId(`playlist_shuffle_${playlist.id}`)
+                .setLabel('Xáo Trộn')
+                .setEmoji('🔀')
+                .setStyle(ButtonStyle.Secondary)
+                .setDisabled(tracks.length < 2),
+            new ButtonBuilder()
+                .setCustomId(`playlist_clone_${playlist.id}`)
+                .setLabel('Nhân Bản')
+                .setEmoji('📋')
+                .setStyle(ButtonStyle.Secondary)
+        );
+        components.push(row2);
+    } else {
+        // Non-owner can clone public playlists
+        const row2 = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`playlist_clone_${playlist.id}`)
+                .setLabel('Lưu Bản Sao')
+                .setEmoji('📋')
+                .setStyle(ButtonStyle.Primary)
+        );
+        components.push(row2);
+    }
+
+    await interaction.editReply({ embeds: [embed], components });
 }
 
 /**
@@ -372,6 +503,7 @@ async function handleDelete(interaction, client) {
         .setColor(client.config.bot.color)
         .setTitle('✅ Đã Xóa Playlist')
         .setDescription(`Playlist **${name}** đã được xóa thành công!`)
+        .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
     await interaction.editReply({ embeds: [embed] });
@@ -588,10 +720,23 @@ async function handlePlay(interaction, client) {
         throw new PlaylistNotFoundError(name);
     }
 
-    const playlistTracks = Playlist.getTracks(playlist.id);
+    let playlistTracks = Playlist.getTracks(playlist.id);
 
     if (playlistTracks.length === 0) {
         throw new ValidationError('Playlist đang trống', 'tracks');
+    }
+
+    // Enforce maximum track count to prevent queue overflow
+    const MAX_PLAYLIST_LOAD = 500;
+    let wasTruncated = false;
+    if (playlistTracks.length > MAX_PLAYLIST_LOAD) {
+        wasTruncated = true;
+        playlistTracks = playlistTracks.slice(0, MAX_PLAYLIST_LOAD);
+        logger.warn('Playlist truncated to max load limit', {
+            playlistId: playlist.id,
+            originalCount: Playlist.getTracks(playlist.id).length,
+            loadedCount: MAX_PLAYLIST_LOAD
+        });
     }
 
     // Get or create queue
@@ -753,12 +898,15 @@ async function handlePlay(interaction, client) {
     // Final result embed
     const successRate = Math.round((resolvedTracks.length / totalTracks) * 100);
     const embed = new EmbedBuilder()
-        .setColor(failedCount > 0 ? '#FFA500' : client.config.bot.color)
+        .setColor(failedCount > 0 || wasTruncated ? COLORS.WARNING : client.config.bot.color)
         .setTitle('📋 Đã Tải Playlist')
         .setDescription(
             `**${playlist.name}**\n\n` +
                 `✅ Đã thêm **${resolvedTracks.length}**/${totalTracks} bài hát vào hàng đợi\n` +
                 (failedCount > 0 ? `⚠️ **${failedCount}** bài không tải được\n` : '') +
+                (wasTruncated
+                    ? `⚠️ Playlist đã bị giới hạn ở **${MAX_PLAYLIST_LOAD}** bài (tổng cộng: ${Playlist.getTracks(playlist.id).length})\n`
+                    : '') +
                 `📊 Tỷ lệ thành công: ${successRate}%`
         )
         .setFooter({ text: client.config.bot.footer })
@@ -804,6 +952,319 @@ async function handlePlay(interaction, client) {
             }
         }
     }
+}
+
+/**
+ * Shuffle playlist tracks
+ */
+async function handleShuffle(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const name = interaction.options.getString('name');
+    const playlist = Playlist.getByName(name, interaction.user.id, interaction.guildId);
+
+    if (!playlist) {
+        throw new PlaylistNotFoundError(name);
+    }
+
+    const tracks = Playlist.getTracks(playlist.id);
+
+    if (tracks.length < 2) {
+        throw new ValidationError('Playlist cần ít nhất 2 bài hát để xáo trộn!', 'tracks');
+    }
+
+    // Shuffle the tracks using Fisher-Yates algorithm
+    const shuffledPositions = [...Array(tracks.length).keys()].map(i => i + 1);
+    for (let i = shuffledPositions.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffledPositions[i], shuffledPositions[j]] = [shuffledPositions[j], shuffledPositions[i]];
+    }
+
+    // Update positions in database
+    const { getDatabaseManager } = await import('../../database/DatabaseManager.js');
+    const db = getDatabaseManager();
+
+    try {
+        db.transaction(() => {
+            // Temporarily set all positions to negative to avoid conflicts
+            for (let i = 0; i < tracks.length; i++) {
+                db.db.prepare('UPDATE playlist_tracks SET position = ? WHERE id = ?').run(-(i + 1), tracks[i].id);
+            }
+
+            // Set new shuffled positions
+            for (let i = 0; i < tracks.length; i++) {
+                db.db
+                    .prepare('UPDATE playlist_tracks SET position = ? WHERE id = ?')
+                    .run(shuffledPositions[i], tracks[i].id);
+            }
+        });
+    } catch (error) {
+        throw new InternalError('Không thể xáo trộn playlist!');
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle('🔀 Đã Xáo Trộn Playlist')
+        .setDescription(
+            `Playlist **${name}** đã được xáo trộn thành công!\n\n🎵 **${tracks.length}** bài hát đã được sắp xếp lại ngẫu nhiên.`
+        )
+        .setFooter({ text: client.config.bot.footer })
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+/**
+ * Clone a playlist
+ */
+async function handleClone(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const sourceName = interaction.options.getString('source');
+    const newName = interaction.options.getString('newname');
+
+    // Find source playlist (own or public)
+    const sourcePlaylist = Playlist.findByNameInGuild(sourceName, interaction.user.id, interaction.guildId);
+
+    if (!sourcePlaylist) {
+        throw new PlaylistNotFoundError(sourceName);
+    }
+
+    // Check if user can access source playlist
+    if (sourcePlaylist.owner_id !== interaction.user.id && !sourcePlaylist.is_public) {
+        throw new ValidationError('Bạn không có quyền sao chép playlist này!', 'permission');
+    }
+
+    // Check if new name conflicts with existing playlist
+    const existing = Playlist.getByName(newName, interaction.user.id, interaction.guildId);
+    if (existing) {
+        throw new ValidationError(`Playlist "${newName}" đã tồn tại`, 'name');
+    }
+
+    // Create new playlist
+    const newPlaylist = Playlist.create(
+        newName,
+        interaction.user.id,
+        interaction.user.username,
+        interaction.guildId,
+        `Bản sao từ: ${sourcePlaylist.name}`,
+        false
+    );
+
+    if (!newPlaylist) {
+        throw new InternalError('Không thể tạo playlist mới!');
+    }
+
+    // Copy all tracks from source to new playlist
+    const sourceTracks = Playlist.getTracks(sourcePlaylist.id);
+    let copiedCount = 0;
+
+    for (const track of sourceTracks) {
+        try {
+            const trackData = {
+                url: track.track_url,
+                title: track.track_title,
+                author: track.track_author,
+                duration: track.track_duration
+            };
+
+            const added = Playlist.addTrack(newPlaylist.id, trackData, interaction.user.id);
+            if (added) copiedCount++;
+        } catch (error) {
+            logger.warn('Failed to copy track to cloned playlist', { error: error.message });
+        }
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle('📋 Đã Nhân Bản Playlist')
+        .setDescription(
+            `Playlist **${newName}** đã được tạo từ **${sourcePlaylist.name}**!\n\n` +
+                `✅ Đã sao chép **${copiedCount}**/${sourceTracks.length} bài hát`
+        )
+        .addFields([
+            {
+                name: '💡 Gợi ý',
+                value: 'Sử dụng `/playlist show` để xem playlist mới của bạn!',
+                inline: false
+            }
+        ])
+        .setFooter({ text: client.config.bot.footer })
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+/**
+ * Clear all tracks from a playlist
+ */
+async function handleClear(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const name = interaction.options.getString('name');
+    const playlist = Playlist.getByName(name, interaction.user.id, interaction.guildId);
+
+    if (!playlist) {
+        throw new PlaylistNotFoundError(name);
+    }
+
+    const trackCount = Playlist.getTracks(playlist.id).length;
+
+    if (trackCount === 0) {
+        throw new ValidationError('Playlist đã trống!', 'tracks');
+    }
+
+    const success = Playlist.clearTracks(playlist.id, interaction.user.id);
+
+    if (!success) {
+        throw new InternalError('Không thể xóa các bài hát khỏi playlist!');
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle('🗑️ Đã Xóa Tất Cả Bài Hát')
+        .setDescription(`Đã xóa **${trackCount}** bài hát khỏi playlist **${name}**.\n\nPlaylist hiện đang trống.`)
+        .setFooter({ text: client.config.bot.footer })
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+/**
+ * List public playlists in the server
+ */
+async function handlePublicList(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const publicPlaylists = Playlist.getPublic(interaction.guildId, 25);
+
+    if (publicPlaylists.length === 0) {
+        const embed = new EmbedBuilder()
+            .setColor(client.config.bot.color)
+            .setTitle('🌐 Playlist Công Khai')
+            .setDescription(
+                'Chưa có playlist công khai nào trong server này.\n\nHãy tạo playlist mới với `/playlist create` và đặt `public: true` để chia sẻ!'
+            )
+            .setFooter({ text: client.config.bot.footer })
+            .setTimestamp();
+
+        return interaction.editReply({ embeds: [embed] });
+    }
+
+    const description = publicPlaylists
+        .map((pl, index) => {
+            const trackCount = pl.track_count || 0;
+            return `**${index + 1}. ${pl.name}**\n   └ 🎵 ${trackCount} bài | 👤 <@${pl.owner_id}>`;
+        })
+        .join('\n\n');
+
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle('🌐 Playlist Công Khai')
+        .setDescription(description)
+        .setFooter({
+            text: `Tổng ${publicPlaylists.length} playlist công khai • Sử dụng /playlist show để xem chi tiết`
+        })
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+/**
+ * Import playlist from YouTube/Spotify URL
+ */
+async function handleImport(interaction, client) {
+    await interaction.deferReply({ ephemeral: true });
+
+    const url = interaction.options.getString('url');
+    const name = interaction.options.getString('name');
+
+    // Validate name
+    if (name.length > 50) {
+        throw new ValidationError('Tên playlist không được dài quá 50 ký tự', 'name');
+    }
+
+    // Check if playlist already exists
+    const existing = Playlist.getByName(name, interaction.user.id, interaction.guildId);
+    if (existing) {
+        throw new ValidationError(`Playlist "${name}" đã tồn tại`, 'name');
+    }
+
+    // Search/load the external playlist
+    const loadingEmbed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle('⏳ Đang import playlist...')
+        .setDescription('Đang tải thông tin playlist từ URL...')
+        .setFooter({ text: client.config.bot.footer })
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [loadingEmbed] });
+
+    const result = await client.musicManager.search(url, interaction.user);
+
+    if (!result || result.loadType !== 'playlist' || !result.tracks || result.tracks.length === 0) {
+        throw new ValidationError('URL không phải là một playlist hợp lệ hoặc playlist trống!', 'url');
+    }
+
+    // Create new playlist
+    const externalPlaylistName = result.playlistInfo?.name || 'Imported Playlist';
+    const newPlaylist = Playlist.create(
+        name,
+        interaction.user.id,
+        interaction.user.username,
+        interaction.guildId,
+        `Import từ: ${externalPlaylistName}`,
+        false
+    );
+
+    if (!newPlaylist) {
+        throw new InternalError('Không thể tạo playlist mới!');
+    }
+
+    // Add all tracks to the new playlist
+    let successCount = 0;
+    let failedCount = 0;
+
+    for (const track of result.tracks.slice(0, 100)) {
+        // Limit to 100 tracks
+        try {
+            const trackData = {
+                url: track.info.uri,
+                title: track.info.title,
+                author: track.info.author,
+                duration: track.info.length
+            };
+
+            const added = Playlist.addTrack(newPlaylist.id, trackData, interaction.user.id);
+            if (added) {
+                successCount++;
+            } else {
+                failedCount++;
+            }
+        } catch (error) {
+            failedCount++;
+        }
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(successCount > 0 ? client.config.bot.color : COLORS.ERROR)
+        .setTitle('📥 Import Playlist Hoàn Tất')
+        .setDescription(
+            `**${name}** đã được tạo từ **${externalPlaylistName}**!\n\n` +
+                `✅ Đã import: **${successCount}** bài\n` +
+                (failedCount > 0 ? `❌ Thất bại: **${failedCount}** bài\n` : '') +
+                (result.tracks.length > 100
+                    ? `\n⚠️ Chỉ import 100 bài đầu tiên (playlist gốc có ${result.tracks.length} bài)`
+                    : '')
+        )
+        .setFooter({ text: client.config.bot.footer })
+        .setTimestamp();
+
+    if (result.playlistInfo?.artworkUrl) {
+        embed.setThumbnail(result.playlistInfo.artworkUrl);
+    }
+
+    await interaction.editReply({ embeds: [embed] });
 }
 
 /**

@@ -14,55 +14,59 @@ import {
 } from 'discord.js';
 import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
 import { NoSearchResultsError } from '../../utils/errors.js';
+import { COLORS } from '../../config/design-system.js';
 import logger from '../../utils/logger.js';
 import History from '../../database/models/History.js';
 import { formatDuration } from '../../utils/helpers.js';
+import { TRENDING, DISCOVERY } from '../../utils/constants.js';
 
 // Better curated search queries for different regions - more specific and music-focused
-const CURATED_QUERIES = {
-    global: [
-        'top hits 2024 official music video',
-        'billboard hot 100 songs 2024',
-        'most popular songs 2024',
-        'viral songs 2024',
-        'trending music 2024 playlist'
-    ],
-    vn: [
-        'nhạc việt hot nhất 2024',
-        'top vpop 2024 official mv',
-        'bảng xếp hạng nhạc việt 2024',
-        'nhạc trẻ hay nhất 2024',
-        'ca khúc hot tiktok việt nam 2024'
-    ],
-    kr: [
-        'kpop hot 2024 official mv',
-        'melon chart top songs 2024',
-        'best kpop songs 2024',
-        'trending kpop 2024',
-        'kpop new release 2024'
-    ],
-    jp: [
-        'jpop 2024 official music video',
-        'japanese music trending 2024',
-        'oricon chart 2024',
-        'anime songs 2024',
-        'best jpop 2024'
-    ],
-    us: [
-        'billboard hot 100 2024',
-        'top 40 usa 2024 official',
-        'american pop songs 2024',
-        'us music charts 2024',
-        'trending songs america 2024'
-    ],
-    uk: [
-        'uk official charts 2024',
-        'uk top 40 2024',
-        'british music hits 2024',
-        'trending uk songs 2024',
-        'best uk songs 2024'
-    ]
-};
+function getCuratedQueries(year) {
+    return {
+        global: [
+            `top hits ${year} official music video`,
+            `billboard hot 100 songs ${year}`,
+            `most popular songs ${year}`,
+            `viral songs ${year}`,
+            `trending music ${year} playlist`
+        ],
+        vn: [
+            `nhạc việt hot nhất ${year}`,
+            `top vpop ${year} official mv`,
+            `bảng xếp hạng nhạc việt ${year}`,
+            `nhạc trẻ hay nhất ${year}`,
+            `ca khúc hot tiktok việt nam ${year}`
+        ],
+        kr: [
+            `kpop hot ${year} official mv`,
+            `melon chart top songs ${year}`,
+            `best kpop songs ${year}`,
+            `trending kpop ${year}`,
+            `kpop new release ${year}`
+        ],
+        jp: [
+            `jpop ${year} official music video`,
+            `japanese music trending ${year}`,
+            `oricon chart ${year}`,
+            `anime songs ${year}`,
+            `best jpop ${year}`
+        ],
+        us: [
+            `billboard hot 100 ${year}`,
+            `top 40 usa ${year} official`,
+            `american pop songs ${year}`,
+            `us music charts ${year}`,
+            `trending songs america ${year}`
+        ],
+        uk: [
+            `uk official charts ${year}`,
+            `uk top 40 ${year}`,
+            `british music hits ${year}`,
+            `trending uk songs ${year}`,
+            `best uk songs ${year}`
+        ]
+    };
+}
 
 export default {
     data: new SlashCommandBuilder()
@@ -168,13 +172,14 @@ export default {
  * Get trending tracks from server's listening history
  */
 async function getServerTrending(interaction, client, period, count) {
-    const mostPlayed = History.getMostPlayed(interaction.guildId, count * 2, period);
+    const mostPlayed = History.getMostPlayed(interaction.guildId, count * TRENDING.SERVER_FETCH_MULTIPLIER, period);
 
     if (!mostPlayed || mostPlayed.length === 0) {
         return { tracks: [], subtitle: '' };
     }
 
-    // Resolve tracks from history
+    // PERF-02: Build lightweight tracks directly from DB metadata (no N+1 Lavalink searches here).
+    // Full resolution is deferred until user actually selects/plays a track.
     const tracks = [];
     const seenTitles = new Set();
 
@@ -185,17 +190,21 @@ async function getServerTrending(interaction, client, period, count) {
         const titleKey = entry.track_title.toLowerCase().substring(0, 30);
         if (seenTitles.has(titleKey)) continue;
 
-        try {
-            const result = await client.musicManager.search(entry.track_url, interaction.user);
-            if (result?.tracks?.length > 0) {
-                const track = result.tracks[0];
-                track._playCount = entry.play_count; // Attach play count for display
-                tracks.push(track);
-                seenTitles.add(titleKey);
+        const track = {
+            encoded: null,
+            _requiresResolve: true,
+            _playCount: entry.play_count,
+            info: {
+                title: entry.track_title || 'Unknown',
+                author: entry.track_author || 'Unknown',
+                uri: entry.track_url,
+                length: entry.track_duration || null,
+                isStream: false
             }
-        } catch (err) {
-            logger.debug('Failed to resolve trending track', { url: entry.track_url, error: err.message });
-        }
+        };
+
+        tracks.push(track);
+        seenTitles.add(titleKey);
     }
 
     const periodLabels = {
@@ -216,26 +225,18 @@ async function getServerTrending(interaction, client, period, count) {
  * Filters out shorts, very short videos, and non-music content
  */
 async function getRegionalTrending(interaction, client, region, count) {
+    const CURATED_QUERIES = getCuratedQueries(new Date().getFullYear());
     const queries = CURATED_QUERIES[region] || CURATED_QUERIES['global'];
     const tracks = [];
     const seenTitles = new Set();
 
     // Minimum duration: 1 minute (60000ms) to filter out shorts
-    const MIN_DURATION = 60000;
+    const MIN_DURATION = TRENDING.MIN_TRACK_DURATION_MS;
     // Maximum duration: 15 minutes to avoid long mixes
-    const MAX_DURATION = 15 * 60 * 1000;
+    const MAX_DURATION = TRENDING.MAX_TRACK_DURATION_MS;
 
-    // Patterns to skip (shorts, compilations, etc)
-    const skipPatterns = [
-        /#shorts?/i,
-        /\bshorts?\b/i,
-        /compilation/i,
-        /mix\s*20\d{2}/i,
-        /\d+\s*hour/i,
-        /top\s*\d+\s*(songs?|hits?|tracks?)/i,
-        /playlist/i,
-        /best\s*of\s*20\d{2}/i
-    ];
+    // Skip patterns imported from shared constants
+    const skipPatterns = DISCOVERY.SKIP_PATTERNS;
 
     // Try each query until we have enough tracks
     for (const query of queries) {
@@ -273,7 +274,7 @@ async function getRegionalTrending(interaction, client, region, count) {
                     const authorCount = [...tracks].filter(
                         t => (t.info.author || '').toLowerCase() === authorKey
                     ).length;
-                    if (authorCount >= 2) continue;
+                    if (authorCount >= TRENDING.MAX_TRACKS_PER_ARTIST) continue;
 
                     seenTitles.add(titleKey);
                     tracks.push(track);
@@ -303,12 +304,12 @@ async function getRegionalTrending(interaction, client, region, count) {
  * Send trending response with interactive components
  */
 async function sendTrendingResponse(interaction, client, tracks, title, subtitle, _source) {
-    const displayTracks = tracks.slice(0, Math.min(tracks.length, 10));
+    const displayTracks = tracks.slice(0, Math.min(tracks.length, TRENDING.MAX_DISPLAY_TRACKS));
 
     // Create dropdown
     const options = displayTracks.map((track, index) => ({
         label: track.info.title.substring(0, 100),
-        description: `${track.info.author.substring(0, 50)} • ${formatDuration(track.info.length)}`,
+        description: `${track.info.author.substring(0, 50)}${track.info.length ? ` • ${formatDuration(track.info.length)}` : ''}`,
         value: `trending_${index}`,
         emoji: '🔥'
     }));
@@ -339,12 +340,12 @@ async function sendTrendingResponse(interaction, client, tracks, title, subtitle
             const rank = i + 1;
             const emoji = rank <= 3 ? ['🥇', '🥈', '🥉'][rank - 1] : `**#${rank}**`;
             const playCount = track._playCount ? ` • 🎧 ${track._playCount}x` : '';
-            return `${emoji} **${track.info.title}**\n└ 🎤 ${track.info.author} • ⏱️ ${formatDuration(track.info.length)}${playCount}`;
+            return `${emoji} **${track.info.title}**\n└ 🎤 ${track.info.author}${track.info.length ? ` • ⏱️ ${formatDuration(track.info.length)}` : ''}${playCount}`;
         })
         .join('\n\n');
 
     const embed = new EmbedBuilder()
-        .setColor('#FF6B6B')
+        .setColor(COLORS.INFO)
         .setTitle(title)
         .setDescription(description)
         .setFooter({ text: `💡 Chọn từ menu hoặc nhấn nút để phát! • ${displayTracks.length} bài hát` })
@@ -361,10 +362,15 @@ async function sendTrendingResponse(interaction, client, tracks, title, subtitle
         });
     } else {
         client._trendingCache = client._trendingCache || new Map();
+        // FIX-PB03: Cap fallback cache size (entries also auto-delete after 5 min via setTimeout)
+        if (client._trendingCache.size >= TRENDING.FALLBACK_CACHE_MAX_SIZE) {
+            const oldestKey = client._trendingCache.keys().next().value;
+            client._trendingCache.delete(oldestKey);
+        }
         client._trendingCache.set(userCacheKey, {
             tracks: displayTracks,
             timestamp: Date.now()
         });
-        setTimeout(() => client._trendingCache?.delete(userCacheKey), 5 * 60 * 1000);
+        setTimeout(() => client._trendingCache?.delete(userCacheKey), TRENDING.FALLBACK_CACHE_TTL_MS);
     }
 }

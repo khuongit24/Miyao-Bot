@@ -1,251 +1,262 @@
 /**
  * Filter Command
  * Apply audio filters for music playback
- * @version 1.8.1 - Enhanced filter options and UI
+ * @version 1.9.0 - Added Karaoke, Speed, Pitch subcommands
  */
 
 import { SlashCommandBuilder, EmbedBuilder } from 'discord.js';
-import { createErrorEmbed, createSuccessEmbed, createInfoEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse } from '../../UI/embeds/ErrorEmbeds.js';
+import { requireCurrentTrack } from '../../middleware/queueCheck.js';
+import { UserNotInVoiceError, DifferentVoiceChannelError, FilterError } from '../../utils/errors.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import logger from '../../utils/logger.js';
 
 // Filter descriptions for better UX
 const FILTER_INFO = {
-    bass: {
-        name: '🎸 Bass Boost',
-        description: 'Tăng cường âm bass cho trải nghiệm sâu hơn'
-    },
-    pop: {
-        name: '🎵 Pop',
-        description: 'Equalizer tối ưu cho nhạc Pop'
-    },
-    jazz: {
-        name: '🎹 Jazz',
-        description: 'Âm thanh ấm áp, phù hợp nhạc Jazz'
-    },
-    rock: {
-        name: '🎤 Rock',
-        description: 'Tăng cường mid-range cho guitar và vocals'
-    },
-    nightcore: {
-        name: '🌙 Nightcore',
-        description: 'Tăng tốc độ và pitch - nhạc anime style'
-    },
-    vaporwave: {
-        name: '🌊 Vaporwave',
-        description: 'Giảm tốc độ - aesthetic retro vibes'
-    },
-    '8d': {
-        name: '🔊 8D Audio',
-        description: 'Hiệu ứng xoay không gian 360° (đeo tai nghe)'
-    }
+    bass: { name: '🎸 Bass Boost', description: 'Tăng cường âm bass' },
+    pop: { name: '🎵 Pop', description: 'Equalizer nhạc Pop' },
+    jazz: { name: '🎹 Jazz', description: 'Âm thanh ấm áp' },
+    rock: { name: '🎤 Rock', description: 'Tăng cường mid-range' },
+    nightcore: { name: '🌙 Nightcore', description: 'Tăng tốc độ & pitch' },
+    vaporwave: { name: '🌊 Vaporwave', description: 'Giảm tốc độ & pitch' },
+    '8d': { name: '🔊 8D Audio', description: 'Hiệu ứng xoay 360°' }
 };
 
 export default {
     data: new SlashCommandBuilder()
         .setName('filter')
-        .setDescription('Áp dụng audio filter cho nhạc đang phát')
-        .addStringOption(option =>
-            option
-                .setName('type')
-                .setDescription('Loại filter muốn áp dụng')
-                .setRequired(true)
-                .addChoices(
-                    { name: '🎸 Bass Boost - Tăng cường bass', value: 'bass' },
-                    { name: '🎵 Pop - Equalizer nhạc Pop', value: 'pop' },
-                    { name: '🎹 Jazz - Âm thanh ấm áp', value: 'jazz' },
-                    { name: '🎤 Rock - Tăng mid-range', value: 'rock' },
-                    { name: '🌙 Nightcore - Nhanh hơn, cao hơn', value: 'nightcore' },
-                    { name: '🌊 Vaporwave - Chậm, aesthetic', value: 'vaporwave' },
-                    { name: '🔊 8D Audio - Xoay không gian', value: '8d' },
-                    { name: '📋 Xem filters đang dùng', value: 'status' },
-                    { name: '❌ Xóa tất cả filters', value: 'clear' }
+        .setDescription('Áp dụng hiệu ứng âm thanh (bass, nightcore, 8D, karaoke...)')
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('preset')
+                .setDescription('Sử dụng các bộ lọc có sẵn')
+                .addStringOption(option =>
+                    option
+                        .setName('type')
+                        .setDescription('Loại filter')
+                        .setRequired(true)
+                        .addChoices(
+                            { name: '🎸 Bass Boost', value: 'bass' },
+                            { name: '🎵 Pop', value: 'pop' },
+                            { name: '🎹 Jazz', value: 'jazz' },
+                            { name: '🎤 Rock', value: 'rock' },
+                            { name: '🌙 Nightcore', value: 'nightcore' },
+                            { name: '🌊 Vaporwave', value: 'vaporwave' },
+                            { name: '🔊 8D Audio', value: '8d' }
+                        )
                 )
-        ),
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('karaoke')
+                .setDescription('Bật/tắt chế độ Karaoke (loại bỏ giọng hát)')
+                .addBooleanOption(option => option.setName('enabled').setDescription('Bật hoặc tắt').setRequired(true))
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('speed')
+                .setDescription('Điều chỉnh tốc độ phát (0.5x - 2.0x)')
+                .addNumberOption(option =>
+                    option
+                        .setName('value')
+                        .setDescription('Tốc độ (mặc định 1.0)')
+                        .setRequired(true)
+                        .setMinValue(0.5)
+                        .setMaxValue(2.0)
+                )
+        )
+        .addSubcommand(subcommand =>
+            subcommand
+                .setName('pitch')
+                .setDescription('Điều chỉnh cao độ (0.5x - 2.0x)')
+                .addNumberOption(option =>
+                    option
+                        .setName('value')
+                        .setDescription('Cao độ (mặc định 1.0)')
+                        .setRequired(true)
+                        .setMinValue(0.5)
+                        .setMaxValue(2.0)
+                )
+        )
+        .addSubcommand(subcommand => subcommand.setName('clear').setDescription('Xóa tất cả hiệu ứng'))
+        .addSubcommand(subcommand => subcommand.setName('status').setDescription('Xem các hiệu ứng đang bật')),
 
     async execute(interaction, client) {
         await interaction.deferReply();
 
         try {
-            const filterType = interaction.options.getString('type');
-            const queue = client.musicManager.getQueue(interaction.guildId);
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
+            }
 
-            // Voice checks
+            // Middleware & Voice Checks
+            const { queue } = requireCurrentTrack(client.musicManager, interaction.guildId);
             const member = interaction.member;
-            const voiceChannel = member.voice.channel;
 
-            if (!voiceChannel) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Bạn phải ở trong voice channel để dùng lệnh này!', client.config)]
-                });
+            if (!member.voice.channel) throw new UserNotInVoiceError();
+            if (member.voice.channel.id !== queue.voiceChannelId) throw new DifferentVoiceChannelError();
+
+            const subcommand = interaction.options.getSubcommand();
+
+            // BUG-070: Verify player exists and is connected before applying filters
+            if (subcommand !== 'status' && (!queue.player || !queue.player.node)) {
+                throw new FilterError('Player chưa sẵn sàng. Hãy đợi bài hát bắt đầu phát.');
             }
 
-            if (!queue || !queue.current) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Không có nhạc nào đang phát!', client.config)]
-                });
+            switch (subcommand) {
+                case 'preset': {
+                    const type = interaction.options.getString('type');
+                    await handlePreset(interaction, queue, type, client);
+                    break;
+                }
+                case 'karaoke': {
+                    const enabled = interaction.options.getBoolean('enabled');
+                    await handleKaraoke(interaction, queue, enabled, client);
+                    break;
+                }
+                case 'speed': {
+                    const value = interaction.options.getNumber('value');
+                    await handleTimescale(interaction, queue, { speed: value }, client);
+                    break;
+                }
+                case 'pitch': {
+                    const value = interaction.options.getNumber('value');
+                    await handleTimescale(interaction, queue, { pitch: value }, client);
+                    break;
+                }
+                case 'clear':
+                    await handleClear(interaction, client, queue);
+                    break;
+                case 'status':
+                    await handleStatus(interaction, client, queue);
+                    break;
             }
 
-            if (queue.voiceChannelId !== voiceChannel.id) {
-                return interaction.editReply({
-                    embeds: [createErrorEmbed('Bạn phải ở cùng voice channel với bot!', client.config)]
-                });
-            }
-
-            // Handle status check
-            if (filterType === 'status') {
-                return await handleFilterStatus(interaction, client, queue);
-            }
-
-            // Handle clear
-            if (filterType === 'clear') {
-                return await handleFilterClear(interaction, client, queue);
-            }
-
-            // Apply filter
-            const result = await applyFilter(queue, filterType);
-
-            if (!result.success) {
-                return interaction.editReply({
-                    embeds: [
-                        createErrorEmbed(
-                            `Không thể áp dụng filter **${FILTER_INFO[filterType]?.name || filterType}**.\nVui lòng thử lại!`,
-                            client.config
-                        )
-                    ]
-                });
-            }
-
-            // Get active filters for display
-            const activeFilters = queue.getActiveFilters();
-            const activeList =
-                activeFilters.length > 0 ? `\n\n📋 **Filters đang hoạt động:** ${activeFilters.join(', ')}` : '';
-
-            const filterInfo = FILTER_INFO[filterType];
-
-            const embed = new EmbedBuilder()
-                .setColor('#00FF00')
-                .setTitle(`✅ ${filterInfo.name}`)
-                .setDescription(
-                    'Filter đã được áp dụng thành công!\n\n' +
-                        `📝 *${filterInfo.description}*\n` +
-                        `⏳ Có thể mất vài giây để có hiệu lực.${activeList}`
-                )
-                .setFooter({ text: `${client.config.bot.footer} • /filter clear để xóa` })
-                .setTimestamp();
-
-            await interaction.editReply({ embeds: [embed] });
-
-            logger.command('filter', interaction.user.id, interaction.guildId, {
-                filter: filterType
-            });
+            logger.command(`filter-${subcommand}`, interaction.user.id, interaction.guildId);
         } catch (error) {
-            logger.error('Filter command error', error);
-            await interaction.editReply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi áp dụng filter!', client.config)]
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };
 
-/**
- * Apply filter based on type
- */
-async function applyFilter(queue, filterType) {
-    try {
-        switch (filterType) {
-            case 'bass':
-                return { success: await queue.setEqualizer('bass') };
-            case 'pop':
-                return { success: await queue.setEqualizer('pop') };
-            case 'jazz':
-                return { success: await queue.setEqualizer('jazz') };
-            case 'rock':
-                return { success: await queue.setEqualizer('rock') };
-            case 'nightcore':
-                return { success: await queue.setNightcore(true) };
-            case 'vaporwave':
-                return { success: await queue.setVaporwave(true) };
-            case '8d':
-                return { success: await queue.set8D(true) };
-            default:
-                return { success: false };
-        }
-    } catch (error) {
-        logger.error('Filter apply error', error);
-        return { success: false };
-    }
-}
+async function handlePreset(interaction, queue, type, client) {
+    let success = false;
 
-/**
- * Handle filter status display
- */
-async function handleFilterStatus(interaction, client, queue) {
-    const activeFilters = queue.getActiveFilters();
-
-    if (activeFilters.length === 0) {
-        const embed = new EmbedBuilder()
-            .setColor(client.config.bot.color)
-            .setTitle('📋 Trạng thái Filters')
-            .setDescription(
-                '✨ **Không có filter nào đang hoạt động**\n\n' +
-                    '🎵 Âm thanh đang ở trạng thái mặc định.\n\n' +
-                    '**Thử áp dụng một filter:**\n' +
-                    '• `/filter type:bass` - Bass Boost\n' +
-                    '• `/filter type:nightcore` - Nightcore\n' +
-                    '• `/filter type:8d` - 8D Audio'
-            )
-            .setFooter({ text: client.config.bot.footer })
-            .setTimestamp();
-
-        return interaction.editReply({ embeds: [embed] });
+    switch (type) {
+        case 'bass':
+            success = await queue.setEqualizer('bass');
+            break;
+        case 'pop':
+            success = await queue.setEqualizer('pop');
+            break;
+        case 'jazz':
+            success = await queue.setEqualizer('jazz');
+            break;
+        case 'rock':
+            success = await queue.setEqualizer('rock');
+            break;
+        case 'nightcore':
+            success = await queue.setNightcore(true);
+            break;
+        case 'vaporwave':
+            success = await queue.setVaporwave(true);
+            break;
+        case '8d':
+            success = await queue.set8D(true);
+            break;
     }
 
-    const filterEmojis = {
-        equalizer: '🎚️',
-        timescale: '⏱️',
-        rotation: '🔊',
-        karaoke: '🎤',
-        tremolo: '〰️',
-        vibrato: '📳',
-        distortion: '⚡',
-        channelMix: '🔀',
-        lowPass: '🔉'
-    };
-
-    const filterList = activeFilters.map(f => `${filterEmojis[f] || '🎵'} **${f}**`).join('\n');
+    if (!success) throw new FilterError(FILTER_INFO[type]?.name || type);
 
     const embed = new EmbedBuilder()
         .setColor(client.config.bot.color)
-        .setTitle('📋 Filters Đang Hoạt Động')
-        .setDescription(
-            `**${activeFilters.length}** filter(s) đang được áp dụng:\n\n` +
-                `${filterList}\n\n` +
-                '💡 Sử dụng `/filter clear` để xóa tất cả.'
-        )
-        .setFooter({ text: client.config.bot.footer })
+        .setTitle(`✅ Đã áp dụng ${FILTER_INFO[type].name}`)
+        .setDescription(FILTER_INFO[type].description)
+        .setFooter({ text: `${client.config.bot.footer}` })
         .setTimestamp();
 
-    return interaction.editReply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
 }
 
-/**
- * Handle filter clear
- */
-async function handleFilterClear(interaction, client, queue) {
-    const success = await queue.clearFilters();
+async function handleKaraoke(interaction, queue, enabled, client) {
+    const success = await queue.setKaraoke(enabled);
+    if (!success) throw new FilterError('Karaoke');
 
-    if (!success) {
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle(enabled ? '✅ Đã bật Karaoke' : '✅ Đã tắt Karaoke')
+        .setDescription(enabled ? 'Đang loại bỏ giọng hát...' : 'Đã khôi phục giọng hát gốc.')
+        .setFooter({ text: `${client.config.bot.footer}` })
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleTimescale(interaction, queue, options, client) {
+    const success = await queue.setTimescale(options);
+    if (!success) throw new FilterError('Timescale');
+
+    const type = options.speed !== undefined ? 'Tốc độ' : 'Cao độ';
+    const currentTimescale = queue.filterManager?.filters?.timescale;
+
+    let description;
+    if (currentTimescale) {
+        description = `Tốc độ: **${currentTimescale.speed}x** | Cao độ: **${currentTimescale.pitch}x**`;
+    } else {
+        description = 'Tốc độ: **1.0x** | Cao độ: **1.0x**';
+    }
+
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle(`✅ Đã chỉnh ${type}`)
+        .setDescription(description)
+        .setFooter({ text: `${client.config.bot.footer}` })
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleClear(interaction, client, queue) {
+    const success = await queue.clearFilters();
+    if (!success) throw new FilterError('Clear');
+
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle('✅ Đã xóa tất cả hiệu ứng')
+        .setDescription('Âm thanh đã trở về mặc định.')
+        .setFooter({ text: `${client.config.bot.footer}` })
+        .setTimestamp();
+
+    await interaction.editReply({ embeds: [embed] });
+}
+
+async function handleStatus(interaction, client, queue) {
+    const activeFilters = queue.getActiveFilters();
+
+    if (activeFilters.length === 0) {
         return interaction.editReply({
-            embeds: [createErrorEmbed('Không thể xóa filters. Vui lòng thử lại!', client.config)]
+            embeds: [
+                new EmbedBuilder()
+                    .setColor(client.config.bot.color)
+                    .setTitle('📋 Filters')
+                    .setDescription('Không có hiệu ứng nào đang bật.')
+                    .setFooter({ text: client.config.bot.footer })
+                    .setTimestamp()
+            ]
         });
     }
 
     const embed = new EmbedBuilder()
-        .setColor('#00FF00')
-        .setTitle('✅ Đã Xóa Filters')
-        .setDescription('Tất cả audio filters đã được xóa.\n\n' + '🎵 Âm thanh đã trở về trạng thái mặc định.')
+        .setColor(client.config.bot.color)
+        .setTitle('📋 Filters Đang Hoạt Động')
+        .setDescription(activeFilters.map(f => `• **${f}**`).join('\n'))
         .setFooter({ text: client.config.bot.footer })
         .setTimestamp();
 
-    return interaction.editReply({ embeds: [embed] });
+    await interaction.editReply({ embeds: [embed] });
 }

@@ -1,6 +1,9 @@
 import { SlashCommandBuilder } from 'discord.js';
-import { createQueueEmbed, createErrorEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { createQueueEmbed } from '../../UI/embeds/MusicEmbeds.js';
+import { sendErrorResponse, createErrorEmbed } from '../../UI/embeds/ErrorEmbeds.js';
 import { createQueueButtons } from '../../UI/components/MusicControls.js';
+import { requireCurrentTrack } from '../../middleware/queueCheck.js';
+import { isMusicSystemAvailable, getDegradedModeMessage } from '../../utils/resilience.js';
 import logger from '../../utils/logger.js';
 
 export default {
@@ -8,48 +11,54 @@ export default {
         .setName('queue')
         .setDescription('Xem danh sách hàng đợi')
         .addIntegerOption(option =>
-            option.setName('page').setDescription('Số trang').setMinValue(1).setRequired(false)
+            option
+                .setName('page')
+                .setDescription('Xem trang cụ thể (mặc định: trang 1)')
+                .setMinValue(1)
+                .setRequired(false)
         ),
 
     async execute(interaction, client) {
+        await interaction.deferReply();
         try {
-            const queue = client.musicManager.getQueue(interaction.guildId);
-
-            // Check if there's a queue
-            if (!queue || !queue.current) {
-                return interaction.reply({
-                    embeds: [createErrorEmbed('Không có nhạc nào đang phát!', client.config)],
-                    ephemeral: true
-                });
+            // Check resilience
+            if (!isMusicSystemAvailable(client.musicManager)) {
+                return sendErrorResponse(
+                    interaction,
+                    new Error(getDegradedModeMessage('nhạc').description),
+                    client.config
+                );
             }
 
-            const page = interaction.options.getInteger('page') || 1;
-            const totalPages = Math.ceil((queue.tracks.length + 1) / 10);
+            // Use middleware
+            const { queue } = requireCurrentTrack(client.musicManager, interaction.guildId);
 
-            if (page > totalPages) {
-                return interaction.reply({
+            const pageSize = 10;
+            const requestedPage = interaction.options.getInteger('page') || 1;
+            const totalPages = Math.max(1, Math.ceil(queue.tracks.length / pageSize));
+
+            if (requestedPage > totalPages || requestedPage < 1) {
+                return interaction.editReply({
                     embeds: [
                         createErrorEmbed(
                             `Trang không hợp lệ! Chỉ có ${totalPages} trang. Hãy chọn số từ 1 đến ${totalPages}.`,
                             client.config
                         )
-                    ],
-                    ephemeral: true
+                    ]
                 });
             }
 
-            await interaction.reply({
+            // Clamp page to valid range as safety net
+            const page = Math.min(Math.max(1, requestedPage), totalPages);
+
+            await interaction.editReply({
                 embeds: [createQueueEmbed(queue, client.config, page)],
                 components: createQueueButtons(page, totalPages, queue)
             });
 
             logger.command('queue', interaction.user.id, interaction.guildId);
         } catch (error) {
-            logger.error('Queue command error', error);
-            await interaction.reply({
-                embeds: [createErrorEmbed('Đã xảy ra lỗi khi hiển thị hàng đợi!', client.config)],
-                ephemeral: true
-            });
+            await sendErrorResponse(interaction, error, client.config, true);
         }
     }
 };

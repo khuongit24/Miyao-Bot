@@ -17,6 +17,7 @@ import { ValidationError, NoSearchResultsError, NothingPlayingError } from '../.
 import logger from '../../utils/logger.js';
 import { formatDuration } from '../../utils/helpers.js';
 import { getDatabaseManager } from '../../database/DatabaseManager.js';
+import { escapeLikePattern } from '../../database/helpers.js';
 import { getRecommendationEngine } from '../../music/RecommendationEngine.js';
 
 export default {
@@ -158,6 +159,17 @@ export default {
             // Use RecommendationEngine for scoring and diversity
             const recEngine = getRecommendationEngine();
 
+            if (!recEngine) {
+                logger.warn('RecommendationEngine not available for /similar command');
+                return sendBasicSimilarResponse(
+                    interaction,
+                    client,
+                    referenceTrack,
+                    recommendations.slice(0, count),
+                    recommendationSource
+                );
+            }
+
             // Get user profile for personalization
             const userProfile = recEngine.getUserProfile(interaction.user.id, interaction.guildId);
             const guildProfile = recEngine.getGuildGenreProfile(interaction.guildId);
@@ -210,10 +222,10 @@ async function findCollaborativeRecommendations(guildId, trackUrl, trackTitle, s
         const usersWhoPlayedThis = db.query(
             `SELECT DISTINCT user_id FROM history
              WHERE guild_id = ?
-             AND (track_url = ? OR track_title LIKE ?)
+             AND (track_url = ? OR track_title LIKE ? ESCAPE '\\')
              AND played_at > datetime('now', '-30 days')
              LIMIT 50`,
-            [guildId, trackUrl, `%${trackTitle.substring(0, 20)}%`]
+            [guildId, trackUrl, `%${escapeLikePattern(trackTitle.substring(0, 20))}%`]
         );
 
         if (usersWhoPlayedThis.length === 0) {
@@ -527,8 +539,12 @@ async function findCuratedSimilar(client, title, artist, seenUrls, seenTitles, l
  * @param {Object} profiles - User and guild profiles for context
  */
 async function sendSimilarResponse(interaction, client, referenceTrack, recommendations, source, profiles = {}) {
-    const { userProfile, guildProfile: _guildProfile } = profiles;
+    const { userProfile } = profiles;
     const recEngine = getRecommendationEngine();
+
+    if (!recEngine) {
+        return sendBasicSimilarResponse(interaction, client, referenceTrack, recommendations, source);
+    }
 
     // Create dropdown
     const options = recommendations.map((track, index) => ({
@@ -578,10 +594,10 @@ async function sendSimilarResponse(interaction, client, referenceTrack, recommen
                             track.source === 'collaborative'
                                 ? '👥'
                                 : track.source === 'artist'
-                                    ? '🎤'
-                                    : track.source === 'metadata'
-                                        ? '🔍'
-                                        : '🌟';
+                                  ? '🎤'
+                                  : track.source === 'metadata'
+                                    ? '🔍'
+                                    : '🌟';
                         const serendipityMark = track.isSerendipity ? ' ✨' : '';
                         const scoreInfo = track.score ? ` (${Math.round(track.score)}⭐)` : '';
                         return `${emoji} **${track.info.title}**${serendipityMark}\n└ ${sourceEmoji} ${track.info.author || 'Unknown'} • ⏱️ ${formatDuration(track.info.length || 0)}${scoreInfo}`;
@@ -610,10 +626,74 @@ async function sendSimilarResponse(interaction, client, referenceTrack, recommen
         });
     } else {
         client._similarCache = client._similarCache || new Map();
+        // FIX-PB03: Cap fallback cache size (entries also auto-delete after 5 min via setTimeout)
+        if (client._similarCache.size >= 50) {
+            const oldestKey = client._similarCache.keys().next().value;
+            client._similarCache.delete(oldestKey);
+        }
         client._similarCache.set(cacheKey, {
             tracks: recommendations,
             timestamp: Date.now()
         });
         setTimeout(() => client._similarCache?.delete(cacheKey), 5 * 60 * 1000);
     }
+}
+
+/**
+ * Fallback response when RecommendationEngine is unavailable.
+ * Sends recommendations without scoring/diversity enhancements.
+ */
+async function sendBasicSimilarResponse(interaction, client, referenceTrack, recommendations, source) {
+    const options = recommendations.map((track, index) => ({
+        label: track.info.title.substring(0, 100),
+        description: `${track.info.author?.substring(0, 50) || 'Unknown'} • ${formatDuration(track.info.length || 0)}`,
+        value: `similar_${index}`,
+        emoji: ['🎵', '🎶', '🎧', '🎤', '🎹', '🎸', '🎷', '🎺', '🎻', '🥁'][index] || '🎵'
+    }));
+
+    const selectMenu = new StringSelectMenuBuilder()
+        .setCustomId(`similar_select_${interaction.user.id}`)
+        .setPlaceholder('🎵 Chọn bài hát để phát')
+        .addOptions(options);
+
+    const row = new ActionRowBuilder().addComponents(selectMenu);
+    const buttonRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+            .setCustomId(`similar_play_all_${interaction.user.id}`)
+            .setLabel('▶️ Thêm tất cả vào queue')
+            .setStyle(ButtonStyle.Success)
+    );
+
+    const embed = new EmbedBuilder()
+        .setColor(client.config.bot.color)
+        .setTitle('🎵 Bài Hát Tương Tự')
+        .setDescription(
+            `**Dựa trên:**\n` +
+                `${referenceTrack.info.title}\n` +
+                `└ 🎤 ${referenceTrack.info.author}` +
+                `\n\n**${source}:**\n\n` +
+                recommendations
+                    .map((track, i) => {
+                        const emoji = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'][i];
+                        return `${emoji} **${track.info.title}**\n└ 🎤 ${track.info.author || 'Unknown'} • ⏱️ ${formatDuration(track.info.length || 0)}`;
+                    })
+                    .join('\n\n')
+        )
+        .setFooter({ text: client.config.bot.footer })
+        .setTimestamp();
+
+    if (referenceTrack.info.artworkUrl) {
+        embed.setThumbnail(referenceTrack.info.artworkUrl);
+    }
+
+    await interaction.editReply({ embeds: [embed], components: [row, buttonRow] });
+
+    const cacheKey = `${interaction.user.id}:${interaction.guildId}`;
+    client._similarCache = client._similarCache || new Map();
+    if (client._similarCache.size >= 50) {
+        const oldestKey = client._similarCache.keys().next().value;
+        client._similarCache.delete(oldestKey);
+    }
+    client._similarCache.set(cacheKey, { tracks: recommendations, timestamp: Date.now() });
+    setTimeout(() => client._similarCache?.delete(cacheKey), 5 * 60 * 1000);
 }
